@@ -1,0 +1,27 @@
+image:
+  repository: ghcr.io/tanne3/littlered-operator
+  tag: 0.1.0
+  pullPolicy: IfNotPresent
+
+replicas: 1
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+serviceAccount:
+  create: true
+  name: ""
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+leaderElection:
+  enabled: true

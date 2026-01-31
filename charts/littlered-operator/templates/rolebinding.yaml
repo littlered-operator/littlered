@@ -1,0 +1,16 @@
+{{- if .Values.leaderElection.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "littlered-operator.fullname" . }}-leader-election
+  labels:
+    {{- include "littlered-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "littlered-operator.fullname" . }}-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "littlered-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
