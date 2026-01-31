@@ -1,0 +1,498 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+import (
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// LittleRedSpec defines the desired state of LittleRed
+type LittleRedSpec struct {
+	// Mode is the deployment mode: standalone or sentinel
+	// +kubebuilder:validation:Enum=standalone;sentinel
+	// +kubebuilder:default=standalone
+	// +optional
+	Mode string `json:"mode,omitempty"`
+
+	// Image defines the container image to use
+	// +optional
+	Image ImageSpec `json:"image,omitempty"`
+
+	// Resources defines CPU/memory for Redis container
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Config defines Redis configuration
+	// +optional
+	Config ConfigSpec `json:"config,omitempty"`
+
+	// Auth defines authentication settings
+	// +optional
+	Auth AuthSpec `json:"auth,omitempty"`
+
+	// TLS defines TLS/SSL settings
+	// +optional
+	TLS TLSSpec `json:"tls,omitempty"`
+
+	// Metrics defines Prometheus metrics settings
+	// +optional
+	Metrics MetricsSpec `json:"metrics,omitempty"`
+
+	// UpdateStrategy defines how updates are rolled out
+	// +optional
+	UpdateStrategy UpdateStrategySpec `json:"updateStrategy,omitempty"`
+
+	// Service defines Service configuration
+	// +optional
+	Service ServiceSpec `json:"service,omitempty"`
+
+	// PodTemplate defines pod customizations
+	// +optional
+	PodTemplate PodTemplateSpec `json:"podTemplate,omitempty"`
+
+	// Sentinel defines sentinel-specific settings (sentinel mode only)
+	// +optional
+	Sentinel *SentinelSpec `json:"sentinel,omitempty"`
+}
+
+// ImageSpec defines container image configuration
+type ImageSpec struct {
+	// Registry is the container registry hostname
+	// +kubebuilder:default="docker.io"
+	// +optional
+	Registry string `json:"registry,omitempty"`
+
+	// Path is the image path (without registry or tag)
+	// +kubebuilder:default="valkey/valkey"
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// Tag is the image version tag
+	// +kubebuilder:default="8.0"
+	// +optional
+	Tag string `json:"tag,omitempty"`
+
+	// PullPolicy is the image pull policy
+	// +kubebuilder:validation:Enum=Always;IfNotPresent;Never
+	// +kubebuilder:default=IfNotPresent
+	// +optional
+	PullPolicy corev1.PullPolicy `json:"pullPolicy,omitempty"`
+
+	// PullSecrets are references to secrets for pulling the image
+	// +optional
+	PullSecrets []corev1.LocalObjectReference `json:"pullSecrets,omitempty"`
+}
+
+// FullImage returns the complete image reference: {registry}/{path}:{tag}
+func (i *ImageSpec) FullImage() string {
+	registry := i.Registry
+	if registry == "" {
+		registry = "docker.io"
+	}
+	path := i.Path
+	if path == "" {
+		path = "valkey/valkey"
+	}
+	tag := i.Tag
+	if tag == "" {
+		tag = "8.0"
+	}
+	return fmt.Sprintf("%s/%s:%s", registry, path, tag)
+}
+
+// ConfigSpec defines Redis configuration
+type ConfigSpec struct {
+	// Maxmemory sets Redis maxmemory (e.g., "1Gi")
+	// +optional
+	Maxmemory string `json:"maxmemory,omitempty"`
+
+	// MaxmemoryPolicy sets the eviction policy
+	// +kubebuilder:validation:Enum=noeviction;allkeys-lru;allkeys-lfu;allkeys-random;volatile-lru;volatile-lfu;volatile-random;volatile-ttl
+	// +kubebuilder:default="allkeys-lru"
+	// +optional
+	MaxmemoryPolicy string `json:"maxmemoryPolicy,omitempty"`
+
+	// Timeout is client idle timeout in seconds (0 = disabled)
+	// +kubebuilder:default=0
+	// +optional
+	Timeout int `json:"timeout,omitempty"`
+
+	// TCPKeepalive interval in seconds
+	// +kubebuilder:default=300
+	// +optional
+	TCPKeepalive int `json:"tcpKeepalive,omitempty"`
+
+	// Raw is raw redis.conf content (expert mode)
+	// +optional
+	Raw string `json:"raw,omitempty"`
+}
+
+// AuthSpec defines authentication settings
+type AuthSpec struct {
+	// Enabled enables password authentication
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// ExistingSecret is the name of a Secret containing the password key
+	// +optional
+	ExistingSecret string `json:"existingSecret,omitempty"`
+}
+
+// TLSSpec defines TLS/SSL settings
+type TLSSpec struct {
+	// Enabled enables TLS encryption
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// ExistingSecret is the name of a Secret with tls.crt and tls.key
+	// +optional
+	ExistingSecret string `json:"existingSecret,omitempty"`
+
+	// CACertSecret is the name of a Secret with ca.crt for client verification
+	// +optional
+	CACertSecret string `json:"caCertSecret,omitempty"`
+
+	// ClientAuth requires client certificate authentication
+	// +kubebuilder:default=false
+	// +optional
+	ClientAuth bool `json:"clientAuth,omitempty"`
+}
+
+// MetricsSpec defines Prometheus metrics settings
+type MetricsSpec struct {
+	// Enabled enables the redis_exporter sidecar
+	// +kubebuilder:default=true
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Exporter defines the exporter container settings
+	// +optional
+	Exporter ExporterSpec `json:"exporter,omitempty"`
+
+	// ServiceMonitor defines ServiceMonitor settings
+	// +optional
+	ServiceMonitor ServiceMonitorSpec `json:"serviceMonitor,omitempty"`
+}
+
+// IsEnabled returns whether metrics are enabled (defaults to true)
+func (m *MetricsSpec) IsEnabled() bool {
+	if m.Enabled == nil {
+		return true
+	}
+	return *m.Enabled
+}
+
+// ExporterSpec defines the redis_exporter container settings
+type ExporterSpec struct {
+	// Registry is the container registry hostname (empty = inherit from spec.image.registry)
+	// +optional
+	Registry string `json:"registry,omitempty"`
+
+	// Path is the image path
+	// +kubebuilder:default="oliver006/redis_exporter"
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// Tag is the image version tag
+	// +kubebuilder:default="v1.66.0"
+	// +optional
+	Tag string `json:"tag,omitempty"`
+
+	// Resources defines CPU/memory for exporter container
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// FullImage returns the complete exporter image reference
+func (e *ExporterSpec) FullImage(mainRegistry string) string {
+	registry := e.Registry
+	if registry == "" {
+		registry = mainRegistry
+		if registry == "" {
+			registry = "docker.io"
+		}
+	}
+	path := e.Path
+	if path == "" {
+		path = "oliver006/redis_exporter"
+	}
+	tag := e.Tag
+	if tag == "" {
+		tag = "v1.66.0"
+	}
+	return fmt.Sprintf("%s/%s:%s", registry, path, tag)
+}
+
+// ServiceMonitorSpec defines ServiceMonitor settings
+type ServiceMonitorSpec struct {
+	// Enabled creates a ServiceMonitor CR
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Namespace overrides the ServiceMonitor namespace
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// Labels are additional labels for the ServiceMonitor
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Interval is the scrape interval
+	// +kubebuilder:default="30s"
+	// +optional
+	Interval string `json:"interval,omitempty"`
+
+	// ScrapeTimeout is the scrape timeout
+	// +kubebuilder:default="10s"
+	// +optional
+	ScrapeTimeout string `json:"scrapeTimeout,omitempty"`
+}
+
+// UpdateStrategySpec defines how updates are rolled out
+type UpdateStrategySpec struct {
+	// Type is the update strategy type: RollingUpdate or Recreate
+	// +kubebuilder:validation:Enum=RollingUpdate;Recreate
+	// +kubebuilder:default=RollingUpdate
+	// +optional
+	Type string `json:"type,omitempty"`
+}
+
+// ServiceSpec defines Service configuration
+type ServiceSpec struct {
+	// Type is the Service type
+	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
+	// +kubebuilder:default=ClusterIP
+	// +optional
+	Type corev1.ServiceType `json:"type,omitempty"`
+
+	// Annotations are Service annotations
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// Labels are additional Service labels
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
+// PodTemplateSpec defines pod customizations
+type PodTemplateSpec struct {
+	// Annotations are pod annotations
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// Labels are additional pod labels
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// NodeSelector is the node selector
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations are pod tolerations
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// Affinity is the pod affinity/anti-affinity rules
+	// +optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+
+	// PriorityClassName is the priority class name
+	// +optional
+	PriorityClassName string `json:"priorityClassName,omitempty"`
+
+	// SecurityContext is the pod security context
+	// +optional
+	SecurityContext *corev1.PodSecurityContext `json:"securityContext,omitempty"`
+
+	// TopologySpreadConstraints for pod distribution
+	// +optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
+}
+
+// SentinelSpec defines sentinel-specific settings
+type SentinelSpec struct {
+	// Quorum is the number of Sentinels needed to agree on failure
+	// +kubebuilder:default=2
+	// +optional
+	Quorum int `json:"quorum,omitempty"`
+
+	// DownAfterMilliseconds is the time to mark master as down
+	// +kubebuilder:default=30000
+	// +optional
+	DownAfterMilliseconds int `json:"downAfterMilliseconds,omitempty"`
+
+	// FailoverTimeout is the failover timeout
+	// +kubebuilder:default=180000
+	// +optional
+	FailoverTimeout int `json:"failoverTimeout,omitempty"`
+
+	// ParallelSyncs is the number of parallel replica syncs
+	// +kubebuilder:default=1
+	// +optional
+	ParallelSyncs int `json:"parallelSyncs,omitempty"`
+
+	// Resources defines CPU/memory for Sentinel container
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// LittleRedPhase represents the current phase of the LittleRed resource
+type LittleRedPhase string
+
+const (
+	// PhasePending means the resource is waiting for resources
+	PhasePending LittleRedPhase = "Pending"
+	// PhaseInitializing means pods are starting
+	PhaseInitializing LittleRedPhase = "Initializing"
+	// PhaseRunning means all components are ready
+	PhaseRunning LittleRedPhase = "Running"
+	// PhaseFailed means validation error, pod crash, etc.
+	PhaseFailed LittleRedPhase = "Failed"
+	// PhaseTerminating means the resource is being deleted
+	PhaseTerminating LittleRedPhase = "Terminating"
+)
+
+// Condition types
+const (
+	// ConditionReady indicates all components are ready
+	ConditionReady = "Ready"
+	// ConditionInitialized indicates initial setup is complete
+	ConditionInitialized = "Initialized"
+	// ConditionConfigValid indicates configuration is valid
+	ConditionConfigValid = "ConfigValid"
+	// ConditionTLSReady indicates TLS secrets are valid
+	ConditionTLSReady = "TLSReady"
+	// ConditionAuthReady indicates auth secrets are valid
+	ConditionAuthReady = "AuthReady"
+	// ConditionSentinelReady indicates sentinel quorum is established
+	ConditionSentinelReady = "SentinelReady"
+)
+
+// LittleRedStatus defines the observed state of LittleRed
+type LittleRedStatus struct {
+	// Phase is the overall phase
+	// +optional
+	Phase LittleRedPhase `json:"phase,omitempty"`
+
+	// ObservedGeneration is the last observed generation
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Conditions represent the current state of the resource
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Redis contains Redis pod status
+	// +optional
+	Redis RedisStatus `json:"redis,omitempty"`
+
+	// Master contains current master info (sentinel mode only)
+	// +optional
+	Master *MasterStatus `json:"master,omitempty"`
+
+	// Replicas contains replica status (sentinel mode only)
+	// +optional
+	Replicas *ReplicaStatus `json:"replicas,omitempty"`
+
+	// Sentinels contains sentinel status (sentinel mode only)
+	// +optional
+	Sentinels *SentinelStatus `json:"sentinels,omitempty"`
+}
+
+// RedisStatus contains Redis pod status
+type RedisStatus struct {
+	// Ready is the number of ready Redis pods
+	Ready int32 `json:"ready"`
+	// Total is the total number of Redis pods
+	Total int32 `json:"total"`
+}
+
+// MasterStatus contains current master info
+type MasterStatus struct {
+	// PodName is the current master pod name
+	PodName string `json:"podName,omitempty"`
+	// IP is the current master pod IP
+	IP string `json:"ip,omitempty"`
+}
+
+// ReplicaStatus contains replica status
+type ReplicaStatus struct {
+	// Ready is the number of ready replicas
+	Ready int32 `json:"ready"`
+	// Total is the total number of replicas
+	Total int32 `json:"total"`
+}
+
+// SentinelStatus contains sentinel status
+type SentinelStatus struct {
+	// Ready is the number of ready sentinels
+	Ready int32 `json:"ready"`
+	// Total is the total number of sentinels
+	Total int32 `json:"total"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`,description="Deployment mode"
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`,description="Current phase"
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.redis.ready`,description="Ready pods"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// LittleRed is the Schema for the littlereds API
+type LittleRed struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   LittleRedSpec   `json:"spec,omitempty"`
+	Status LittleRedStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+// LittleRedList contains a list of LittleRed
+type LittleRedList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []LittleRed `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&LittleRed{}, &LittleRedList{})
+}
+
+// Default resource values
+var (
+	DefaultCPU    = resource.MustParse("250m")
+	DefaultMemory = resource.MustParse("256Mi")
+
+	DefaultExporterCPURequest    = resource.MustParse("50m")
+	DefaultExporterCPULimit      = resource.MustParse("100m")
+	DefaultExporterMemoryRequest = resource.MustParse("32Mi")
+	DefaultExporterMemoryLimit   = resource.MustParse("64Mi")
+
+	DefaultSentinelCPU    = resource.MustParse("100m")
+	DefaultSentinelMemory = resource.MustParse("64Mi")
+)

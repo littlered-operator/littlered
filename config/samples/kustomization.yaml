@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- littlered_v1alpha1_littlered.yaml
+- littlered_v1alpha1_littlered_full.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

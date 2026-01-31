@@ -1,0 +1,15 @@
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  labels:
+    app.kubernetes.io/name: littlered-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: my-cache
+spec:
+  # Minimal standalone example - uses all defaults:
+  # - Image: docker.io/valkey/valkey:8.0
+  # - Resources: 250m CPU, 256Mi memory (Guaranteed QoS)
+  # - Metrics exporter: enabled
+  # - No persistence (pure cache)
+  # - No auth, no TLS
+  {}

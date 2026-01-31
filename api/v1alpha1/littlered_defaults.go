@@ -1,0 +1,293 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+import (
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+)
+
+// Default values
+const (
+	DefaultMode            = "standalone"
+	DefaultRegistry        = "docker.io"
+	DefaultImagePath       = "valkey/valkey"
+	DefaultImageTag        = "8.0"
+	DefaultPullPolicy      = corev1.PullIfNotPresent
+	DefaultMaxmemoryPolicy = "allkeys-lru"
+	DefaultTimeout         = 0
+	DefaultTCPKeepalive    = 300
+	DefaultServiceType     = corev1.ServiceTypeClusterIP
+	DefaultUpdateStrategy  = "RollingUpdate"
+	DefaultExporterPath    = "oliver006/redis_exporter"
+	DefaultExporterTag     = "v1.66.0"
+	DefaultScrapeInterval  = "30s"
+	DefaultScrapeTimeout   = "10s"
+	DefaultSentinelQuorum  = 2
+	DefaultDownAfterMs     = 30000
+	DefaultFailoverTimeout = 180000
+	DefaultParallelSyncs   = 1
+	DefaultSecurityUserID  = int64(999)
+	DefaultSecurityGroupID = int64(999)
+	RedisPort              = 6379
+	RedisExporterPort      = 9121
+	SentinelPort           = 26379
+)
+
+// SetDefaults applies default values to the LittleRed spec
+func (r *LittleRed) SetDefaults() {
+	spec := &r.Spec
+
+	// Mode
+	if spec.Mode == "" {
+		spec.Mode = DefaultMode
+	}
+
+	// Image
+	spec.Image.SetDefaults()
+
+	// Resources
+	setDefaultResources(&spec.Resources)
+
+	// Config
+	spec.Config.SetDefaults()
+
+	// Metrics
+	spec.Metrics.SetDefaults(spec.Image.Registry)
+
+	// Service
+	if spec.Service.Type == "" {
+		spec.Service.Type = DefaultServiceType
+	}
+
+	// UpdateStrategy
+	if spec.UpdateStrategy.Type == "" {
+		spec.UpdateStrategy.Type = DefaultUpdateStrategy
+	}
+
+	// PodTemplate security context
+	if spec.PodTemplate.SecurityContext == nil {
+		spec.PodTemplate.SecurityContext = defaultPodSecurityContext()
+	}
+
+	// Sentinel defaults (only if sentinel mode)
+	if spec.Mode == "sentinel" && spec.Sentinel == nil {
+		spec.Sentinel = &SentinelSpec{}
+	}
+	if spec.Sentinel != nil {
+		spec.Sentinel.SetDefaults()
+	}
+}
+
+// SetDefaults applies default values to ImageSpec
+func (i *ImageSpec) SetDefaults() {
+	if i.Registry == "" {
+		i.Registry = DefaultRegistry
+	}
+	if i.Path == "" {
+		i.Path = DefaultImagePath
+	}
+	if i.Tag == "" {
+		i.Tag = DefaultImageTag
+	}
+	if i.PullPolicy == "" {
+		i.PullPolicy = DefaultPullPolicy
+	}
+}
+
+// SetDefaults applies default values to ConfigSpec
+func (c *ConfigSpec) SetDefaults() {
+	if c.MaxmemoryPolicy == "" {
+		c.MaxmemoryPolicy = DefaultMaxmemoryPolicy
+	}
+	if c.TCPKeepalive == 0 {
+		c.TCPKeepalive = DefaultTCPKeepalive
+	}
+}
+
+// SetDefaults applies default values to MetricsSpec
+func (m *MetricsSpec) SetDefaults(mainRegistry string) {
+	m.Exporter.SetDefaults(mainRegistry)
+
+	if m.ServiceMonitor.Interval == "" {
+		m.ServiceMonitor.Interval = DefaultScrapeInterval
+	}
+	if m.ServiceMonitor.ScrapeTimeout == "" {
+		m.ServiceMonitor.ScrapeTimeout = DefaultScrapeTimeout
+	}
+}
+
+// SetDefaults applies default values to ExporterSpec
+func (e *ExporterSpec) SetDefaults(mainRegistry string) {
+	if e.Registry == "" {
+		e.Registry = mainRegistry
+		if e.Registry == "" {
+			e.Registry = DefaultRegistry
+		}
+	}
+	if e.Path == "" {
+		e.Path = DefaultExporterPath
+	}
+	if e.Tag == "" {
+		e.Tag = DefaultExporterTag
+	}
+	setDefaultExporterResources(&e.Resources)
+}
+
+// SetDefaults applies default values to SentinelSpec
+func (s *SentinelSpec) SetDefaults() {
+	if s.Quorum == 0 {
+		s.Quorum = DefaultSentinelQuorum
+	}
+	if s.DownAfterMilliseconds == 0 {
+		s.DownAfterMilliseconds = DefaultDownAfterMs
+	}
+	if s.FailoverTimeout == 0 {
+		s.FailoverTimeout = DefaultFailoverTimeout
+	}
+	if s.ParallelSyncs == 0 {
+		s.ParallelSyncs = DefaultParallelSyncs
+	}
+	setDefaultSentinelResources(&s.Resources)
+}
+
+func setDefaultResources(r *corev1.ResourceRequirements) {
+	if r.Requests == nil {
+		r.Requests = corev1.ResourceList{}
+	}
+	if r.Limits == nil {
+		r.Limits = corev1.ResourceList{}
+	}
+
+	if _, ok := r.Requests[corev1.ResourceCPU]; !ok {
+		r.Requests[corev1.ResourceCPU] = DefaultCPU
+	}
+	if _, ok := r.Requests[corev1.ResourceMemory]; !ok {
+		r.Requests[corev1.ResourceMemory] = DefaultMemory
+	}
+	if _, ok := r.Limits[corev1.ResourceCPU]; !ok {
+		r.Limits[corev1.ResourceCPU] = DefaultCPU
+	}
+	if _, ok := r.Limits[corev1.ResourceMemory]; !ok {
+		r.Limits[corev1.ResourceMemory] = DefaultMemory
+	}
+}
+
+func setDefaultExporterResources(r *corev1.ResourceRequirements) {
+	if r.Requests == nil {
+		r.Requests = corev1.ResourceList{}
+	}
+	if r.Limits == nil {
+		r.Limits = corev1.ResourceList{}
+	}
+
+	if _, ok := r.Requests[corev1.ResourceCPU]; !ok {
+		r.Requests[corev1.ResourceCPU] = DefaultExporterCPURequest
+	}
+	if _, ok := r.Requests[corev1.ResourceMemory]; !ok {
+		r.Requests[corev1.ResourceMemory] = DefaultExporterMemoryRequest
+	}
+	if _, ok := r.Limits[corev1.ResourceCPU]; !ok {
+		r.Limits[corev1.ResourceCPU] = DefaultExporterCPULimit
+	}
+	if _, ok := r.Limits[corev1.ResourceMemory]; !ok {
+		r.Limits[corev1.ResourceMemory] = DefaultExporterMemoryLimit
+	}
+}
+
+func setDefaultSentinelResources(r *corev1.ResourceRequirements) {
+	if r.Requests == nil {
+		r.Requests = corev1.ResourceList{}
+	}
+	if r.Limits == nil {
+		r.Limits = corev1.ResourceList{}
+	}
+
+	if _, ok := r.Requests[corev1.ResourceCPU]; !ok {
+		r.Requests[corev1.ResourceCPU] = DefaultSentinelCPU
+	}
+	if _, ok := r.Requests[corev1.ResourceMemory]; !ok {
+		r.Requests[corev1.ResourceMemory] = DefaultSentinelMemory
+	}
+	if _, ok := r.Limits[corev1.ResourceCPU]; !ok {
+		r.Limits[corev1.ResourceCPU] = DefaultSentinelCPU
+	}
+	if _, ok := r.Limits[corev1.ResourceMemory]; !ok {
+		r.Limits[corev1.ResourceMemory] = DefaultSentinelMemory
+	}
+}
+
+func defaultPodSecurityContext() *corev1.PodSecurityContext {
+	runAsNonRoot := true
+	return &corev1.PodSecurityContext{
+		RunAsNonRoot: &runAsNonRoot,
+		RunAsUser:    ptr(DefaultSecurityUserID),
+		RunAsGroup:   ptr(DefaultSecurityGroupID),
+		FSGroup:      ptr(DefaultSecurityGroupID),
+	}
+}
+
+func ptr[T any](v T) *T {
+	return &v
+}
+
+// CalculateMaxmemory calculates maxmemory based on memory limit (90% of limit)
+func (r *LittleRed) CalculateMaxmemory() string {
+	if r.Spec.Config.Maxmemory != "" {
+		return r.Spec.Config.Maxmemory
+	}
+
+	memLimit := r.Spec.Resources.Limits[corev1.ResourceMemory]
+	if memLimit.IsZero() {
+		memLimit = DefaultMemory
+	}
+
+	// Calculate 90% of memory limit
+	bytes := memLimit.Value()
+	maxmemoryBytes := int64(float64(bytes) * 0.9)
+
+	return fmt.Sprintf("%d", maxmemoryBytes)
+}
+
+// GetEffectiveMaxmemoryPolicy returns the maxmemory policy, defaulting to allkeys-lru
+func (r *LittleRed) GetEffectiveMaxmemoryPolicy() string {
+	if r.Spec.Config.MaxmemoryPolicy != "" {
+		return r.Spec.Config.MaxmemoryPolicy
+	}
+	return DefaultMaxmemoryPolicy
+}
+
+// GetPort returns the Redis port (with TLS awareness for future use)
+func (r *LittleRed) GetPort() int32 {
+	return RedisPort
+}
+
+// GetExporterPort returns the metrics exporter port
+func (r *LittleRed) GetExporterPort() int32 {
+	return RedisExporterPort
+}
+
+// ParseMaxmemory parses the maxmemory string into bytes
+func ParseMaxmemory(maxmemory string) (int64, error) {
+	q, err := resource.ParseQuantity(maxmemory)
+	if err != nil {
+		return 0, err
+	}
+	return q.Value(), nil
+}

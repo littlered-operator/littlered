@@ -1,0 +1,50 @@
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: my-cache-full
+spec:
+  mode: standalone
+
+  image:
+    registry: docker.io
+    path: valkey/valkey
+    tag: "8.0"
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+
+  config:
+    maxmemory: "900Mi"
+    maxmemoryPolicy: allkeys-lru
+    timeout: 0
+    tcpKeepalive: 300
+
+  metrics:
+    enabled: true
+    exporter:
+      # Registry inherits from image.registry if empty
+      path: oliver006/redis_exporter
+      tag: v1.66.0
+    serviceMonitor:
+      enabled: false
+      interval: "30s"
+      scrapeTimeout: "10s"
+
+  service:
+    type: ClusterIP
+
+  updateStrategy:
+    type: RollingUpdate
+
+  podTemplate:
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 999
+      runAsGroup: 999
+      fsGroup: 999
