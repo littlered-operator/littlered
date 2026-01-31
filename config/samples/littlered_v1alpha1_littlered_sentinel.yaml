@@ -1,0 +1,15 @@
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  labels:
+    app.kubernetes.io/name: littlered-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: my-cache-sentinel
+spec:
+  mode: sentinel
+
+  # Optional: customize sentinel settings
+  sentinel:
+    quorum: 2
+    downAfterMilliseconds: 5000
+    failoverTimeout: 60000

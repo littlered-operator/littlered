@@ -34,17 +34,40 @@ func configMapName(lr *littleredv1alpha1.LittleRed) string {
 	return fmt.Sprintf("%s-config", lr.Name)
 }
 
+func sentinelConfigMapName(lr *littleredv1alpha1.LittleRed) string {
+	return fmt.Sprintf("%s-sentinel-config", lr.Name)
+}
+
 func statefulSetName(lr *littleredv1alpha1.LittleRed) string {
 	return fmt.Sprintf("%s-redis", lr.Name)
+}
+
+func sentinelStatefulSetName(lr *littleredv1alpha1.LittleRed) string {
+	return fmt.Sprintf("%s-sentinel", lr.Name)
 }
 
 func serviceName(lr *littleredv1alpha1.LittleRed) string {
 	return lr.Name
 }
 
+func replicasServiceName(lr *littleredv1alpha1.LittleRed) string {
+	return fmt.Sprintf("%s-replicas", lr.Name)
+}
+
+func sentinelServiceName(lr *littleredv1alpha1.LittleRed) string {
+	return fmt.Sprintf("%s-sentinel", lr.Name)
+}
+
 func serviceMonitorName(lr *littleredv1alpha1.LittleRed) string {
 	return lr.Name
 }
+
+// Label keys
+const (
+	LabelRole   = "littlered.tanne3.de/role"
+	RoleMaster  = "master"
+	RoleReplica = "replica"
+)
 
 // commonLabels returns the standard labels applied to all resources
 func commonLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
@@ -62,6 +85,34 @@ func selectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/name":     "littlered",
 		"app.kubernetes.io/instance": lr.Name,
+	}
+}
+
+// redisSelectorLabels returns labels for selecting Redis pods
+func redisSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":      "littlered",
+		"app.kubernetes.io/instance":  lr.Name,
+		"app.kubernetes.io/component": "redis",
+	}
+}
+
+// sentinelSelectorLabels returns labels for selecting Sentinel pods
+func sentinelSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":      "littlered",
+		"app.kubernetes.io/instance":  lr.Name,
+		"app.kubernetes.io/component": "sentinel",
+	}
+}
+
+// masterSelectorLabels returns labels for selecting the master pod
+func masterSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":      "littlered",
+		"app.kubernetes.io/instance":  lr.Name,
+		"app.kubernetes.io/component": "redis",
+		LabelRole:                     RoleMaster,
 	}
 }
 
@@ -522,6 +573,574 @@ func buildServiceMonitor(lr *littleredv1alpha1.LittleRed) *monitoringv1.ServiceM
 	}
 
 	return sm
+}
+
+// ============================================================================
+// Sentinel Mode Resources
+// ============================================================================
+
+// buildSentinelConfigMap creates the ConfigMap for sentinel.conf
+func buildSentinelConfigMap(lr *littleredv1alpha1.LittleRed) *corev1.ConfigMap {
+	labels := commonLabels(lr)
+	labels["app.kubernetes.io/component"] = "sentinel"
+
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      sentinelConfigMapName(lr),
+			Namespace: lr.Namespace,
+			Labels:    labels,
+		},
+		Data: map[string]string{
+			"sentinel.conf": buildSentinelConfig(lr),
+		},
+	}
+}
+
+// buildSentinelConfig generates the sentinel.conf content
+func buildSentinelConfig(lr *littleredv1alpha1.LittleRed) string {
+	var sb strings.Builder
+
+	sentinel := lr.Spec.Sentinel
+	if sentinel == nil {
+		sentinel = &littleredv1alpha1.SentinelSpec{}
+	}
+
+	quorum := sentinel.Quorum
+	if quorum == 0 {
+		quorum = 2
+	}
+	downAfterMs := sentinel.DownAfterMilliseconds
+	if downAfterMs == 0 {
+		downAfterMs = 30000
+	}
+	failoverTimeout := sentinel.FailoverTimeout
+	if failoverTimeout == 0 {
+		failoverTimeout = 180000
+	}
+	parallelSyncs := sentinel.ParallelSyncs
+	if parallelSyncs == 0 {
+		parallelSyncs = 1
+	}
+
+	// Use the headless service for initial master discovery
+	// The first pod (index 0) will be the initial master
+	initialMaster := fmt.Sprintf("%s-redis-0.%s.%s.svc.cluster.local",
+		lr.Name, replicasServiceName(lr), lr.Namespace)
+
+	sb.WriteString("# LittleRed Sentinel configuration\n")
+	sb.WriteString(fmt.Sprintf("port %d\n", littleredv1alpha1.SentinelPort))
+	sb.WriteString("dir /tmp\n")
+	sb.WriteString("\n# Master monitoring\n")
+	sb.WriteString(fmt.Sprintf("sentinel monitor mymaster %s %d %d\n",
+		initialMaster, littleredv1alpha1.RedisPort, quorum))
+	sb.WriteString(fmt.Sprintf("sentinel down-after-milliseconds mymaster %d\n", downAfterMs))
+	sb.WriteString(fmt.Sprintf("sentinel failover-timeout mymaster %d\n", failoverTimeout))
+	sb.WriteString(fmt.Sprintf("sentinel parallel-syncs mymaster %d\n", parallelSyncs))
+
+	// Auth configuration
+	if lr.Spec.Auth.Enabled {
+		// Password will be set via command line
+		sb.WriteString("\n# Auth will be configured via environment\n")
+	}
+
+	// Announce settings for proper discovery
+	sb.WriteString("\n# Announce settings\n")
+	sb.WriteString("sentinel resolve-hostnames yes\n")
+	sb.WriteString("sentinel announce-hostnames yes\n")
+
+	return sb.String()
+}
+
+// buildRedisConfigSentinel generates redis.conf for sentinel mode (includes replication)
+func buildRedisConfigSentinel(lr *littleredv1alpha1.LittleRed) string {
+	var sb strings.Builder
+
+	// Start with base config
+	sb.WriteString("# LittleRed generated configuration (sentinel mode)\n")
+	sb.WriteString("bind 0.0.0.0\n")
+	sb.WriteString(fmt.Sprintf("port %d\n", littleredv1alpha1.RedisPort))
+
+	// Disable persistence (pure cache)
+	sb.WriteString("\n# Persistence disabled (cache mode)\n")
+	sb.WriteString("save \"\"\n")
+	sb.WriteString("appendonly no\n")
+
+	// Memory settings
+	sb.WriteString("\n# Memory configuration\n")
+	maxmemory := lr.CalculateMaxmemory()
+	sb.WriteString(fmt.Sprintf("maxmemory %s\n", maxmemory))
+	sb.WriteString(fmt.Sprintf("maxmemory-policy %s\n", lr.GetEffectiveMaxmemoryPolicy()))
+
+	// Timeout settings
+	sb.WriteString("\n# Connection settings\n")
+	sb.WriteString(fmt.Sprintf("timeout %d\n", lr.Spec.Config.Timeout))
+	sb.WriteString(fmt.Sprintf("tcp-keepalive %d\n", lr.Spec.Config.TCPKeepalive))
+
+	// Replication settings - allow replicas to serve stale data during sync
+	sb.WriteString("\n# Replication settings\n")
+	sb.WriteString("replica-serve-stale-data yes\n")
+	sb.WriteString("replica-read-only yes\n")
+
+	// TLS settings
+	if lr.Spec.TLS.Enabled {
+		sb.WriteString("\n# TLS configuration\n")
+		sb.WriteString(fmt.Sprintf("tls-port %d\n", littleredv1alpha1.RedisPort))
+		sb.WriteString("port 0\n")
+		sb.WriteString("tls-cert-file /tls/tls.crt\n")
+		sb.WriteString("tls-key-file /tls/tls.key\n")
+		sb.WriteString("tls-replication yes\n")
+		if lr.Spec.TLS.ClientAuth {
+			sb.WriteString("tls-ca-cert-file /tls/ca.crt\n")
+			sb.WriteString("tls-auth-clients yes\n")
+		} else {
+			sb.WriteString("tls-auth-clients no\n")
+		}
+	}
+
+	// Raw config (expert mode)
+	if lr.Spec.Config.Raw != "" {
+		sb.WriteString("\n# Custom configuration\n")
+		sb.WriteString(lr.Spec.Config.Raw)
+		if !strings.HasSuffix(lr.Spec.Config.Raw, "\n") {
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String()
+}
+
+// buildConfigMapSentinelMode creates the ConfigMap for redis.conf in sentinel mode
+func buildConfigMapSentinelMode(lr *littleredv1alpha1.LittleRed) *corev1.ConfigMap {
+	labels := commonLabels(lr)
+	labels["app.kubernetes.io/component"] = "redis"
+
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName(lr),
+			Namespace: lr.Namespace,
+			Labels:    labels,
+		},
+		Data: map[string]string{
+			"redis.conf": buildRedisConfigSentinel(lr),
+		},
+	}
+}
+
+// buildRedisStatefulSetSentinel creates the Redis StatefulSet for sentinel mode (3 replicas)
+func buildRedisStatefulSetSentinel(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSet {
+	labels := commonLabels(lr)
+	labels["app.kubernetes.io/component"] = "redis"
+
+	podLabels := make(map[string]string)
+	for k, v := range redisSelectorLabels(lr) {
+		podLabels[k] = v
+	}
+	for k, v := range lr.Spec.PodTemplate.Labels {
+		podLabels[k] = v
+	}
+
+	replicas := int32(3)
+
+	containers := []corev1.Container{buildRedisContainerSentinel(lr)}
+
+	// Add exporter sidecar if metrics enabled
+	if lr.Spec.Metrics.IsEnabled() {
+		containers = append(containers, buildExporterContainer(lr))
+	}
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      statefulSetName(lr),
+			Namespace: lr.Namespace,
+			Labels:    labels,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas:    &replicas,
+			ServiceName: replicasServiceName(lr),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: redisSelectorLabels(lr),
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      podLabels,
+					Annotations: lr.Spec.PodTemplate.Annotations,
+				},
+				Spec: corev1.PodSpec{
+					SecurityContext:           lr.Spec.PodTemplate.SecurityContext,
+					Containers:                containers,
+					Volumes:                   buildVolumes(lr),
+					NodeSelector:              lr.Spec.PodTemplate.NodeSelector,
+					Tolerations:               lr.Spec.PodTemplate.Tolerations,
+					Affinity:                  lr.Spec.PodTemplate.Affinity,
+					PriorityClassName:         lr.Spec.PodTemplate.PriorityClassName,
+					TopologySpreadConstraints: lr.Spec.PodTemplate.TopologySpreadConstraints,
+					ImagePullSecrets:          lr.Spec.Image.PullSecrets,
+				},
+			},
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type: appsv1.RollingUpdateStatefulSetStrategyType,
+			},
+			PodManagementPolicy: appsv1.ParallelPodManagement,
+		},
+	}
+
+	return sts
+}
+
+// buildRedisContainerSentinel creates the Redis container for sentinel mode
+func buildRedisContainerSentinel(lr *littleredv1alpha1.LittleRed) corev1.Container {
+	// Script to configure replication based on pod index
+	// Pod-0 starts as master, others start as replicas
+	startupScript := `#!/bin/sh
+set -e
+
+HOSTNAME=$(hostname)
+INDEX=${HOSTNAME##*-}
+MASTER_HOST="%s-redis-0.%s.%s.svc.cluster.local"
+
+if [ "$INDEX" = "0" ]; then
+  echo "Starting as initial master"
+  exec redis-server /etc/redis/redis.conf %s
+else
+  echo "Starting as replica of $MASTER_HOST"
+  exec redis-server /etc/redis/redis.conf --replicaof $MASTER_HOST %d %s
+fi
+`
+	authArgs := ""
+	if lr.Spec.Auth.Enabled {
+		authArgs = "--requirepass $(REDIS_PASSWORD) --masterauth $(REDIS_PASSWORD)"
+	}
+
+	script := fmt.Sprintf(startupScript,
+		lr.Name, replicasServiceName(lr), lr.Namespace,
+		authArgs,
+		littleredv1alpha1.RedisPort, authArgs)
+
+	container := corev1.Container{
+		Name:            "redis",
+		Image:           lr.Spec.Image.FullImage(),
+		ImagePullPolicy: lr.Spec.Image.PullPolicy,
+		Command:         []string{"sh", "-c", script},
+		Ports: []corev1.ContainerPort{
+			{
+				Name:          "redis",
+				ContainerPort: int32(littleredv1alpha1.RedisPort),
+				Protocol:      corev1.ProtocolTCP,
+			},
+		},
+		Resources: lr.Spec.Resources,
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      "config",
+				MountPath: "/etc/redis",
+				ReadOnly:  true,
+			},
+			{
+				Name:      "data",
+				MountPath: "/data",
+			},
+		},
+		LivenessProbe:  buildLivenessProbe(lr),
+		ReadinessProbe: buildReadinessProbe(lr),
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: ptr(false),
+			ReadOnlyRootFilesystem:   ptr(true),
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+			},
+		},
+	}
+
+	// Add TLS volume mounts
+	if lr.Spec.TLS.Enabled {
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      "tls",
+			MountPath: "/tls",
+			ReadOnly:  true,
+		})
+	}
+
+	// Add auth env var
+	if lr.Spec.Auth.Enabled {
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name: "REDIS_PASSWORD",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: lr.Spec.Auth.ExistingSecret,
+					},
+					Key: "password",
+				},
+			},
+		})
+	}
+
+	return container
+}
+
+// buildSentinelStatefulSet creates the Sentinel StatefulSet
+func buildSentinelStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSet {
+	labels := commonLabels(lr)
+	labels["app.kubernetes.io/component"] = "sentinel"
+
+	podLabels := make(map[string]string)
+	for k, v := range sentinelSelectorLabels(lr) {
+		podLabels[k] = v
+	}
+
+	replicas := int32(3)
+
+	sentinel := lr.Spec.Sentinel
+	if sentinel == nil {
+		sentinel = &littleredv1alpha1.SentinelSpec{}
+	}
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      sentinelStatefulSetName(lr),
+			Namespace: lr.Namespace,
+			Labels:    labels,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas:    &replicas,
+			ServiceName: sentinelServiceName(lr),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: sentinelSelectorLabels(lr),
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: podLabels,
+				},
+				Spec: corev1.PodSpec{
+					SecurityContext: lr.Spec.PodTemplate.SecurityContext,
+					Containers:      []corev1.Container{buildSentinelContainer(lr)},
+					Volumes: []corev1.Volume{
+						{
+							Name: "config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: sentinelConfigMapName(lr),
+									},
+								},
+							},
+						},
+						{
+							Name: "data",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+					NodeSelector:     lr.Spec.PodTemplate.NodeSelector,
+					Tolerations:      lr.Spec.PodTemplate.Tolerations,
+					Affinity:         lr.Spec.PodTemplate.Affinity,
+					ImagePullSecrets: lr.Spec.Image.PullSecrets,
+				},
+			},
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type: appsv1.RollingUpdateStatefulSetStrategyType,
+			},
+			PodManagementPolicy: appsv1.ParallelPodManagement,
+		},
+	}
+
+	return sts
+}
+
+// buildSentinelContainer creates the Sentinel container
+func buildSentinelContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
+	sentinel := lr.Spec.Sentinel
+	if sentinel == nil {
+		sentinel = &littleredv1alpha1.SentinelSpec{}
+	}
+
+	// Copy config to writable location and start sentinel
+	startupScript := `#!/bin/sh
+set -e
+cp /etc/sentinel/sentinel.conf /data/sentinel.conf
+exec redis-sentinel /data/sentinel.conf %s
+`
+	authArgs := ""
+	if lr.Spec.Auth.Enabled {
+		authArgs = "--sentinel auth-pass mymaster $(REDIS_PASSWORD)"
+	}
+
+	script := fmt.Sprintf(startupScript, authArgs)
+
+	container := corev1.Container{
+		Name:            "sentinel",
+		Image:           lr.Spec.Image.FullImage(),
+		ImagePullPolicy: lr.Spec.Image.PullPolicy,
+		Command:         []string{"sh", "-c", script},
+		Ports: []corev1.ContainerPort{
+			{
+				Name:          "sentinel",
+				ContainerPort: int32(littleredv1alpha1.SentinelPort),
+				Protocol:      corev1.ProtocolTCP,
+			},
+		},
+		Resources: sentinel.Resources,
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      "config",
+				MountPath: "/etc/sentinel",
+				ReadOnly:  true,
+			},
+			{
+				Name:      "data",
+				MountPath: "/data",
+			},
+		},
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				Exec: &corev1.ExecAction{
+					Command: []string{
+						"sh", "-c",
+						fmt.Sprintf("redis-cli -p %d ping", littleredv1alpha1.SentinelPort),
+					},
+				},
+			},
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       10,
+			TimeoutSeconds:      5,
+			FailureThreshold:    3,
+		},
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				Exec: &corev1.ExecAction{
+					Command: []string{
+						"sh", "-c",
+						fmt.Sprintf("redis-cli -p %d ping", littleredv1alpha1.SentinelPort),
+					},
+				},
+			},
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       5,
+			TimeoutSeconds:      3,
+			FailureThreshold:    3,
+		},
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: ptr(false),
+			ReadOnlyRootFilesystem:   ptr(true),
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+			},
+		},
+	}
+
+	// Add auth env var
+	if lr.Spec.Auth.Enabled {
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name: "REDIS_PASSWORD",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: lr.Spec.Auth.ExistingSecret,
+					},
+					Key: "password",
+				},
+			},
+		})
+	}
+
+	return container
+}
+
+// buildMasterService creates the Service that points to the current master
+func buildMasterService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
+	labels := commonLabels(lr)
+	for k, v := range lr.Spec.Service.Labels {
+		labels[k] = v
+	}
+
+	ports := []corev1.ServicePort{
+		{
+			Name:       "redis",
+			Port:       int32(littleredv1alpha1.RedisPort),
+			TargetPort: intstr.FromString("redis"),
+			Protocol:   corev1.ProtocolTCP,
+		},
+	}
+
+	if lr.Spec.Metrics.IsEnabled() {
+		ports = append(ports, corev1.ServicePort{
+			Name:       "metrics",
+			Port:       int32(littleredv1alpha1.RedisExporterPort),
+			TargetPort: intstr.FromString("metrics"),
+			Protocol:   corev1.ProtocolTCP,
+		})
+	}
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        serviceName(lr),
+			Namespace:   lr.Namespace,
+			Labels:      labels,
+			Annotations: lr.Spec.Service.Annotations,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     lr.Spec.Service.Type,
+			Selector: masterSelectorLabels(lr),
+			Ports:    ports,
+		},
+	}
+}
+
+// buildReplicasHeadlessService creates the headless Service for all Redis pods
+func buildReplicasHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
+	labels := commonLabels(lr)
+	labels["app.kubernetes.io/component"] = "redis"
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      replicasServiceName(lr),
+			Namespace: lr.Namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:                     corev1.ServiceTypeClusterIP,
+			ClusterIP:                "None",
+			Selector:                 redisSelectorLabels(lr),
+			PublishNotReadyAddresses: true,
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "redis",
+					Port:       int32(littleredv1alpha1.RedisPort),
+					TargetPort: intstr.FromString("redis"),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+		},
+	}
+}
+
+// buildSentinelHeadlessService creates the headless Service for Sentinel pods
+func buildSentinelHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
+	labels := commonLabels(lr)
+	labels["app.kubernetes.io/component"] = "sentinel"
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      sentinelServiceName(lr),
+			Namespace: lr.Namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:                     corev1.ServiceTypeClusterIP,
+			ClusterIP:                "None",
+			Selector:                 sentinelSelectorLabels(lr),
+			PublishNotReadyAddresses: true,
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "sentinel",
+					Port:       int32(littleredv1alpha1.SentinelPort),
+					TargetPort: intstr.FromString("sentinel"),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+		},
+	}
 }
 
 func ptr[T any](v T) *T {
