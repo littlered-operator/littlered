@@ -1,0 +1,49 @@
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: my-cache-prod
+spec:
+  # Production: sentinel mode with HA
+  mode: sentinel
+
+  # Larger resources for production workloads
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+
+  config:
+    maxmemory: "1800Mi"  # ~90% of memory limit
+    maxmemoryPolicy: allkeys-lru
+
+  # Enable authentication
+  auth:
+    enabled: true
+    existingSecret: my-cache-password
+
+  # Enable Prometheus ServiceMonitor
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: prometheus  # Match your Prometheus selector
+
+  # Spread pods across nodes
+  podTemplate:
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: my-cache-prod
+
+  # Faster failover detection
+  sentinel:
+    quorum: 2
+    downAfterMilliseconds: 5000
+    failoverTimeout: 60000

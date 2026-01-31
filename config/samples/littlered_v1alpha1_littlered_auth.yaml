@@ -1,0 +1,13 @@
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: my-cache-auth
+spec:
+  # Enable password authentication
+  auth:
+    enabled: true
+    existingSecret: my-cache-password  # Secret must have 'password' key
+
+---
+# Create the password secret first:
+# kubectl create secret generic my-cache-password --from-literal=password=mysecretpassword
