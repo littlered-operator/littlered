@@ -248,32 +248,12 @@ make test-e2e
 
 ### E2E Test Details
 
-The e2e tests validate the operator against a real Kubernetes cluster (kind). Tests cover:
+See [docs/E2E_TESTING.md](docs/E2E_TESTING.md) for the complete guide on building, deploying, and running e2e tests.
 
-- **Standalone mode**: CR creation, StatefulSet/Service creation, Redis PING, SET/GET, pod recreation, cleanup
-- **Sentinel mode**: 3-pod cluster, services, replication, sentinel quorum
-- **Failover**: Master deletion, new master election, data preservation, cluster recovery
-
-Environment variables:
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `OPERATOR_IMAGE` | Operator image to test | `ghcr.io/tanne3/littlered-operator:latest` |
-| `SKIP_OPERATOR_DEPLOY` | Skip deployment (test existing) | `false` |
-| `USE_HELM` | Deploy via Helm instead of make | `false` |
-| `KIND_CLUSTER` | Kind cluster name | `kind` |
-
-Run specific tests:
+Quick start (against existing deployment):
 
 ```bash
-# Run only standalone tests
-go test -tags=e2e ./test/e2e/ -v -ginkgo.focus="Standalone"
-
-# Run only failover tests
-go test -tags=e2e ./test/e2e/ -v -ginkgo.focus="Failover"
-
-# Test against existing deployment
-SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v
+SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v
 ```
 
 ### Build
