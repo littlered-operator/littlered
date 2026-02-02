@@ -32,70 +32,186 @@ import (
 )
 
 var (
-	// managerImage is the manager image to be built and loaded for testing.
-	managerImage = "example.com/redis-operator:v0.0.1"
-	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
-	shouldCleanupCertManager = false
+	// operatorImage is the operator image to use for testing.
+	// Override with OPERATOR_IMAGE env var.
+	operatorImage = "ghcr.io/tanne3/littlered-operator:latest"
+
+	// operatorNamespace is where the operator is deployed.
+	operatorNamespace = "littlered-system"
+
+	// skipOperatorDeploy skips operator deployment (use existing deployment).
+	skipOperatorDeploy = false
+
+	// useHelm deploys operator via Helm instead of make deploy.
+	useHelm = false
 )
 
-// TestE2E runs the e2e test suite to validate the solution in an isolated environment.
-// The default setup requires Kind and CertManager.
+// TestE2E runs the e2e test suite.
 //
-// To skip CertManager installation, set: CERT_MANAGER_INSTALL_SKIP=true
+// Environment variables:
+//   - OPERATOR_IMAGE: Operator image to use (default: ghcr.io/tanne3/littlered-operator:latest)
+//   - SKIP_OPERATOR_DEPLOY: Set to "true" to skip operator deployment
+//   - USE_HELM: Set to "true" to deploy via Helm instead of make deploy
+//   - KIND_CLUSTER: Kind cluster name (default: kind)
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting redis-operator e2e test suite\n")
-	RunSpecs(t, "e2e suite")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Starting LittleRed operator e2e test suite\n")
+	RunSpecs(t, "LittleRed E2E Suite")
 }
 
 var _ = BeforeSuite(func() {
-	By("building the manager image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
+	// Load configuration from environment
+	if img := os.Getenv("OPERATOR_IMAGE"); img != "" {
+		operatorImage = img
+	}
+	if os.Getenv("SKIP_OPERATOR_DEPLOY") == "true" {
+		skipOperatorDeploy = true
+	}
+	if os.Getenv("USE_HELM") == "true" {
+		useHelm = true
+	}
 
-	// TODO(user): If you want to change the e2e test vendor from Kind,
-	// ensure the image is built and available, then remove the following block.
-	By("loading the manager image on Kind")
-	err = utils.LoadImageToKindClusterWithName(managerImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Operator image: %s\n", operatorImage)
+	_, _ = fmt.Fprintf(GinkgoWriter, "Skip operator deploy: %v\n", skipOperatorDeploy)
+	_, _ = fmt.Fprintf(GinkgoWriter, "Use Helm: %v\n", useHelm)
 
-	setupCertManager()
+	if skipOperatorDeploy {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping operator deployment (SKIP_OPERATOR_DEPLOY=true)\n")
+		return
+	}
+
+	if useHelm {
+		deployWithHelm()
+	} else {
+		deployWithMake()
+	}
 })
 
 var _ = AfterSuite(func() {
-	teardownCertManager()
+	if skipOperatorDeploy {
+		return
+	}
+
+	if useHelm {
+		undeployWithHelm()
+	} else {
+		undeployWithMake()
+	}
 })
 
-// setupCertManager installs CertManager if needed for webhook tests.
-// Skips installation if CERT_MANAGER_INSTALL_SKIP=true or if already present.
-func setupCertManager() {
-	if os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true" {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping CertManager installation (CERT_MANAGER_INSTALL_SKIP=true)\n")
-		return
-	}
+func deployWithMake() {
+	By("building the operator image")
+	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", operatorImage))
+	_, err := utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the operator image")
 
-	By("checking if CertManager is already installed")
-	if utils.IsCertManagerCRDsInstalled() {
-		_, _ = fmt.Fprintf(GinkgoWriter, "CertManager is already installed. Skipping installation.\n")
-		return
-	}
+	By("loading the operator image to Kind")
+	err = utils.LoadImageToKindClusterWithName(operatorImage)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the operator image into Kind")
 
-	// Mark for cleanup before installation to handle interruptions and partial installs.
-	shouldCleanupCertManager = true
+	By("installing CRDs")
+	cmd = exec.Command("make", "install")
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
-	By("installing CertManager")
-	Expect(utils.InstallCertManager()).To(Succeed(), "Failed to install CertManager")
+	By("deploying the operator")
+	cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", operatorImage))
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the operator")
+
+	By("waiting for operator to be ready")
+	waitForOperator()
 }
 
-// teardownCertManager uninstalls CertManager if it was installed by setupCertManager.
-// This ensures we only remove what we installed.
-func teardownCertManager() {
-	if !shouldCleanupCertManager {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping CertManager cleanup (not installed by this suite)\n")
-		return
-	}
+func undeployWithMake() {
+	By("undeploying the operator")
+	cmd := exec.Command("make", "undeploy")
+	_, _ = utils.Run(cmd)
 
-	By("uninstalling CertManager")
-	utils.UninstallCertManager()
+	By("uninstalling CRDs")
+	cmd = exec.Command("make", "uninstall")
+	_, _ = utils.Run(cmd)
+}
+
+func deployWithHelm() {
+	By("loading the operator image to Kind")
+	err := utils.LoadImageToKindClusterWithName(operatorImage)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the operator image into Kind")
+
+	By("installing operator with Helm")
+	cmd := exec.Command("helm", "install", "littlered", "charts/littlered-operator",
+		"--namespace", operatorNamespace,
+		"--create-namespace",
+		"--set", fmt.Sprintf("image.repository=%s", getImageRepository(operatorImage)),
+		"--set", fmt.Sprintf("image.tag=%s", getImageTag(operatorImage)),
+		"--set", "image.pullPolicy=Never",
+		"--wait",
+		"--timeout", "2m",
+	)
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to install operator with Helm")
+
+	By("waiting for operator to be ready")
+	waitForOperator()
+}
+
+func undeployWithHelm() {
+	By("uninstalling operator with Helm")
+	cmd := exec.Command("helm", "uninstall", "littlered",
+		"--namespace", operatorNamespace,
+		"--ignore-not-found",
+	)
+	_, _ = utils.Run(cmd)
+
+	By("deleting operator namespace")
+	cmd = exec.Command("kubectl", "delete", "namespace", operatorNamespace, "--ignore-not-found")
+	_, _ = utils.Run(cmd)
+
+	By("deleting CRDs")
+	cmd = exec.Command("kubectl", "delete", "crd", "littlereds.littlered.tanne3.de", "--ignore-not-found")
+	_, _ = utils.Run(cmd)
+}
+
+func waitForOperator() {
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "deployment", "-n", operatorNamespace,
+			"-l", "control-plane=controller-manager",
+			"-o", "jsonpath={.items[0].status.availableReplicas}")
+		output, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(output).To(Equal("1"))
+	}, "2m", "5s").Should(Succeed())
+}
+
+func getImageRepository(image string) string {
+	// Split image:tag and return the repository part
+	parts := splitImageTag(image)
+	return parts[0]
+}
+
+func getImageTag(image string) string {
+	// Split image:tag and return the tag part
+	parts := splitImageTag(image)
+	if len(parts) > 1 {
+		return parts[1]
+	}
+	return "latest"
+}
+
+func splitImageTag(image string) []string {
+	// Handle images with registry port (e.g., localhost:5000/image:tag)
+	lastColon := -1
+	for i := len(image) - 1; i >= 0; i-- {
+		if image[i] == ':' {
+			lastColon = i
+			break
+		}
+		if image[i] == '/' {
+			break
+		}
+	}
+	if lastColon > 0 {
+		return []string{image[:lastColon], image[lastColon+1:]}
+	}
+	return []string{image}
 }
