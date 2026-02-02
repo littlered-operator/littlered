@@ -283,6 +283,51 @@ func TestBuildRedisConfig(t *testing.T) {
 }
 
 // ============================================================================
+// Config Hash Tests
+// ============================================================================
+
+func TestComputeConfigHash(t *testing.T) {
+	// Same data should produce same hash
+	data1 := map[string]string{"key1": "value1", "key2": "value2"}
+	data2 := map[string]string{"key2": "value2", "key1": "value1"} // Different order
+	hash1 := computeConfigHash(data1)
+	hash2 := computeConfigHash(data2)
+
+	if hash1 != hash2 {
+		t.Errorf("Same data different order should produce same hash: %q != %q", hash1, hash2)
+	}
+
+	// Different data should produce different hash
+	data3 := map[string]string{"key1": "value1", "key2": "different"}
+	hash3 := computeConfigHash(data3)
+
+	if hash1 == hash3 {
+		t.Error("Different data should produce different hash")
+	}
+
+	// Hash should be 16 characters
+	if len(hash1) != 16 {
+		t.Errorf("Hash length = %d, want 16", len(hash1))
+	}
+}
+
+func TestConfigHashChangesWithConfig(t *testing.T) {
+	lr1 := newTestLittleRed("test", "default")
+	lr2 := newTestLittleRed("test", "default")
+	lr2.Spec.Config.MaxmemoryPolicy = "volatile-lru"
+
+	config1 := buildRedisConfig(lr1)
+	config2 := buildRedisConfig(lr2)
+
+	hash1 := computeConfigHash(map[string]string{"redis.conf": config1})
+	hash2 := computeConfigHash(map[string]string{"redis.conf": config2})
+
+	if hash1 == hash2 {
+		t.Error("Config change should produce different hash")
+	}
+}
+
+// ============================================================================
 // StatefulSet Tests
 // ============================================================================
 
@@ -342,6 +387,31 @@ func TestBuildStatefulSet(t *testing.T) {
 	}
 	if !hasRedis {
 		t.Error("StatefulSet missing redis container")
+	}
+
+	// Check config hash annotation is present
+	annotations := sts.Spec.Template.Annotations
+	if annotations == nil {
+		t.Fatal("StatefulSet pod template missing annotations")
+	}
+	if _, ok := annotations[AnnotationConfigHash]; !ok {
+		t.Error("StatefulSet pod template missing config hash annotation")
+	}
+}
+
+func TestBuildStatefulSetConfigHashChangesOnConfigChange(t *testing.T) {
+	lr1 := newTestLittleRed("my-cache", "test-ns")
+	lr2 := newTestLittleRed("my-cache", "test-ns")
+	lr2.Spec.Config.MaxmemoryPolicy = "volatile-lru"
+
+	sts1 := buildStatefulSet(lr1)
+	sts2 := buildStatefulSet(lr2)
+
+	hash1 := sts1.Spec.Template.Annotations[AnnotationConfigHash]
+	hash2 := sts2.Spec.Template.Annotations[AnnotationConfigHash]
+
+	if hash1 == hash2 {
+		t.Error("Config hash should change when config changes")
 	}
 }
 
@@ -681,6 +751,15 @@ func TestBuildRedisStatefulSetSentinel(t *testing.T) {
 	if sts.Spec.Selector.MatchLabels["app.kubernetes.io/component"] != "redis" {
 		t.Error("StatefulSet selector should have component=redis")
 	}
+
+	// Check config hash annotation is present
+	annotations := sts.Spec.Template.Annotations
+	if annotations == nil {
+		t.Fatal("StatefulSet pod template missing annotations")
+	}
+	if _, ok := annotations[AnnotationConfigHash]; !ok {
+		t.Error("StatefulSet pod template missing config hash annotation")
+	}
 }
 
 func TestBuildSentinelStatefulSet(t *testing.T) {
@@ -721,6 +800,15 @@ func TestBuildSentinelStatefulSet(t *testing.T) {
 	}
 	if !hasSentinelPort {
 		t.Error("Sentinel container missing port 26379")
+	}
+
+	// Check config hash annotation is present
+	annotations := sts.Spec.Template.Annotations
+	if annotations == nil {
+		t.Fatal("StatefulSet pod template missing annotations")
+	}
+	if _, ok := annotations[AnnotationConfigHash]; !ok {
+		t.Error("StatefulSet pod template missing config hash annotation")
 	}
 }
 

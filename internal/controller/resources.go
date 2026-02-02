@@ -17,7 +17,10 @@ limitations under the License.
 package controller
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
@@ -27,6 +30,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	littleredv1alpha1 "github.com/tanne3/littlered-operator/api/v1alpha1"
+)
+
+// Annotation keys for config hash
+const (
+	AnnotationConfigHash = "littlered.tanne3.de/config-hash"
 )
 
 // Resource name helpers
@@ -68,6 +76,23 @@ const (
 	RoleMaster  = "master"
 	RoleReplica = "replica"
 )
+
+// computeConfigHash computes a SHA256 hash of the ConfigMap data
+// This is used to trigger pod restarts when config changes
+func computeConfigHash(data map[string]string) string {
+	h := sha256.New()
+	// Sort keys for deterministic output
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		h.Write([]byte(k))
+		h.Write([]byte(data[k]))
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16] // Use first 16 chars for brevity
+}
 
 // commonLabels returns the standard labels applied to all resources
 func commonLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
@@ -200,6 +225,16 @@ func buildStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSet {
 		podLabels[k] = v
 	}
 
+	// Compute config hash for pod annotations to trigger rolling update on config change
+	configData := map[string]string{"redis.conf": buildRedisConfig(lr)}
+	configHash := computeConfigHash(configData)
+
+	podAnnotations := make(map[string]string)
+	for k, v := range lr.Spec.PodTemplate.Annotations {
+		podAnnotations[k] = v
+	}
+	podAnnotations[AnnotationConfigHash] = configHash
+
 	replicas := int32(1)
 
 	containers := []corev1.Container{buildRedisContainer(lr)}
@@ -224,7 +259,7 @@ func buildStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSet {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      podLabels,
-					Annotations: lr.Spec.PodTemplate.Annotations,
+					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
 					SecurityContext:           lr.Spec.PodTemplate.SecurityContext,
@@ -739,6 +774,16 @@ func buildRedisStatefulSetSentinel(lr *littleredv1alpha1.LittleRed) *appsv1.Stat
 		podLabels[k] = v
 	}
 
+	// Compute config hash for pod annotations to trigger rolling update on config change
+	configData := map[string]string{"redis.conf": buildRedisConfigSentinel(lr)}
+	configHash := computeConfigHash(configData)
+
+	podAnnotations := make(map[string]string)
+	for k, v := range lr.Spec.PodTemplate.Annotations {
+		podAnnotations[k] = v
+	}
+	podAnnotations[AnnotationConfigHash] = configHash
+
 	replicas := int32(3)
 
 	containers := []corev1.Container{buildRedisContainerSentinel(lr)}
@@ -763,7 +808,7 @@ func buildRedisStatefulSetSentinel(lr *littleredv1alpha1.LittleRed) *appsv1.Stat
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      podLabels,
-					Annotations: lr.Spec.PodTemplate.Annotations,
+					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
 					SecurityContext:           lr.Spec.PodTemplate.SecurityContext,
@@ -888,6 +933,14 @@ func buildSentinelStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulS
 		podLabels[k] = v
 	}
 
+	// Compute config hash for pod annotations to trigger rolling update on config change
+	configData := map[string]string{"sentinel.conf": buildSentinelConfig(lr)}
+	configHash := computeConfigHash(configData)
+
+	podAnnotations := map[string]string{
+		AnnotationConfigHash: configHash,
+	}
+
 	replicas := int32(3)
 
 	sentinel := lr.Spec.Sentinel
@@ -909,7 +962,8 @@ func buildSentinelStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulS
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: podLabels,
+					Labels:      podLabels,
+					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
 					SecurityContext: lr.Spec.PodTemplate.SecurityContext,

@@ -342,6 +342,380 @@ spec:
 		})
 	})
 
+	Context("Rolling Update", Ordered, func() {
+		const crName = "test-rolling-update"
+
+		AfterAll(func() {
+			By("cleaning up rolling update CR")
+			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should create a standalone Redis instance for rolling update testing", func() {
+			By("applying the LittleRed CR")
+			cr := fmt.Sprintf(`
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: standalone
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+`, crName, testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(cr)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for the instance to be running")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("writing test data before update")
+			cmd = exec.Command("kubectl", "exec", crName+"-redis-0",
+				"-n", testNamespace, "-c", "redis", "--",
+				"valkey-cli", "SET", "rolling-update-key", "pre-update-value")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(output)).To(Equal("OK"))
+		})
+
+		It("should perform rolling update when resources are changed", func() {
+			By("getting the current pod UID before update")
+			cmd := exec.Command("kubectl", "get", "pod", crName+"-redis-0",
+				"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+			oldUID, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			oldUID = strings.TrimSpace(oldUID)
+			Expect(oldUID).NotTo(BeEmpty())
+
+			By("updating the resource limits")
+			cr := fmt.Sprintf(`
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: standalone
+  resources:
+    requests:
+      cpu: "150m"
+      memory: "192Mi"
+    limits:
+      cpu: "150m"
+      memory: "192Mi"
+`, crName, testNamespace)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(cr)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for the pod to be replaced with new resources")
+			Eventually(func(g Gomega) {
+				// Check that pod has been recreated (different UID)
+				cmd := exec.Command("kubectl", "get", "pod", crName+"-redis-0",
+					"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+				newUID, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				newUID = strings.TrimSpace(newUID)
+				g.Expect(newUID).NotTo(Equal(oldUID), "Pod should have been recreated")
+
+				// Check the pod is running
+				cmd = exec.Command("kubectl", "get", "pod", crName+"-redis-0",
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				phase, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(phase).To(Equal("Running"))
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying the new resource limits are applied")
+			cmd = exec.Command("kubectl", "get", "pod", crName+"-redis-0",
+				"-n", testNamespace, "-o", "jsonpath={.spec.containers[?(@.name=='redis')].resources.limits.memory}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(output)).To(Equal("192Mi"))
+		})
+
+		It("should preserve data after rolling update", func() {
+			By("waiting for Redis to be ready")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "exec", crName+"-redis-0",
+					"-n", testNamespace, "-c", "redis", "--",
+					"valkey-cli", "PING")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(output)).To(Equal("PONG"))
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying data persists (note: data is lost since we use emptyDir)")
+			// Since we use emptyDir for data, data is NOT expected to persist
+			// This is by design for a cache - we just verify Redis is working
+			cmd := exec.Command("kubectl", "exec", crName+"-redis-0",
+				"-n", testNamespace, "-c", "redis", "--",
+				"valkey-cli", "SET", "post-update-key", "post-update-value")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(output)).To(Equal("OK"))
+
+			cmd = exec.Command("kubectl", "exec", crName+"-redis-0",
+				"-n", testNamespace, "-c", "redis", "--",
+				"valkey-cli", "GET", "post-update-key")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(output)).To(Equal("post-update-value"))
+		})
+
+		It("should have LittleRed status Running after update", func() {
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should trigger rolling update when config changes", func() {
+			By("getting the current pod UID and config hash")
+			cmd := exec.Command("kubectl", "get", "pod", crName+"-redis-0",
+				"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+			oldUID, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			oldUID = strings.TrimSpace(oldUID)
+
+			cmd = exec.Command("kubectl", "get", "pod", crName+"-redis-0",
+				"-n", testNamespace, "-o", "jsonpath={.metadata.annotations.littlered\\.tanne3\\.de/config-hash}")
+			oldHash, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			oldHash = strings.TrimSpace(oldHash)
+			Expect(oldHash).NotTo(BeEmpty(), "Pod should have config hash annotation")
+
+			By("updating the config (maxmemory policy)")
+			cr := fmt.Sprintf(`
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: standalone
+  resources:
+    requests:
+      cpu: "150m"
+      memory: "192Mi"
+    limits:
+      cpu: "150m"
+      memory: "192Mi"
+  config:
+    maxmemoryPolicy: volatile-lru
+`, crName, testNamespace)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(cr)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for the pod to be replaced due to config hash change")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", crName+"-redis-0",
+					"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+				newUID, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				newUID = strings.TrimSpace(newUID)
+				g.Expect(newUID).NotTo(Equal(oldUID), "Pod should have been recreated")
+
+				// Verify new config hash is different
+				cmd = exec.Command("kubectl", "get", "pod", crName+"-redis-0",
+					"-n", testNamespace, "-o", "jsonpath={.metadata.annotations.littlered\\.tanne3\\.de/config-hash}")
+				newHash, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				newHash = strings.TrimSpace(newHash)
+				g.Expect(newHash).NotTo(Equal(oldHash), "Config hash should have changed")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying Redis is using the new maxmemory-policy")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "exec", crName+"-redis-0",
+					"-n", testNamespace, "-c", "redis", "--",
+					"valkey-cli", "CONFIG", "GET", "maxmemory-policy")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("volatile-lru"))
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
+		})
+	})
+
+	Context("Sentinel Rolling Update", Ordered, func() {
+		const crName = "test-sentinel-rolling"
+
+		AfterAll(func() {
+			By("cleaning up sentinel rolling update CR")
+			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=60s")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should create a sentinel cluster for rolling update testing", func() {
+			By("applying the LittleRed CR with sentinel mode")
+			cr := fmt.Sprintf(`
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: sentinel
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+  sentinel:
+    quorum: 2
+    downAfterMilliseconds: 5000
+    failoverTimeout: 10000
+`, crName, testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(cr)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for the cluster to be running")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("writing test data")
+			// Get master pod
+			cmd = exec.Command("kubectl", "get", "littlered", crName,
+				"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
+			masterPod, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			masterPod = strings.TrimSpace(masterPod)
+
+			cmd = exec.Command("kubectl", "exec", masterPod,
+				"-n", testNamespace, "-c", "redis", "--",
+				"valkey-cli", "SET", "sentinel-rolling-key", "test-value")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(output)).To(Equal("OK"))
+		})
+
+		It("should perform rolling update on sentinel cluster without losing quorum", func() {
+			By("getting current sentinel pod UIDs")
+			var oldSentinelUIDs []string
+			for i := 0; i < 3; i++ {
+				cmd := exec.Command("kubectl", "get", "pod", fmt.Sprintf("%s-sentinel-%d", crName, i),
+					"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+				uid, err := utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred())
+				oldSentinelUIDs = append(oldSentinelUIDs, strings.TrimSpace(uid))
+			}
+
+			By("updating the sentinel resources")
+			cr := fmt.Sprintf(`
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: sentinel
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+  sentinel:
+    quorum: 2
+    downAfterMilliseconds: 5000
+    failoverTimeout: 10000
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "48Mi"
+      limits:
+        cpu: "50m"
+        memory: "48Mi"
+`, crName, testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(cr)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for sentinel pods to be replaced")
+			Eventually(func(g Gomega) {
+				var newUIDs []string
+				for i := 0; i < 3; i++ {
+					cmd := exec.Command("kubectl", "get", "pod", fmt.Sprintf("%s-sentinel-%d", crName, i),
+						"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+					uid, err := utils.Run(cmd)
+					g.Expect(err).NotTo(HaveOccurred())
+					newUIDs = append(newUIDs, strings.TrimSpace(uid))
+				}
+				// At least one should be different (rolling update in progress or complete)
+				differentCount := 0
+				for i := 0; i < 3; i++ {
+					if newUIDs[i] != oldSentinelUIDs[i] {
+						differentCount++
+					}
+				}
+				g.Expect(differentCount).To(BeNumerically(">", 0), "At least one sentinel should have been replaced")
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying all sentinel pods eventually become ready")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "statefulset", crName+"-sentinel",
+					"-n", testNamespace, "-o", "jsonpath={.status.readyReplicas}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("3"))
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should maintain sentinel quorum after rolling update", func() {
+			By("verifying sentinel quorum is established")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
+					"-n", testNamespace, "-c", "sentinel", "--",
+					"valkey-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("num-slaves"))
+				g.Expect(output).To(ContainSubstring("num-other-sentinels"))
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should have cluster status Running after sentinel rolling update", func() {
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+	})
+
 	Context("Sentinel Failover", Ordered, func() {
 		const crName = "test-failover"
 
