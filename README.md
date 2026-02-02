@@ -55,8 +55,11 @@ kubectl apply -f my-cache.yaml
 # Standalone mode
 kubectl exec -it my-cache-redis-0 -- valkey-cli PING
 
-# Sentinel mode - connect to master
-kubectl exec -it my-cache-redis-0 -- valkey-cli -p 26379 SENTINEL get-master-addr-by-name mymaster
+# Sentinel mode - query sentinel for master address
+kubectl exec -it my-cache-sentinel-0 -- valkey-cli -p 26379 SENTINEL get-master-addr-by-name mymaster
+
+# Sentinel mode - connect to Redis master
+kubectl exec -it my-cache-redis-0 -c redis -- valkey-cli PING
 ```
 
 ## Configuration
