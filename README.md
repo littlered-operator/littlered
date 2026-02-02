@@ -194,7 +194,9 @@ status:
 
 ## Examples
 
-See [config/samples/](config/samples/) for more examples:
+See [docs/USAGE.md](docs/USAGE.md) for detailed usage guide with step-by-step instructions.
+
+Sample manifests in [config/samples/](config/samples/):
 
 - `littlered_v1alpha1_littlered.yaml` - Minimal standalone
 - `littlered_v1alpha1_littlered_full.yaml` - Full standalone configuration
