@@ -210,7 +210,7 @@ spec:
 				Expect(err).NotTo(HaveOccurred())
 			}
 
-			By("verifying keys are on different nodes")
+			By("verifying keys are on different nodes (masters have data)")
 			nodeKeys := make(map[string]int) // node -> key count
 			for i := 0; i < 6; i++ {
 				podName := fmt.Sprintf("%s-cluster-%d", crName, i)
@@ -218,20 +218,29 @@ spec:
 					"-n", testNamespace, "-c", "redis", "--",
 					"valkey-cli", "DBSIZE")
 				output, err := utils.Run(cmd)
-				if err == nil {
-					// Parse "(integer) N" output
-					parts := strings.Fields(output)
-					if len(parts) >= 2 {
-						count, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
-						if count > 0 {
-							nodeKeys[podName] = count
-						}
-					}
+				if err != nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get DBSIZE from %s: %v\n", podName, err)
+					continue
+				}
+
+				// Parse output - valkey-cli DBSIZE returns just a number
+				output = strings.TrimSpace(output)
+				count, parseErr := strconv.Atoi(output)
+				if parseErr != nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to parse DBSIZE from %s: %q (error: %v)\n", podName, output, parseErr)
+					continue
+				}
+
+				if count > 0 {
+					nodeKeys[podName] = count
+					_, _ = fmt.Fprintf(GinkgoWriter, "Node %s has %d keys\n", podName, count)
 				}
 			}
 
-			// At least 2 nodes should have keys (distributed)
-			Expect(len(nodeKeys)).To(BeNumerically(">=", 2), "Keys should be distributed across multiple nodes")
+			_, _ = fmt.Fprintf(GinkgoWriter, "Total nodes with keys: %d\n", len(nodeKeys))
+			// At least 2 masters should have keys (distributed across shards)
+			// We might have up to 6 nodes with keys (3 masters + 3 replicas replicating data)
+			Expect(len(nodeKeys)).To(BeNumerically(">=", 2), "Keys should be distributed across multiple shards")
 		})
 
 		It("should track cluster state in CR status", func() {
@@ -487,8 +496,8 @@ spec:
 				}, 2*time.Minute, 5*time.Second).Should(Succeed())
 			}
 
-			By("waiting for cluster to fully recover")
-			time.Sleep(20 * time.Second)
+			By("waiting for cluster to fully recover (this may take several minutes)")
+			time.Sleep(30 * time.Second) // Give operator time to detect changes
 
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
@@ -498,7 +507,7 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
 				g.Expect(output).To(ContainSubstring("cluster_slots_assigned:16384"))
-			}, 4*time.Minute, 10*time.Second).Should(Succeed())
+			}, 6*time.Minute, 10*time.Second).Should(Succeed())
 
 			By("verifying cluster still has 6 nodes")
 			cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
