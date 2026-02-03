@@ -370,7 +370,7 @@ spec:
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("waiting for pod to be recreated")
+			By("waiting for pod to be recreated and ready")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "pod", replicaPod,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
@@ -379,10 +379,12 @@ spec:
 				g.Expect(output).To(Equal("Running"))
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
-			By("waiting for cluster to stabilize")
-			time.Sleep(10 * time.Second)
+			By("verifying cluster recovery completes (not stuck in loop)")
+			// Wait long enough for operator to detect and complete recovery
+			// If stuck, it would keep logging every 5 seconds
+			time.Sleep(30 * time.Second)
 
-			By("verifying cluster state is still ok")
+			By("verifying cluster state is ok")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 					"-n", testNamespace, "-c", "redis", "--",
@@ -391,6 +393,22 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying all nodes are tracked in CR status")
+			cmd = exec.Command("kubectl", "get", "littlered", crName,
+				"-n", testNamespace, "-o", "jsonpath={.status.cluster.nodes}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			// Should have all 6 nodes with updated node IDs
+			nodeCount := strings.Count(output, "\"podName\"")
+			Expect(nodeCount).To(Equal(6), "Should track all 6 nodes after recovery")
+
+			By("verifying CR status shows cluster is ok (not recovering)")
+			cmd = exec.Command("kubectl", "get", "littlered", crName,
+				"-n", testNamespace, "-o", "jsonpath={.status.cluster.state}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(output)).To(Equal("ok"), "Cluster state should be 'ok', not stuck in 'recovering'")
 
 			By("verifying data is still accessible")
 			cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",

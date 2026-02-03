@@ -650,12 +650,63 @@ func (r *LittleRedReconciler) recoverCluster(ctx context.Context, littleRed *lit
 		}
 	}
 
-	// Update status with new node IDs
+	// Update status with new node IDs (merge currentNodes with stored slot/role info)
+	// Important: Iterate through storedNodes, not currentNodes, to avoid losing track of pods
+	// that are being recovered but haven't fully rejoined the cluster yet
+	currentNodeMap := make(map[string]littleredv1alpha1.ClusterNodeState)
+	for _, c := range currentNodes {
+		currentNodeMap[c.PodName] = c
+	}
+
+	updatedNodes := make([]littleredv1alpha1.ClusterNodeState, 0, len(storedNodes))
+	for _, stored := range storedNodes {
+		// If pod is in current cluster state, use its current node ID
+		if current, ok := currentNodeMap[stored.PodName]; ok {
+			// Use current node ID (updated after restart), but preserve stored slot ranges and role
+			current.SlotRanges = stored.SlotRanges
+			if current.Role == "" {
+				current.Role = stored.Role
+			}
+			if current.MasterNodeID == "" && stored.MasterNodeID != "" {
+				// For replicas, update masterNodeID if master also restarted
+				// Check if the stored masterNodeID still exists in currentNodes
+				masterStillValid := false
+				for _, curr := range currentNodes {
+					if curr.NodeID == stored.MasterNodeID {
+						masterStillValid = true
+						break
+					}
+				}
+				if masterStillValid {
+					current.MasterNodeID = stored.MasterNodeID
+				} else {
+					// Master restarted too, find new master node ID by pod name
+					for _, s2 := range storedNodes {
+						if s2.NodeID == stored.MasterNodeID {
+							// Found the stored master, now find its current node ID
+							if newMaster, found := currentNodeMap[s2.PodName]; found {
+								current.MasterNodeID = newMaster.NodeID
+								break
+							}
+						}
+					}
+				}
+			}
+			updatedNodes = append(updatedNodes, current)
+		} else {
+			// Pod not yet in cluster (recovery in progress), keep stored state for now
+			log.Info("Pod not yet in cluster nodes, keeping stored state", "pod", stored.PodName)
+			updatedNodes = append(updatedNodes, stored)
+		}
+	}
+
+	littleRed.Status.Cluster.Nodes = updatedNodes
 	littleRed.Status.Cluster.State = "recovering"
 	if err := r.Status().Update(ctx, littleRed); err != nil {
 		return ctrl.Result{}, err
 	}
 
+	log.Info("Cluster recovery operations completed, waiting for stabilization")
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }
 
@@ -728,10 +779,37 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 		littleRed.Status.Redis.Total = *sts.Spec.Replicas
 	}
 
+	// Get actual cluster state from Redis CLUSTER INFO
+	actualClusterState := "unknown"
+	if healthy {
+		password := ""
+		if littleRed.Spec.Auth.Enabled {
+			secret := &corev1.Secret{}
+			if err := r.Get(ctx, types.NamespacedName{
+				Name:      littleRed.Spec.Auth.ExistingSecret,
+				Namespace: littleRed.Namespace,
+			}, secret); err == nil {
+				password = string(secret.Data["password"])
+			}
+		}
+
+		clusterClient := redisclient.NewClusterClient(password)
+		firstAddr := fmt.Sprintf("%s-cluster-0.%s.%s.svc.cluster.local:%d",
+			littleRed.Name, clusterHeadlessServiceName(littleRed), littleRed.Namespace, littleredv1alpha1.RedisPort)
+
+		if clusterInfo, err := clusterClient.GetClusterInfo(ctx, firstAddr); err == nil {
+			actualClusterState = clusterInfo.State
+		} else {
+			log.Error(err, "Failed to get cluster info from Redis")
+		}
+	}
+
 	// Update cluster state
 	if littleRed.Status.Cluster != nil {
-		if healthy {
+		if actualClusterState == "ok" {
 			littleRed.Status.Cluster.State = "ok"
+		} else if actualClusterState != "unknown" {
+			littleRed.Status.Cluster.State = actualClusterState
 		} else if littleRed.Status.Cluster.State == "" {
 			littleRed.Status.Cluster.State = "initializing"
 		}
