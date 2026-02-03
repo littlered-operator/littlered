@@ -411,12 +411,42 @@ spec:
 			Expect(strings.TrimSpace(output)).To(Equal("ok"), "Cluster state should be 'ok', not stuck in 'recovering'")
 
 			By("verifying data is still accessible")
+			By("diagnosing cluster state before data check")
+			// Check which slot the key belongs to
+			cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
+				"-n", testNamespace, "-c", "redis", "--",
+				"valkey-cli", "CLUSTER", "KEYSLOT", "recovery-test-key")
+			keyslotOut, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			_, _ = fmt.Fprintf(GinkgoWriter, "Key 'recovery-test-key' hashes to slot: %s\n", strings.TrimSpace(keyslotOut))
+
+			// Check cluster nodes and slot assignments
+			cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
+				"-n", testNamespace, "-c", "redis", "--",
+				"valkey-cli", "CLUSTER", "NODES")
+			nodesOut, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			_, _ = fmt.Fprintf(GinkgoWriter, "Cluster nodes after recovery:\n%s\n", nodesOut)
+
+			// Check DBSIZE on all masters to see which has data
+			for i := 0; i < 6; i += 2 { // Masters are at 0, 2, 4
+				podName := fmt.Sprintf("%s-cluster-%d", crName, i)
+				cmd = exec.Command("kubectl", "exec", podName,
+					"-n", testNamespace, "-c", "redis", "--",
+					"valkey-cli", "DBSIZE")
+				dbsize, err := utils.Run(cmd)
+				if err == nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Master %s DBSIZE: %s\n", podName, strings.TrimSpace(dbsize))
+				}
+			}
+
 			cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
 				"-n", testNamespace, "-c", "redis", "--",
 				"valkey-cli", "-c", "GET", "recovery-test-key")
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(strings.TrimSpace(output)).To(Equal("recovery-test-value"))
+			Expect(strings.TrimSpace(output)).To(Equal("recovery-test-value"),
+			"Data written before replica restart should still be accessible (master has the data)")
 		})
 
 		It("should handle master pod deletion with replica promotion", func() {
