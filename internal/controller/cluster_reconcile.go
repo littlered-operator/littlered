@@ -582,122 +582,182 @@ func (r *LittleRedReconciler) recoverCluster(ctx context.Context, littleRed *lit
 		return r.fullRecovery(ctx, littleRed)
 	}
 
-	// For each changed node, forget old ID and meet new node
+	// Check all stored nodes and recover any that have changed
+	cluster := littleRed.Spec.Cluster
+	if cluster == nil {
+		cluster = &littleredv1alpha1.ClusterSpec{}
+		cluster.SetDefaults()
+	}
+
+	// Build map of current node IDs by pod IP
+	currentNodesByIP := make(map[string]string) // IP -> nodeID
 	for _, c := range currentNodes {
-		storedID, ok := storedMap[c.PodName]
-		if !ok || storedID == c.NodeID {
+		nodeIP := strings.Split(c.PodName, ":")[0] // Extract IP if formatted as IP:port
+		// Get actual IP from pod
+		for i := 0; i < cluster.GetTotalNodes(); i++ {
+			podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
+			if podName == c.PodName {
+				pod := &corev1.Pod{}
+				if err := r.Get(ctx, types.NamespacedName{
+					Name:      podName,
+					Namespace: littleRed.Namespace,
+				}, pod); err == nil && pod.Status.PodIP != "" {
+					currentNodesByIP[pod.Status.PodIP] = c.NodeID
+				}
+				break
+			}
+		}
+	}
+
+	// Iterate through all expected pods and check if they need recovery
+	for _, stored := range storedNodes {
+		// Get pod
+		pod := &corev1.Pod{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      stored.PodName,
+			Namespace: littleRed.Namespace,
+		}, pod); err != nil {
+			log.Error(err, "Failed to get pod for recovery check", "pod", stored.PodName)
 			continue
 		}
 
-		log.Info("Recovering node", "pod", c.PodName, "oldID", storedID, "newID", c.NodeID)
-
-		// CLUSTER FORGET old node ID on healthy node
-		if err := clusterClient.ClusterForget(ctx, healthyAddr, storedID); err != nil {
-			log.Error(err, "Failed to forget old node ID", "nodeID", storedID)
-			// Continue - node might already be forgotten
+		if pod.Status.PodIP == "" {
+			log.Info("Pod has no IP yet, skipping", "pod", stored.PodName)
+			continue
 		}
 
-		// Get pod IP for CLUSTER MEET (requires IP, not hostname)
-		pod := &corev1.Pod{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      c.PodName,
-			Namespace: littleRed.Namespace,
-		}, pod); err != nil {
-			log.Error(err, "Failed to get pod for recovery", "pod", c.PodName)
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		// Get current node ID for this pod
+		podAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
+		currentNodeID, err := clusterClient.GetMyID(ctx, podAddr)
+		if err != nil {
+			log.Error(err, "Failed to get current node ID", "pod", stored.PodName)
+			continue
+		}
+
+		// Check if node ID changed
+		if currentNodeID == stored.NodeID {
+			continue // No change
+		}
+
+		log.Info("Recovering node", "pod", stored.PodName, "oldID", stored.NodeID, "newID", currentNodeID)
+
+		// CLUSTER FORGET old node ID on healthy node
+		if err := clusterClient.ClusterForget(ctx, healthyAddr, stored.NodeID); err != nil {
+			log.Error(err, "Failed to forget old node ID", "nodeID", stored.NodeID)
+			// Continue - node might already be forgotten
 		}
 
 		// CLUSTER MEET new node using IP address
 		if err := clusterClient.ClusterMeet(ctx, healthyAddr, pod.Status.PodIP, littleredv1alpha1.RedisPort); err != nil {
-			log.Error(err, "Failed to meet new node", "pod", c.PodName, "ip", pod.Status.PodIP)
+			log.Error(err, "Failed to meet new node", "pod", stored.PodName, "ip", pod.Status.PodIP)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 
 		time.Sleep(1 * time.Second)
 
-		// Find stored state for this pod
-		var storedState *littleredv1alpha1.ClusterNodeState
-		for i := range storedNodes {
-			if storedNodes[i].PodName == c.PodName {
-				storedState = &storedNodes[i]
-				break
+		// If master, re-add slots
+		if stored.Role == "master" && stored.SlotRanges != "" {
+			slots, err := redisclient.ExpandSlotRange(stored.SlotRanges)
+			if err != nil {
+				log.Error(err, "Failed to expand slot range", "range", stored.SlotRanges)
+				continue
+			}
+			if err := clusterClient.ClusterAddSlots(ctx, podAddr, slots...); err != nil {
+				log.Error(err, "Failed to re-add slots", "pod", stored.PodName)
 			}
 		}
 
-		if storedState == nil {
+		// If replica, re-assign to master (need to find current master node ID)
+		if stored.Role == "replica" && stored.MasterNodeID != "" {
+			// Find master's current node ID
+			masterNodeID := stored.MasterNodeID
+			for _, s2 := range storedNodes {
+				if s2.NodeID == stored.MasterNodeID {
+					// This is the master, get its current node ID
+					masterPod := &corev1.Pod{}
+					if err := r.Get(ctx, types.NamespacedName{
+						Name:      s2.PodName,
+						Namespace: littleRed.Namespace,
+					}, masterPod); err == nil && masterPod.Status.PodIP != "" {
+						masterAddr := fmt.Sprintf("%s:%d", masterPod.Status.PodIP, littleredv1alpha1.RedisPort)
+						if newMasterID, err := clusterClient.GetMyID(ctx, masterAddr); err == nil {
+							masterNodeID = newMasterID
+						}
+					}
+					break
+				}
+			}
+
+			if err := clusterClient.ClusterReplicate(ctx, podAddr, masterNodeID); err != nil {
+				log.Error(err, "Failed to re-assign replica", "pod", stored.PodName)
+			}
+		}
+	}
+
+	// Update status with new node IDs by querying each pod directly
+	// This ensures we get accurate node IDs even if pods haven't fully rejoined cluster yet
+	updatedNodes := make([]littleredv1alpha1.ClusterNodeState, 0, len(storedNodes))
+	for _, stored := range storedNodes {
+		pod := &corev1.Pod{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      stored.PodName,
+			Namespace: littleRed.Namespace,
+		}, pod); err != nil {
+			log.Error(err, "Failed to get pod for status update", "pod", stored.PodName)
+			// Keep stored state if we can't get pod
+			updatedNodes = append(updatedNodes, stored)
 			continue
 		}
 
-		newAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
-
-		// If master, re-add slots
-		if storedState.Role == "master" && storedState.SlotRanges != "" {
-			slots, err := redisclient.ExpandSlotRange(storedState.SlotRanges)
-			if err != nil {
-				log.Error(err, "Failed to expand slot range", "range", storedState.SlotRanges)
-				continue
-			}
-			if err := clusterClient.ClusterAddSlots(ctx, newAddr, slots...); err != nil {
-				log.Error(err, "Failed to re-add slots", "pod", c.PodName)
-			}
-		}
-
-		// If replica, re-assign to master
-		if storedState.Role == "replica" && storedState.MasterNodeID != "" {
-			if err := clusterClient.ClusterReplicate(ctx, newAddr, storedState.MasterNodeID); err != nil {
-				log.Error(err, "Failed to re-assign replica", "pod", c.PodName)
-			}
-		}
-	}
-
-	// Update status with new node IDs (merge currentNodes with stored slot/role info)
-	// Important: Iterate through storedNodes, not currentNodes, to avoid losing track of pods
-	// that are being recovered but haven't fully rejoined the cluster yet
-	currentNodeMap := make(map[string]littleredv1alpha1.ClusterNodeState)
-	for _, c := range currentNodes {
-		currentNodeMap[c.PodName] = c
-	}
-
-	updatedNodes := make([]littleredv1alpha1.ClusterNodeState, 0, len(storedNodes))
-	for _, stored := range storedNodes {
-		// If pod is in current cluster state, use its current node ID
-		if current, ok := currentNodeMap[stored.PodName]; ok {
-			// Use current node ID (updated after restart), but preserve stored slot ranges and role
-			current.SlotRanges = stored.SlotRanges
-			if current.Role == "" {
-				current.Role = stored.Role
-			}
-			if current.MasterNodeID == "" && stored.MasterNodeID != "" {
-				// For replicas, update masterNodeID if master also restarted
-				// Check if the stored masterNodeID still exists in currentNodes
-				masterStillValid := false
-				for _, curr := range currentNodes {
-					if curr.NodeID == stored.MasterNodeID {
-						masterStillValid = true
-						break
-					}
-				}
-				if masterStillValid {
-					current.MasterNodeID = stored.MasterNodeID
-				} else {
-					// Master restarted too, find new master node ID by pod name
-					for _, s2 := range storedNodes {
-						if s2.NodeID == stored.MasterNodeID {
-							// Found the stored master, now find its current node ID
-							if newMaster, found := currentNodeMap[s2.PodName]; found {
-								current.MasterNodeID = newMaster.NodeID
-								break
-							}
-						}
-					}
-				}
-			}
-			updatedNodes = append(updatedNodes, current)
-		} else {
-			// Pod not yet in cluster (recovery in progress), keep stored state for now
-			log.Info("Pod not yet in cluster nodes, keeping stored state", "pod", stored.PodName)
+		if pod.Status.PodIP == "" {
+			log.Info("Pod has no IP yet, keeping stored state", "pod", stored.PodName)
 			updatedNodes = append(updatedNodes, stored)
+			continue
 		}
+
+		// Get current node ID directly from pod
+		podAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
+		currentNodeID, err := clusterClient.GetMyID(ctx, podAddr)
+		if err != nil {
+			log.Error(err, "Failed to get node ID for status update", "pod", stored.PodName)
+			// Keep stored state if we can't query
+			updatedNodes = append(updatedNodes, stored)
+			continue
+		}
+
+		// Create updated state with current node ID but preserved role/slots
+		updated := littleredv1alpha1.ClusterNodeState{
+			PodName:    stored.PodName,
+			NodeID:     currentNodeID,
+			Role:       stored.Role,
+			SlotRanges: stored.SlotRanges,
+		}
+
+		// For replicas, update master node ID if master also restarted
+		if stored.Role == "replica" && stored.MasterNodeID != "" {
+			// Find master pod and get its current node ID
+			for _, s2 := range storedNodes {
+				if s2.NodeID == stored.MasterNodeID && s2.Role == "master" {
+					masterPod := &corev1.Pod{}
+					if err := r.Get(ctx, types.NamespacedName{
+						Name:      s2.PodName,
+						Namespace: littleRed.Namespace,
+					}, masterPod); err == nil && masterPod.Status.PodIP != "" {
+						masterAddr := fmt.Sprintf("%s:%d", masterPod.Status.PodIP, littleredv1alpha1.RedisPort)
+						if newMasterID, err := clusterClient.GetMyID(ctx, masterAddr); err == nil {
+							updated.MasterNodeID = newMasterID
+						} else {
+							updated.MasterNodeID = stored.MasterNodeID
+						}
+					} else {
+						updated.MasterNodeID = stored.MasterNodeID
+					}
+					break
+				}
+			}
+		}
+
+		updatedNodes = append(updatedNodes, updated)
 	}
 
 	littleRed.Status.Cluster.Nodes = updatedNodes
