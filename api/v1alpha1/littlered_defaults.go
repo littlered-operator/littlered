@@ -283,6 +283,11 @@ func ptr[T any](v T) *T {
 // CalculateMaxmemory calculates maxmemory based on memory limit (90% of limit)
 func (r *LittleRed) CalculateMaxmemory() string {
 	if r.Spec.Config.Maxmemory != "" {
+		// Try to parse as Kubernetes quantity (e.g., "200Mi", "1Gi")
+		if qty, err := resource.ParseQuantity(r.Spec.Config.Maxmemory); err == nil {
+			return fmt.Sprintf("%d", qty.Value())
+		}
+		// If not a valid quantity, return as-is (might be raw bytes)
 		return r.Spec.Config.Maxmemory
 	}
 
