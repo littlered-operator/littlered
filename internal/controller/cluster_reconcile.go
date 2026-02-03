@@ -582,34 +582,7 @@ func (r *LittleRedReconciler) recoverCluster(ctx context.Context, littleRed *lit
 		return r.fullRecovery(ctx, littleRed)
 	}
 
-	// Check all stored nodes and recover any that have changed
-	cluster := littleRed.Spec.Cluster
-	if cluster == nil {
-		cluster = &littleredv1alpha1.ClusterSpec{}
-		cluster.SetDefaults()
-	}
-
-	// Build map of current node IDs by pod IP
-	currentNodesByIP := make(map[string]string) // IP -> nodeID
-	for _, c := range currentNodes {
-		nodeIP := strings.Split(c.PodName, ":")[0] // Extract IP if formatted as IP:port
-		// Get actual IP from pod
-		for i := 0; i < cluster.GetTotalNodes(); i++ {
-			podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
-			if podName == c.PodName {
-				pod := &corev1.Pod{}
-				if err := r.Get(ctx, types.NamespacedName{
-					Name:      podName,
-					Namespace: littleRed.Namespace,
-				}, pod); err == nil && pod.Status.PodIP != "" {
-					currentNodesByIP[pod.Status.PodIP] = c.NodeID
-				}
-				break
-			}
-		}
-	}
-
-	// Iterate through all expected pods and check if they need recovery
+	// Iterate through all stored nodes and recover any that have changed
 	for _, stored := range storedNodes {
 		// Get pod
 		pod := &corev1.Pod{}
