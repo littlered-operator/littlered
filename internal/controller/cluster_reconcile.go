@@ -84,6 +84,12 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 
 	// 4. All pods ready - check if cluster needs initialization
 	if littleRed.Status.Cluster == nil || len(littleRed.Status.Cluster.Nodes) == 0 {
+		// Before bootstrapping, check if cluster is already formed
+		// (handles case where previous bootstrap succeeded but status update failed)
+		if r.isClusterAlreadyFormed(ctx, littleRed) {
+			log.Info("Cluster already formed, recovering status from actual cluster state")
+			return r.recoverStatusFromCluster(ctx, littleRed)
+		}
 		log.Info("Cluster needs initialization")
 		return r.bootstrapCluster(ctx, littleRed)
 	}
@@ -971,4 +977,152 @@ func (r *LittleRedReconciler) getClusterPods(ctx context.Context, littleRed *lit
 		return nil, err
 	}
 	return podList, nil
+}
+
+// isClusterAlreadyFormed checks if a Redis cluster is already formed
+// (handles case where bootstrap succeeded but status update failed)
+func (r *LittleRedReconciler) isClusterAlreadyFormed(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) bool {
+	log := logf.FromContext(ctx)
+
+	// Get password if auth enabled
+	password := ""
+	if littleRed.Spec.Auth.Enabled {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      littleRed.Spec.Auth.ExistingSecret,
+			Namespace: littleRed.Namespace,
+		}, secret); err == nil {
+			password = string(secret.Data["password"])
+		}
+	}
+
+	clusterClient := redisclient.NewClusterClient(password)
+
+	// Try to get cluster info from first pod
+	pod := &corev1.Pod{}
+	podName := fmt.Sprintf("%s-cluster-0", littleRed.Name)
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      podName,
+		Namespace: littleRed.Namespace,
+	}, pod); err != nil || pod.Status.PodIP == "" {
+		return false
+	}
+
+	addr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
+	clusterInfo, err := clusterClient.GetClusterInfo(ctx, addr)
+	if err != nil {
+		log.Info("Could not get cluster info, assuming not formed", "error", err)
+		return false
+	}
+
+	// If cluster state is ok and slots are assigned, cluster is already formed
+	if clusterInfo.State == "ok" && clusterInfo.SlotsAssigned == 16384 {
+		log.Info("Cluster already formed", "state", clusterInfo.State, "slotsAssigned", clusterInfo.SlotsAssigned)
+		return true
+	}
+
+	return false
+}
+
+// recoverStatusFromCluster recovers CR status from actual cluster state
+// Used when cluster is formed but status was lost
+func (r *LittleRedReconciler) recoverStatusFromCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	log.Info("Recovering cluster status from actual cluster state")
+
+	cluster := littleRed.Spec.Cluster
+	if cluster == nil {
+		cluster = &littleredv1alpha1.ClusterSpec{}
+		cluster.SetDefaults()
+	}
+
+	// Get password if auth enabled
+	password := ""
+	if littleRed.Spec.Auth.Enabled {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      littleRed.Spec.Auth.ExistingSecret,
+			Namespace: littleRed.Namespace,
+		}, secret); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to get auth secret: %w", err)
+		}
+		password = string(secret.Data["password"])
+	}
+
+	clusterClient := redisclient.NewClusterClient(password)
+
+	// Get cluster nodes from first pod
+	pod := &corev1.Pod{}
+	podName := fmt.Sprintf("%s-cluster-0", littleRed.Name)
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      podName,
+		Namespace: littleRed.Namespace,
+	}, pod); err != nil {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	addr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
+	nodes, err := clusterClient.GetClusterNodes(ctx, addr)
+	if err != nil {
+		log.Error(err, "Failed to get cluster nodes")
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	// Build pod IP to pod name mapping
+	podIPs := make(map[string]string)
+	for i := 0; i < cluster.GetTotalNodes(); i++ {
+		pName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
+		p := &corev1.Pod{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      pName,
+			Namespace: littleRed.Namespace,
+		}, p); err == nil && p.Status.PodIP != "" {
+			podIPs[p.Status.PodIP] = pName
+		}
+	}
+
+	// Convert cluster nodes to status
+	nodeStates := make([]littleredv1alpha1.ClusterNodeState, 0, len(nodes))
+	for _, node := range nodes {
+		// Extract IP from addr (format: "IP:port")
+		nodeIP := strings.Split(node.Addr, ":")[0]
+		podName, ok := podIPs[nodeIP]
+		if !ok {
+			continue
+		}
+
+		state := littleredv1alpha1.ClusterNodeState{
+			PodName: podName,
+			NodeID:  node.NodeID,
+		}
+
+		if node.IsMaster() {
+			state.Role = "master"
+			if len(node.Slots) > 0 {
+				state.SlotRanges = strings.Join(node.Slots, ",")
+			}
+		} else {
+			state.Role = "replica"
+			if node.MasterID != "-" {
+				state.MasterNodeID = node.MasterID
+			}
+		}
+
+		nodeStates = append(nodeStates, state)
+	}
+
+	// Update status
+	now := metav1.Now()
+	littleRed.Status.Cluster = &littleredv1alpha1.ClusterStatusInfo{
+		State:         "ok",
+		Nodes:         nodeStates,
+		LastBootstrap: &now,
+	}
+
+	if err := r.Status().Update(ctx, littleRed); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Recovered cluster status", "nodes", len(nodeStates))
+	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }
