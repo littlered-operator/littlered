@@ -620,10 +620,26 @@ func (r *LittleRedReconciler) recoverCluster(ctx context.Context, littleRed *lit
 
 		log.Info("Recovering node", "pod", stored.PodName, "oldID", stored.NodeID, "newID", currentNodeID)
 
-		// CLUSTER FORGET old node ID on healthy node
-		if err := clusterClient.ClusterForget(ctx, healthyAddr, stored.NodeID); err != nil {
-			log.Error(err, "Failed to forget old node ID", "nodeID", stored.NodeID)
-			// Continue - node might already be forgotten
+		// CLUSTER FORGET old node ID on ALL healthy nodes (not just one)
+		// This is critical - FORGET must be run on every node, otherwise other nodes
+		// will gossip the old node ID back into the cluster
+		for _, otherStored := range storedNodes {
+			if otherStored.PodName == stored.PodName {
+				continue // Skip the node being recovered
+			}
+			otherPod := &corev1.Pod{}
+			if err := r.Get(ctx, types.NamespacedName{
+				Name:      otherStored.PodName,
+				Namespace: littleRed.Namespace,
+			}, otherPod); err != nil || otherPod.Status.PodIP == "" {
+				continue
+			}
+			otherAddr := fmt.Sprintf("%s:%d", otherPod.Status.PodIP, littleredv1alpha1.RedisPort)
+			if err := clusterClient.ClusterForget(ctx, otherAddr, stored.NodeID); err != nil {
+				log.Info("Failed to forget old node ID on peer (may already be forgotten)",
+					"peer", otherStored.PodName, "oldNodeID", stored.NodeID, "error", err)
+				// Continue - node might already be forgotten or peer might be the restarting node
+			}
 		}
 
 		// CLUSTER MEET new node using IP address
