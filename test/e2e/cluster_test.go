@@ -320,8 +320,27 @@ spec:
 			cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
 				"-n", testNamespace, "-c", "redis", "--",
 				"valkey-cli", "-c", "SET", "recovery-test-key", "recovery-test-value")
-			_, err = utils.Run(cmd)
+			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(output)).To(Equal("OK"), "SET should return OK")
+
+			By("verifying data was actually written")
+			cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
+				"-n", testNamespace, "-c", "redis", "--",
+				"valkey-cli", "-c", "GET", "recovery-test-key")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(output)).To(Equal("recovery-test-value"), "Data should be readable immediately after write")
+
+			By("recording which master has the data")
+			for i := 0; i < 6; i += 2 {
+				podName := fmt.Sprintf("%s-cluster-%d", crName, i)
+				cmd = exec.Command("kubectl", "exec", podName,
+					"-n", testNamespace, "-c", "redis", "--",
+					"valkey-cli", "DBSIZE")
+				dbsize, _ := utils.Run(cmd)
+				_, _ = fmt.Fprintf(GinkgoWriter, "BEFORE deletion - Master %s DBSIZE: %s\n", podName, strings.TrimSpace(dbsize))
+			}
 		})
 
 		It("should recover after a replica pod is deleted", func() {
