@@ -1,0 +1,40 @@
+# Example: Redis Cluster mode
+# This creates a 3-shard cluster with 1 replica per shard (6 pods total)
+# Data is distributed across shards using hash slots (16384 slots total)
+#
+# Key points:
+# - No PersistentVolumes needed - cluster state stored in CR status
+# - Operator handles recovery on pod restarts
+# - Pure cache mode - data may be lost on full cluster restart
+#
+# Usage:
+#   kubectl apply -f littlered_v1alpha1_littlered_cluster.yaml
+#
+# Check cluster status:
+#   kubectl get littlered my-cache-cluster -o jsonpath='{.status.cluster}'
+#   kubectl exec my-cache-cluster-cluster-0 -- redis-cli CLUSTER INFO
+#   kubectl exec my-cache-cluster-cluster-0 -- redis-cli CLUSTER NODES
+#
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: my-cache-cluster
+spec:
+  mode: cluster
+  cluster:
+    # Number of master shards (minimum 3 for Redis Cluster)
+    shards: 3
+    # Replicas per shard (0 = no replicas, 1 = one replica per master)
+    replicasPerShard: 1
+    # Cluster node timeout in milliseconds
+    clusterNodeTimeout: 15000
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+  config:
+    # Eviction policy for cache mode
+    maxmemoryPolicy: allkeys-lru

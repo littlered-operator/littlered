@@ -48,6 +48,13 @@ const (
 	RedisPort              = 6379
 	RedisExporterPort      = 9121
 	SentinelPort           = 26379
+
+	// Cluster defaults
+	DefaultClusterShards      = 3
+	DefaultReplicasPerShard   = 1
+	DefaultClusterNodeTimeout = 15000
+	ClusterBusPortOffset      = 10000
+	ClusterBusPort            = RedisPort + ClusterBusPortOffset // 16379
 )
 
 // SetDefaults applies default values to the LittleRed spec
@@ -92,6 +99,14 @@ func (r *LittleRed) SetDefaults() {
 	}
 	if spec.Sentinel != nil {
 		spec.Sentinel.SetDefaults()
+	}
+
+	// Cluster defaults (only if cluster mode)
+	if spec.Mode == "cluster" && spec.Cluster == nil {
+		spec.Cluster = &ClusterSpec{}
+	}
+	if spec.Cluster != nil {
+		spec.Cluster.SetDefaults()
 	}
 }
 
@@ -165,6 +180,24 @@ func (s *SentinelSpec) SetDefaults() {
 		s.ParallelSyncs = DefaultParallelSyncs
 	}
 	setDefaultSentinelResources(&s.Resources)
+}
+
+// SetDefaults applies default values to ClusterSpec
+func (c *ClusterSpec) SetDefaults() {
+	if c.Shards == 0 {
+		c.Shards = DefaultClusterShards
+	}
+	if c.ReplicasPerShard == 0 {
+		c.ReplicasPerShard = DefaultReplicasPerShard
+	}
+	if c.ClusterNodeTimeout == 0 {
+		c.ClusterNodeTimeout = DefaultClusterNodeTimeout
+	}
+}
+
+// GetTotalNodes returns the total number of cluster nodes (shards * (1 + replicas))
+func (c *ClusterSpec) GetTotalNodes() int {
+	return c.Shards * (1 + c.ReplicasPerShard)
 }
 
 func setDefaultResources(r *corev1.ResourceRequirements) {

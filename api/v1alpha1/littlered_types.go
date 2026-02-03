@@ -26,8 +26,8 @@ import (
 
 // LittleRedSpec defines the desired state of LittleRed
 type LittleRedSpec struct {
-	// Mode is the deployment mode: standalone or sentinel
-	// +kubebuilder:validation:Enum=standalone;sentinel
+	// Mode is the deployment mode: standalone, sentinel, or cluster
+	// +kubebuilder:validation:Enum=standalone;sentinel;cluster
 	// +kubebuilder:default=standalone
 	// +optional
 	Mode string `json:"mode,omitempty"`
@@ -71,6 +71,10 @@ type LittleRedSpec struct {
 	// Sentinel defines sentinel-specific settings (sentinel mode only)
 	// +optional
 	Sentinel *SentinelSpec `json:"sentinel,omitempty"`
+
+	// Cluster defines cluster-specific settings (cluster mode only)
+	// +optional
+	Cluster *ClusterSpec `json:"cluster,omitempty"`
 }
 
 // ImageSpec defines container image configuration
@@ -357,6 +361,26 @@ type SentinelSpec struct {
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// ClusterSpec defines Redis Cluster settings
+type ClusterSpec struct {
+	// Shards is the number of master shards (minimum 3)
+	// +kubebuilder:validation:Minimum=3
+	// +kubebuilder:default=3
+	// +optional
+	Shards int `json:"shards,omitempty"`
+
+	// ReplicasPerShard is the number of replicas per master (0 = no replicas)
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=1
+	// +optional
+	ReplicasPerShard int `json:"replicasPerShard,omitempty"`
+
+	// ClusterNodeTimeout in milliseconds
+	// +kubebuilder:default=15000
+	// +optional
+	ClusterNodeTimeout int `json:"clusterNodeTimeout,omitempty"`
+}
+
 // LittleRedPhase represents the current phase of the LittleRed resource
 type LittleRedPhase string
 
@@ -387,6 +411,8 @@ const (
 	ConditionAuthReady = "AuthReady"
 	// ConditionSentinelReady indicates sentinel quorum is established
 	ConditionSentinelReady = "SentinelReady"
+	// ConditionClusterReady indicates cluster is formed and healthy
+	ConditionClusterReady = "ClusterReady"
 )
 
 // LittleRedStatus defines the observed state of LittleRed
@@ -420,6 +446,10 @@ type LittleRedStatus struct {
 	// Sentinels contains sentinel status (sentinel mode only)
 	// +optional
 	Sentinels *SentinelStatus `json:"sentinels,omitempty"`
+
+	// Cluster contains cluster state (cluster mode only)
+	// +optional
+	Cluster *ClusterStatusInfo `json:"cluster,omitempty"`
 }
 
 // RedisStatus contains Redis pod status
@@ -452,6 +482,36 @@ type SentinelStatus struct {
 	Ready int32 `json:"ready"`
 	// Total is the total number of sentinels
 	Total int32 `json:"total"`
+}
+
+// ClusterStatusInfo contains cluster state (persisted instead of nodes.conf)
+type ClusterStatusInfo struct {
+	// State is the cluster state: ok, fail, initializing
+	State string `json:"state,omitempty"`
+
+	// Nodes contains per-node state for recovery
+	Nodes []ClusterNodeState `json:"nodes,omitempty"`
+
+	// LastBootstrap timestamp
+	LastBootstrap *metav1.Time `json:"lastBootstrap,omitempty"`
+}
+
+// ClusterNodeState tracks a cluster node's identity (replaces nodes.conf)
+type ClusterNodeState struct {
+	// PodName is the stable pod name (e.g., my-cache-cluster-0)
+	PodName string `json:"podName"`
+
+	// NodeID is the Redis cluster node ID (40-char hex)
+	NodeID string `json:"nodeId"`
+
+	// Role is master or replica
+	Role string `json:"role"`
+
+	// MasterNodeID for replicas - which master this replicates
+	MasterNodeID string `json:"masterNodeId,omitempty"`
+
+	// SlotRanges for masters (e.g., "0-5460")
+	SlotRanges string `json:"slotRanges,omitempty"`
 }
 
 // +kubebuilder:object:root=true

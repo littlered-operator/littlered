@@ -66,6 +66,14 @@ func sentinelServiceName(lr *littleredv1alpha1.LittleRed) string {
 	return fmt.Sprintf("%s-sentinel", lr.Name)
 }
 
+func clusterStatefulSetName(lr *littleredv1alpha1.LittleRed) string {
+	return fmt.Sprintf("%s-cluster", lr.Name)
+}
+
+func clusterHeadlessServiceName(lr *littleredv1alpha1.LittleRed) string {
+	return fmt.Sprintf("%s-cluster", lr.Name)
+}
+
 func serviceMonitorName(lr *littleredv1alpha1.LittleRed) string {
 	return lr.Name
 }
@@ -138,6 +146,15 @@ func masterSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 		"app.kubernetes.io/instance":  lr.Name,
 		"app.kubernetes.io/component": "redis",
 		LabelRole:                     RoleMaster,
+	}
+}
+
+// clusterSelectorLabels returns labels for selecting cluster pods
+func clusterSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":      "littlered",
+		"app.kubernetes.io/instance":  lr.Name,
+		"app.kubernetes.io/component": "cluster",
 	}
 }
 
@@ -1199,4 +1216,435 @@ func buildSentinelHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Servi
 
 func ptr[T any](v T) *T {
 	return &v
+}
+
+// ============================================================================
+// Cluster Mode Resources
+// ============================================================================
+
+// buildClusterConfigMap creates the ConfigMap for cluster mode redis.conf
+func buildClusterConfigMap(lr *littleredv1alpha1.LittleRed) *corev1.ConfigMap {
+	labels := commonLabels(lr)
+	labels["app.kubernetes.io/component"] = "cluster"
+
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName(lr),
+			Namespace: lr.Namespace,
+			Labels:    labels,
+		},
+		Data: map[string]string{
+			"redis.conf": buildClusterRedisConfig(lr),
+		},
+	}
+}
+
+// buildClusterRedisConfig generates redis.conf for cluster mode
+func buildClusterRedisConfig(lr *littleredv1alpha1.LittleRed) string {
+	var sb strings.Builder
+
+	cluster := lr.Spec.Cluster
+	if cluster == nil {
+		cluster = &littleredv1alpha1.ClusterSpec{}
+		cluster.SetDefaults()
+	}
+
+	sb.WriteString("# LittleRed generated configuration (cluster mode)\n")
+	sb.WriteString("bind 0.0.0.0\n")
+	sb.WriteString(fmt.Sprintf("port %d\n", littleredv1alpha1.RedisPort))
+
+	// Cluster configuration
+	sb.WriteString("\n# Cluster configuration\n")
+	sb.WriteString("cluster-enabled yes\n")
+	sb.WriteString("cluster-config-file /data/nodes.conf\n")
+	sb.WriteString(fmt.Sprintf("cluster-node-timeout %d\n", cluster.ClusterNodeTimeout))
+	sb.WriteString("cluster-announce-hostname yes\n")
+
+	// Disable persistence (pure cache)
+	sb.WriteString("\n# Persistence disabled (cache mode)\n")
+	sb.WriteString("save \"\"\n")
+	sb.WriteString("appendonly no\n")
+
+	// Memory settings
+	sb.WriteString("\n# Memory configuration\n")
+	maxmemory := lr.CalculateMaxmemory()
+	sb.WriteString(fmt.Sprintf("maxmemory %s\n", maxmemory))
+	sb.WriteString(fmt.Sprintf("maxmemory-policy %s\n", lr.GetEffectiveMaxmemoryPolicy()))
+
+	// Timeout settings
+	sb.WriteString("\n# Connection settings\n")
+	sb.WriteString(fmt.Sprintf("timeout %d\n", lr.Spec.Config.Timeout))
+	sb.WriteString(fmt.Sprintf("tcp-keepalive %d\n", lr.Spec.Config.TCPKeepalive))
+
+	// TLS settings
+	if lr.Spec.TLS.Enabled {
+		sb.WriteString("\n# TLS configuration\n")
+		sb.WriteString(fmt.Sprintf("tls-port %d\n", littleredv1alpha1.RedisPort))
+		sb.WriteString("port 0\n")
+		sb.WriteString("tls-cert-file /tls/tls.crt\n")
+		sb.WriteString("tls-key-file /tls/tls.key\n")
+		sb.WriteString("tls-cluster yes\n")
+		sb.WriteString("tls-replication yes\n")
+		if lr.Spec.TLS.ClientAuth {
+			sb.WriteString("tls-ca-cert-file /tls/ca.crt\n")
+			sb.WriteString("tls-auth-clients yes\n")
+		} else {
+			sb.WriteString("tls-auth-clients no\n")
+		}
+	}
+
+	// Raw config (expert mode)
+	if lr.Spec.Config.Raw != "" {
+		sb.WriteString("\n# Custom configuration\n")
+		sb.WriteString(lr.Spec.Config.Raw)
+		if !strings.HasSuffix(lr.Spec.Config.Raw, "\n") {
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String()
+}
+
+// buildClusterStatefulSet creates the StatefulSet for cluster mode
+func buildClusterStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSet {
+	labels := commonLabels(lr)
+	labels["app.kubernetes.io/component"] = "cluster"
+
+	podLabels := make(map[string]string)
+	for k, v := range clusterSelectorLabels(lr) {
+		podLabels[k] = v
+	}
+	for k, v := range lr.Spec.PodTemplate.Labels {
+		podLabels[k] = v
+	}
+
+	// Compute config hash for pod annotations to trigger rolling update on config change
+	configData := map[string]string{"redis.conf": buildClusterRedisConfig(lr)}
+	configHash := computeConfigHash(configData)
+
+	podAnnotations := make(map[string]string)
+	for k, v := range lr.Spec.PodTemplate.Annotations {
+		podAnnotations[k] = v
+	}
+	podAnnotations[AnnotationConfigHash] = configHash
+
+	cluster := lr.Spec.Cluster
+	if cluster == nil {
+		cluster = &littleredv1alpha1.ClusterSpec{}
+		cluster.SetDefaults()
+	}
+
+	replicas := int32(cluster.GetTotalNodes())
+
+	containers := []corev1.Container{buildClusterRedisContainer(lr)}
+
+	// Add exporter sidecar if metrics enabled
+	if lr.Spec.Metrics.IsEnabled() {
+		containers = append(containers, buildExporterContainer(lr))
+	}
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      clusterStatefulSetName(lr),
+			Namespace: lr.Namespace,
+			Labels:    labels,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas:    &replicas,
+			ServiceName: clusterHeadlessServiceName(lr),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: clusterSelectorLabels(lr),
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      podLabels,
+					Annotations: podAnnotations,
+				},
+				Spec: corev1.PodSpec{
+					SecurityContext:           lr.Spec.PodTemplate.SecurityContext,
+					Containers:                containers,
+					Volumes:                   buildClusterVolumes(lr),
+					NodeSelector:              lr.Spec.PodTemplate.NodeSelector,
+					Tolerations:               lr.Spec.PodTemplate.Tolerations,
+					Affinity:                  lr.Spec.PodTemplate.Affinity,
+					PriorityClassName:         lr.Spec.PodTemplate.PriorityClassName,
+					TopologySpreadConstraints: lr.Spec.PodTemplate.TopologySpreadConstraints,
+					ImagePullSecrets:          lr.Spec.Image.PullSecrets,
+				},
+			},
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type: appsv1.RollingUpdateStatefulSetStrategyType,
+			},
+			PodManagementPolicy: appsv1.ParallelPodManagement,
+		},
+	}
+
+	return sts
+}
+
+// buildClusterRedisContainer creates the Redis container for cluster mode
+func buildClusterRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
+	// Startup script that announces pod hostname for cluster discovery
+	startupScript := `#!/bin/sh
+set -e
+
+HOSTNAME=$(hostname)
+HEADLESS_SVC="%s"
+NAMESPACE="%s"
+FQDN="${HOSTNAME}.${HEADLESS_SVC}.${NAMESPACE}.svc.cluster.local"
+
+# Wait for DNS to be available
+echo "Waiting for DNS resolution of ${FQDN}..."
+until nslookup ${FQDN} > /dev/null 2>&1; do
+  echo "DNS not ready, retrying..."
+  sleep 1
+done
+echo "DNS ready for ${FQDN}"
+
+exec redis-server /etc/redis/redis.conf \
+  --cluster-announce-ip ${FQDN} \
+  --cluster-announce-port %d \
+  --cluster-announce-bus-port %d %s
+`
+	authArgs := ""
+	if lr.Spec.Auth.Enabled {
+		authArgs = "--requirepass $(REDIS_PASSWORD) --masterauth $(REDIS_PASSWORD)"
+	}
+
+	script := fmt.Sprintf(startupScript,
+		clusterHeadlessServiceName(lr),
+		lr.Namespace,
+		littleredv1alpha1.RedisPort,
+		littleredv1alpha1.ClusterBusPort,
+		authArgs)
+
+	container := corev1.Container{
+		Name:            "redis",
+		Image:           lr.Spec.Image.FullImage(),
+		ImagePullPolicy: lr.Spec.Image.PullPolicy,
+		Command:         []string{"sh", "-c", script},
+		Ports: []corev1.ContainerPort{
+			{
+				Name:          "redis",
+				ContainerPort: int32(littleredv1alpha1.RedisPort),
+				Protocol:      corev1.ProtocolTCP,
+			},
+			{
+				Name:          "cluster-bus",
+				ContainerPort: int32(littleredv1alpha1.ClusterBusPort),
+				Protocol:      corev1.ProtocolTCP,
+			},
+		},
+		Resources: lr.Spec.Resources,
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      "config",
+				MountPath: "/etc/redis",
+				ReadOnly:  true,
+			},
+			{
+				Name:      "data",
+				MountPath: "/data",
+			},
+		},
+		LivenessProbe:  buildClusterLivenessProbe(lr),
+		ReadinessProbe: buildClusterReadinessProbe(lr),
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: ptr(false),
+			ReadOnlyRootFilesystem:   ptr(true),
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+			},
+		},
+	}
+
+	// Add TLS volume mounts
+	if lr.Spec.TLS.Enabled {
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      "tls",
+			MountPath: "/tls",
+			ReadOnly:  true,
+		})
+	}
+
+	// Add auth env var
+	if lr.Spec.Auth.Enabled {
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name: "REDIS_PASSWORD",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: lr.Spec.Auth.ExistingSecret,
+					},
+					Key: "password",
+				},
+			},
+		})
+	}
+
+	return container
+}
+
+// buildClusterVolumes creates volumes for cluster mode pods
+func buildClusterVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
+	volumes := []corev1.Volume{
+		{
+			Name: "config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: configMapName(lr),
+					},
+				},
+			},
+		},
+		{
+			Name: "data",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+	}
+
+	// Add TLS volumes
+	if lr.Spec.TLS.Enabled {
+		volumes = append(volumes, corev1.Volume{
+			Name: "tls",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: lr.Spec.TLS.ExistingSecret,
+				},
+			},
+		})
+	}
+
+	return volumes
+}
+
+// buildClusterLivenessProbe creates the liveness probe for cluster mode
+func buildClusterLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
+	cmd := []string{"redis-cli"}
+	if lr.Spec.Auth.Enabled {
+		cmd = append(cmd, "-a", "$(REDIS_PASSWORD)")
+	}
+	if lr.Spec.TLS.Enabled {
+		cmd = append(cmd, "--tls", "--insecure")
+	}
+	cmd = append(cmd, "ping")
+
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{
+				Command: []string{
+					"sh", "-c",
+					strings.Join(cmd, " "),
+				},
+			},
+		},
+		InitialDelaySeconds: 10,
+		PeriodSeconds:       10,
+		TimeoutSeconds:      5,
+		FailureThreshold:    3,
+	}
+}
+
+// buildClusterReadinessProbe creates the readiness probe for cluster mode
+func buildClusterReadinessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
+	cmd := []string{"redis-cli"}
+	if lr.Spec.Auth.Enabled {
+		cmd = append(cmd, "-a", "$(REDIS_PASSWORD)")
+	}
+	if lr.Spec.TLS.Enabled {
+		cmd = append(cmd, "--tls", "--insecure")
+	}
+	cmd = append(cmd, "ping")
+
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{
+				Command: []string{
+					"sh", "-c",
+					strings.Join(cmd, " "),
+				},
+			},
+		},
+		InitialDelaySeconds: 5,
+		PeriodSeconds:       5,
+		TimeoutSeconds:      3,
+		FailureThreshold:    3,
+	}
+}
+
+// buildClusterHeadlessService creates the headless Service for cluster pods
+func buildClusterHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
+	labels := commonLabels(lr)
+	labels["app.kubernetes.io/component"] = "cluster"
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      clusterHeadlessServiceName(lr),
+			Namespace: lr.Namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:                     corev1.ServiceTypeClusterIP,
+			ClusterIP:                "None",
+			Selector:                 clusterSelectorLabels(lr),
+			PublishNotReadyAddresses: true,
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "redis",
+					Port:       int32(littleredv1alpha1.RedisPort),
+					TargetPort: intstr.FromString("redis"),
+					Protocol:   corev1.ProtocolTCP,
+				},
+				{
+					Name:       "cluster-bus",
+					Port:       int32(littleredv1alpha1.ClusterBusPort),
+					TargetPort: intstr.FromString("cluster-bus"),
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+		},
+	}
+}
+
+// buildClusterClientService creates the client Service for cluster mode
+func buildClusterClientService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
+	labels := commonLabels(lr)
+	for k, v := range lr.Spec.Service.Labels {
+		labels[k] = v
+	}
+
+	ports := []corev1.ServicePort{
+		{
+			Name:       "redis",
+			Port:       int32(littleredv1alpha1.RedisPort),
+			TargetPort: intstr.FromString("redis"),
+			Protocol:   corev1.ProtocolTCP,
+		},
+	}
+
+	if lr.Spec.Metrics.IsEnabled() {
+		ports = append(ports, corev1.ServicePort{
+			Name:       "metrics",
+			Port:       int32(littleredv1alpha1.RedisExporterPort),
+			TargetPort: intstr.FromString("metrics"),
+			Protocol:   corev1.ProtocolTCP,
+		})
+	}
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        serviceName(lr),
+			Namespace:   lr.Namespace,
+			Labels:      labels,
+			Annotations: lr.Spec.Service.Annotations,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     lr.Spec.Service.Type,
+			Selector: clusterSelectorLabels(lr),
+			Ports:    ports,
+		},
+	}
 }

@@ -108,6 +108,8 @@ func (r *LittleRedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.reconcileStandalone(ctx, littleRed)
 	case "sentinel":
 		return r.reconcileSentinel(ctx, littleRed)
+	case "cluster":
+		return r.reconcileCluster(ctx, littleRed)
 	default:
 		return r.setFailedStatus(ctx, littleRed, "InvalidMode", fmt.Sprintf("Unknown mode: %s", littleRed.Spec.Mode))
 	}
@@ -199,6 +201,13 @@ func (r *LittleRedReconciler) validateSpec(ctx context.Context, littleRed *littl
 			if _, ok := caSecret.Data["ca.crt"]; !ok {
 				return fmt.Errorf("CA certificate secret %q does not contain 'ca.crt' key", littleRed.Spec.TLS.CACertSecret)
 			}
+		}
+	}
+
+	// Validate cluster config
+	if littleRed.Spec.Mode == "cluster" {
+		if err := r.validateClusterSpec(littleRed); err != nil {
+			return err
 		}
 	}
 
