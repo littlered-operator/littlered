@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -273,12 +274,25 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 
 	clusterClient := redisclient.NewClusterClient(password)
 
-	// Get all pod addresses
+	// Get all pod IPs (CLUSTER MEET requires IP addresses, not hostnames)
+	podIPs := make([]string, cluster.GetTotalNodes())
 	podAddrs := make([]string, cluster.GetTotalNodes())
 	for i := 0; i < cluster.GetTotalNodes(); i++ {
 		podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
-		podAddrs[i] = fmt.Sprintf("%s.%s.%s.svc.cluster.local:%d",
-			podName, clusterHeadlessServiceName(littleRed), littleRed.Namespace, littleredv1alpha1.RedisPort)
+		pod := &corev1.Pod{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      podName,
+			Namespace: littleRed.Namespace,
+		}, pod); err != nil {
+			log.Error(err, "Failed to get pod", "pod", podName)
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+		if pod.Status.PodIP == "" {
+			log.Info("Pod has no IP yet", "pod", podName)
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+		podIPs[i] = pod.Status.PodIP
+		podAddrs[i] = fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
 	}
 
 	// 1. Get all node IDs
@@ -293,16 +307,14 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 		log.Info("Got node ID", "pod", fmt.Sprintf("%s-cluster-%d", littleRed.Name, i), "nodeID", nodeID)
 	}
 
-	// 2. CLUSTER MEET all nodes to the first node
+	// 2. CLUSTER MEET all nodes to the first node (using IP addresses)
 	firstAddr := podAddrs[0]
 	for i := 1; i < len(podAddrs); i++ {
 		podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
-		host := fmt.Sprintf("%s.%s.%s.svc.cluster.local",
-			podName, clusterHeadlessServiceName(littleRed), littleRed.Namespace)
 
-		log.Info("Meeting node", "target", firstAddr, "newNode", host)
-		if err := clusterClient.ClusterMeet(ctx, firstAddr, host, littleredv1alpha1.RedisPort); err != nil {
-			log.Error(err, "Failed to meet node", "host", host)
+		log.Info("Meeting node", "target", firstAddr, "newNodeIP", podIPs[i])
+		if err := clusterClient.ClusterMeet(ctx, firstAddr, podIPs[i], littleredv1alpha1.RedisPort); err != nil {
+			log.Error(err, "Failed to meet node", "pod", podName, "ip", podIPs[i])
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 	}
@@ -425,16 +437,36 @@ func (r *LittleRedReconciler) getClusterState(ctx context.Context, littleRed *li
 		return nil, fmt.Errorf("failed to get cluster nodes: %w", err)
 	}
 
-	// Convert to ClusterNodeState
+	// Get pod IPs for matching (since we use IP-based announce)
+	podIPs := make(map[string]string) // podName -> IP
+	for i := 0; i < cluster.GetTotalNodes(); i++ {
+		podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
+		pod := &corev1.Pod{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      podName,
+			Namespace: littleRed.Namespace,
+		}, pod); err != nil {
+			return nil, fmt.Errorf("failed to get pod %s: %w", podName, err)
+		}
+		if pod.Status.PodIP != "" {
+			podIPs[podName] = pod.Status.PodIP
+		}
+	}
+
+	// Convert to ClusterNodeState (match by IP address since we use --cluster-announce-ip with IPs)
 	states := make([]littleredv1alpha1.ClusterNodeState, 0, len(nodes))
 	for i := 0; i < cluster.GetTotalNodes(); i++ {
 		podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
-		podHostname := fmt.Sprintf("%s.%s.%s.svc.cluster.local",
-			podName, clusterHeadlessServiceName(littleRed), littleRed.Namespace)
+		podIP, ok := podIPs[podName]
+		if !ok {
+			continue
+		}
 
-		// Find this pod's node in the cluster nodes list
+		// Find this pod's node in the cluster nodes list by matching IP
 		for _, node := range nodes {
-			if node.Hostname == podHostname {
+			// node.Addr is "IP:port", extract just the IP
+			nodeIP := strings.Split(node.Addr, ":")[0]
+			if nodeIP == podIP {
 				state := littleredv1alpha1.ClusterNodeState{
 					PodName: podName,
 					NodeID:  node.NodeID,
@@ -528,12 +560,19 @@ func (r *LittleRedReconciler) recoverCluster(ctx context.Context, littleRed *lit
 
 	clusterClient := redisclient.NewClusterClient(password)
 
-	// Find a healthy node to use for recovery commands
+	// Find a healthy node to use for recovery commands (need IP address)
 	var healthyAddr string
 	for _, c := range currentNodes {
 		if storedID, ok := storedMap[c.PodName]; ok && storedID == c.NodeID {
-			healthyAddr = fmt.Sprintf("%s.%s.%s.svc.cluster.local:%d",
-				c.PodName, clusterHeadlessServiceName(littleRed), littleRed.Namespace, littleredv1alpha1.RedisPort)
+			// Get pod IP
+			pod := &corev1.Pod{}
+			if err := r.Get(ctx, types.NamespacedName{
+				Name:      c.PodName,
+				Namespace: littleRed.Namespace,
+			}, pod); err != nil {
+				continue
+			}
+			healthyAddr = fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
 			break
 		}
 	}
@@ -558,11 +597,19 @@ func (r *LittleRedReconciler) recoverCluster(ctx context.Context, littleRed *lit
 			// Continue - node might already be forgotten
 		}
 
-		// CLUSTER MEET new node
-		newHost := fmt.Sprintf("%s.%s.%s.svc.cluster.local",
-			c.PodName, clusterHeadlessServiceName(littleRed), littleRed.Namespace)
-		if err := clusterClient.ClusterMeet(ctx, healthyAddr, newHost, littleredv1alpha1.RedisPort); err != nil {
-			log.Error(err, "Failed to meet new node", "host", newHost)
+		// Get pod IP for CLUSTER MEET (requires IP, not hostname)
+		pod := &corev1.Pod{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      c.PodName,
+			Namespace: littleRed.Namespace,
+		}, pod); err != nil {
+			log.Error(err, "Failed to get pod for recovery", "pod", c.PodName)
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+
+		// CLUSTER MEET new node using IP address
+		if err := clusterClient.ClusterMeet(ctx, healthyAddr, pod.Status.PodIP, littleredv1alpha1.RedisPort); err != nil {
+			log.Error(err, "Failed to meet new node", "pod", c.PodName, "ip", pod.Status.PodIP)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 
@@ -581,7 +628,7 @@ func (r *LittleRedReconciler) recoverCluster(ctx context.Context, littleRed *lit
 			continue
 		}
 
-		newAddr := fmt.Sprintf("%s:%d", newHost, littleredv1alpha1.RedisPort)
+		newAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
 
 		// If master, re-add slots
 		if storedState.Role == "master" && storedState.SlotRanges != "" {

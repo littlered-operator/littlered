@@ -4,8 +4,152 @@ This guide shows how to deploy and use Redis caches with the LittleRed operator.
 
 ## Prerequisites
 
-- LittleRed operator running in your cluster
+- Kubernetes 1.28+
 - `kubectl` configured to access your cluster
+- Helm 3.x (for Helm installation)
+
+---
+
+## Installing the Operator
+
+### Option 1: Helm (Recommended)
+
+```bash
+# Clone the repository
+git clone https://github.com/tanne3/littlered-operator.git
+cd littlered-operator
+
+# Install the operator
+helm install littlered ./charts/littlered-operator \
+  -n littlered-system \
+  --create-namespace
+```
+
+#### Verify installation
+
+```bash
+# Check operator pod is running
+kubectl get pods -n littlered-system
+
+# Expected output:
+# NAME                                  READY   STATUS    RESTARTS   AGE
+# littlered-operator-xxxxxxxxx-xxxxx   1/1     Running   0          30s
+
+# Check CRD is installed
+kubectl get crd littlereds.littlered.tanne3.de
+```
+
+#### Custom configuration
+
+Create a `values.yaml` file:
+
+```yaml
+image:
+  repository: ghcr.io/tanne3/littlered-operator
+  tag: "0.1.0"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# For HA setups (multiple operator replicas)
+replicas: 2
+leaderElection:
+  enabled: true
+```
+
+Install with custom values:
+
+```bash
+helm install littlered ./charts/littlered-operator \
+  -n littlered-system \
+  --create-namespace \
+  -f values.yaml
+```
+
+#### Upgrade
+
+```bash
+helm upgrade littlered ./charts/littlered-operator -n littlered-system
+```
+
+**Important: Upgrading CRDs**
+
+Helm does not automatically update CRDs on `helm upgrade`. If the LittleRed CRD schema has changed (e.g., new fields like `spec.cluster`), you must apply the CRD manually:
+
+```bash
+kubectl apply -f charts/littlered-operator/crds/littlered.tanne3.de_littlereds.yaml
+```
+
+#### Uninstall
+
+```bash
+helm uninstall littlered -n littlered-system
+
+# CRDs are not deleted automatically. To remove them:
+kubectl delete crd littlereds.littlered.tanne3.de
+```
+
+### Option 2: Kustomize
+
+```bash
+# Clone the repository
+git clone https://github.com/tanne3/littlered-operator.git
+cd littlered-operator
+
+# Install CRDs and operator
+kubectl apply -k config/default
+```
+
+#### Verify installation
+
+```bash
+kubectl get pods -n redis-operator-system
+kubectl get crd littlereds.littlered.tanne3.de
+```
+
+#### Uninstall
+
+```bash
+kubectl delete -k config/default
+```
+
+### Option 3: ArgoCD
+
+Create an ArgoCD Application:
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: littlered-operator
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/tanne3/littlered-operator.git
+    targetRevision: main
+    path: charts/littlered-operator
+    helm:
+      values: |
+        image:
+          tag: "0.1.0"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: littlered-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+```
+
+---
 
 ## Standalone Mode
 
@@ -165,6 +309,141 @@ my-cache.<namespace>.svc.cluster.local:6379
 
 ---
 
+## Cluster Mode
+
+Horizontally scaled setup with automatic sharding across multiple master nodes. Data is distributed using hash slots (16384 total). No PersistentVolumes required - cluster state is stored in the CR status.
+
+### Deploy
+
+```yaml
+# cluster.yaml
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: my-cache
+spec:
+  mode: cluster
+  cluster:
+    shards: 3           # Number of master nodes (minimum 3)
+    replicasPerShard: 1 # Replicas per master (0 = no replicas)
+```
+
+```bash
+kubectl apply -f cluster.yaml
+```
+
+### Verify
+
+```bash
+# Check status
+kubectl get littlered my-cache
+
+# Expected output:
+# NAME       MODE      PHASE     READY   AGE
+# my-cache   cluster   Running   6       2m
+
+# Check all pods (3 masters + 3 replicas = 6 pods)
+kubectl get pods -l app.kubernetes.io/instance=my-cache
+
+# Expected:
+# my-cache-cluster-0   2/2     Running   (shard-0 master)
+# my-cache-cluster-1   2/2     Running   (shard-0 replica)
+# my-cache-cluster-2   2/2     Running   (shard-1 master)
+# my-cache-cluster-3   2/2     Running   (shard-1 replica)
+# my-cache-cluster-4   2/2     Running   (shard-2 master)
+# my-cache-cluster-5   2/2     Running   (shard-2 replica)
+
+# Check services
+kubectl get svc -l app.kubernetes.io/instance=my-cache
+
+# Expected:
+# my-cache           ClusterIP   ...   6379/TCP,9121/TCP         (client access)
+# my-cache-cluster   ClusterIP   None  6379/TCP,16379/TCP        (headless for cluster)
+```
+
+### Check cluster health
+
+```bash
+# Cluster info
+kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli CLUSTER INFO
+
+# Expected output includes:
+# cluster_state:ok
+# cluster_slots_assigned:16384
+# cluster_slots_ok:16384
+# cluster_known_nodes:6
+# cluster_size:3
+
+# Cluster nodes (shows all nodes with their roles and slots)
+kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli CLUSTER NODES
+
+# Check slot distribution
+kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli CLUSTER SLOTS
+```
+
+### Check cluster state in CR status
+
+```bash
+# View stored cluster topology
+kubectl get littlered my-cache -o jsonpath='{.status.cluster}' | jq
+
+# Expected output:
+# {
+#   "state": "ok",
+#   "lastBootstrap": "2026-02-03T...",
+#   "nodes": [
+#     {"podName": "my-cache-cluster-0", "nodeId": "abc123...", "role": "master", "slotRanges": "0-5460"},
+#     {"podName": "my-cache-cluster-1", "nodeId": "def456...", "role": "replica", "masterNodeId": "abc123..."},
+#     ...
+#   ]
+# }
+```
+
+### Test recovery
+
+```bash
+# Delete a master pod
+kubectl delete pod my-cache-cluster-0
+
+# Watch the operator recover (new pod gets new node ID, operator re-adds slots)
+kubectl logs -n littlered-system deployment/littlered-operator -f
+
+# Verify cluster health after recovery
+kubectl exec -it my-cache-cluster-2 -c redis -- valkey-cli CLUSTER INFO
+```
+
+### Connect from your application
+
+Redis Cluster clients automatically discover all nodes:
+
+```
+Initial endpoint: my-cache.<namespace>.svc.cluster.local:6379
+```
+
+Example with redis-cli:
+
+```bash
+# -c flag enables cluster mode (follows redirects)
+kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli -c SET mykey myvalue
+kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli -c GET mykey
+```
+
+### Slot distribution
+
+With 3 shards, slots are distributed as:
+- Shard 0 (pod-0): slots 0-5460
+- Shard 1 (pod-2): slots 5461-10922
+- Shard 2 (pod-4): slots 10923-16383
+
+### Important notes
+
+- **Cache mode**: No persistence. Data may be lost on full cluster restart.
+- **No PVCs**: Cluster state stored in CR status, not nodes.conf.
+- **Minimum 3 shards**: Redis Cluster requires at least 3 masters.
+- **Scaling not yet supported**: Adding/removing shards requires manual intervention.
+
+---
+
 ## Custom Configuration
 
 ### With resources and memory policy
@@ -279,6 +558,54 @@ spec:
             app.kubernetes.io/instance: prod-cache
 ```
 
+### Production cluster setup
+
+```yaml
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: prod-cluster
+spec:
+  mode: cluster
+
+  cluster:
+    shards: 3
+    replicasPerShard: 1
+    clusterNodeTimeout: 15000
+
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+
+  config:
+    maxmemory: "1800Mi"
+    maxmemoryPolicy: allkeys-lru
+
+  auth:
+    enabled: true
+    existingSecret: redis-password
+
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: prometheus
+
+  podTemplate:
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/instance: prod-cluster
+```
+
 ---
 
 ## Cleanup
@@ -324,4 +651,27 @@ kubectl logs my-cache-redis-0 -c redis
 
 ```bash
 kubectl logs my-cache-sentinel-0
+```
+
+### Cluster diagnostics
+
+```bash
+# Check cluster state
+kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli CLUSTER INFO
+
+# Check for failed slots
+kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli CLUSTER SLOTS
+
+# View cluster topology
+kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli CLUSTER NODES
+
+# Check stored cluster state in CR
+kubectl get littlered my-cache -o jsonpath='{.status.cluster.state}'
+
+# Force cluster re-bootstrap (if cluster is broken)
+# 1. Delete all cluster pods
+kubectl delete pods -l app.kubernetes.io/instance=my-cache,app.kubernetes.io/component=cluster
+# 2. Clear stored state by patching CR
+kubectl patch littlered my-cache --type=merge -p '{"status":{"cluster":null}}'
+# 3. Operator will re-bootstrap on next reconcile
 ```

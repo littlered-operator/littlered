@@ -67,6 +67,26 @@ spec:
                       the password key
                     type: string
                 type: object
+              cluster:
+                description: Cluster defines cluster-specific settings (cluster mode
+                  only)
+                properties:
+                  clusterNodeTimeout:
+                    default: 15000
+                    description: ClusterNodeTimeout in milliseconds
+                    type: integer
+                  replicasPerShard:
+                    default: 1
+                    description: ReplicasPerShard is the number of replicas per master
+                      (0 = no replicas)
+                    minimum: 0
+                    type: integer
+                  shards:
+                    default: 3
+                    description: Shards is the number of master shards (minimum 3)
+                    minimum: 3
+                    type: integer
+                type: object
               config:
                 description: Config defines Redis configuration
                 properties:
@@ -251,10 +271,12 @@ spec:
                 type: object
               mode:
                 default: standalone
-                description: 'Mode is the deployment mode: standalone or sentinel'
+                description: 'Mode is the deployment mode: standalone, sentinel, or
+                  cluster'
                 enum:
                 - standalone
                 - sentinel
+                - cluster
                 type: string
               podTemplate:
                 description: PodTemplate defines pod customizations
@@ -1842,6 +1864,46 @@ spec:
           status:
             description: LittleRedStatus defines the observed state of LittleRed
             properties:
+              cluster:
+                description: Cluster contains cluster state (cluster mode only)
+                properties:
+                  lastBootstrap:
+                    description: LastBootstrap timestamp
+                    format: date-time
+                    type: string
+                  nodes:
+                    description: Nodes contains per-node state for recovery
+                    items:
+                      description: ClusterNodeState tracks a cluster node's identity
+                        (replaces nodes.conf)
+                      properties:
+                        masterNodeId:
+                          description: MasterNodeID for replicas - which master this
+                            replicates
+                          type: string
+                        nodeId:
+                          description: NodeID is the Redis cluster node ID (40-char
+                            hex)
+                          type: string
+                        podName:
+                          description: PodName is the stable pod name (e.g., my-cache-cluster-0)
+                          type: string
+                        role:
+                          description: Role is master or replica
+                          type: string
+                        slotRanges:
+                          description: SlotRanges for masters (e.g., "0-5460")
+                          type: string
+                      required:
+                      - nodeId
+                      - podName
+                      - role
+                      type: object
+                    type: array
+                  state:
+                    description: 'State is the cluster state: ok, fail, initializing'
+                    type: string
+                type: object
               conditions:
                 description: Conditions represent the current state of the resource
                 items:

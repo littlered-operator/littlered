@@ -1384,25 +1384,15 @@ func buildClusterStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSe
 
 // buildClusterRedisContainer creates the Redis container for cluster mode
 func buildClusterRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
-	// Startup script that announces pod hostname for cluster discovery
+	// Startup script that announces pod IP for cluster discovery
+	// Note: We use IP instead of FQDN to avoid Redis hostname length limits (64 chars)
 	startupScript := `#!/bin/sh
 set -e
 
-HOSTNAME=$(hostname)
-HEADLESS_SVC="%s"
-NAMESPACE="%s"
-FQDN="${HOSTNAME}.${HEADLESS_SVC}.${NAMESPACE}.svc.cluster.local"
-
-# Wait for DNS to be available
-echo "Waiting for DNS resolution of ${FQDN}..."
-until nslookup ${FQDN} > /dev/null 2>&1; do
-  echo "DNS not ready, retrying..."
-  sleep 1
-done
-echo "DNS ready for ${FQDN}"
+echo "Starting Redis cluster node with announce IP: ${POD_IP}"
 
 exec redis-server /etc/redis/redis.conf \
-  --cluster-announce-ip ${FQDN} \
+  --cluster-announce-ip ${POD_IP} \
   --cluster-announce-port %d \
   --cluster-announce-bus-port %d %s
 `
@@ -1412,8 +1402,6 @@ exec redis-server /etc/redis/redis.conf \
 	}
 
 	script := fmt.Sprintf(startupScript,
-		clusterHeadlessServiceName(lr),
-		lr.Namespace,
 		littleredv1alpha1.RedisPort,
 		littleredv1alpha1.ClusterBusPort,
 		authArgs)
@@ -1466,6 +1454,16 @@ exec redis-server /etc/redis/redis.conf \
 			ReadOnly:  true,
 		})
 	}
+
+	// Add POD_IP env var (required for cluster-announce-ip)
+	container.Env = append(container.Env, corev1.EnvVar{
+		Name: "POD_IP",
+		ValueFrom: &corev1.EnvVarSource{
+			FieldRef: &corev1.ObjectFieldSelector{
+				FieldPath: "status.podIP",
+			},
+		},
+	})
 
 	// Add auth env var
 	if lr.Spec.Auth.Enabled {
