@@ -2,15 +2,15 @@
 
 > A Kubernetes operator for Redis and Valkey, focused on high-performance in-memory caching.
 
-**Document Status**: Draft
-**Last Updated**: 2026-01-30
-**Version**: 0.1.0
+**Document Status**: Active
+**Last Updated**: 2026-02-03
+**Version**: 0.2.0
 
 ---
 
 ## 1. Mission Statement
 
-Create a Kubernetes operator to run Redis and Valkey instances, based on upstream open source images, optimized for high-performance in-memory caching use cases.
+Create a Kubernetes operator to run Redis and Valkey instances, based on upstream open source images, providing a high-performance in-memory data store with durability through replication.
 
 ---
 
@@ -55,11 +55,21 @@ Redis Sentinel-based HA setup.
 - Rolling and recreate upgrade strategies
 - ServiceMonitor support (optional, user-enabled)
 
-### Phase 2+: Future Considerations
-- Redis Cluster (sharding) - may be separate operator
-- Persistence (RDB/AOF)
+### Phase 2: Cluster Mode (✅ COMPLETED)
+Redis Cluster for horizontal scaling and sharding.
+
+**Deliverables**:
+- Cluster mode: Configurable shards with replicas per shard
+- Automatic cluster bootstrapping
+- Operator-managed recovery (stores topology in CR status, not nodes.conf)
+- No PersistentVolumes required (works on any K8s cluster)
+- Data durability through replication
+
+### Phase 3+: Future Considerations
+- Persistence (RDB/AOF with PVC management)
 - Redis 8.x / newer Valkey support
 - ACL-based authentication
+- Cluster slot migration for scaling
 
 ---
 
@@ -84,21 +94,28 @@ spec:
 
 | Aspect | Approach |
 |--------|----------|
-| **Defaults** | Opinionated for performance/caching use case |
+| **Defaults** | Follow upstream Redis/Valkey defaults where reasonable |
 | **Override** | Full redis.conf override capability available |
+| **Explicit Config** | Key settings exposed as CRD fields for easy configuration |
 | **Footgun Policy** | User can break things; not our job to prevent |
 
-**Default optimizations**:
-- `maxmemory-policy`: allkeys-lru (or similar cache-friendly policy)
-- `save ""`: Persistence disabled
-- `appendonly no`: AOF disabled
+**Operator-managed settings** (always set by operator):
+- `save ""`: Persistence disabled (no disk I/O)
+- `appendonly no`: AOF disabled (no disk I/O)
 - Performance-tuned settings for in-memory workloads
+
+**User-configurable via CRD** (explicit fields, not raw config):
+- `maxmemory`: Memory limit (optional, follows upstream default if not set)
+- `maxmemoryPolicy`: Eviction policy like `allkeys-lru`, `noeviction`, etc. (optional, follows upstream default `noeviction` if not set)
+- Other common Redis settings as needed
+
+**Rationale**: We follow upstream defaults (like `noeviction`) rather than imposing "cache-first" opinions. Users who want caching behavior can explicitly set `maxmemoryPolicy: allkeys-lru`. This makes the operator more general-purpose and honest about its behavior.
 
 ### 4.3 Persistence
 
-**Default Behavior**: Pure in-memory cache. **No persistence. No volumes.**
+**Default Behavior**: Pure in-memory data store. **No disk persistence. No volumes.**
 
-The operator actively disables any persistence that Redis/Valkey images might enable by default:
+The operator actively disables any disk persistence that Redis/Valkey images might enable by default:
 
 ```
 save ""                 # Disable RDB snapshots
@@ -108,12 +125,12 @@ appendonly no           # Disable AOF
 **Guarantees**:
 - No PersistentVolumeClaims created by default
 - No disk I/O for snapshots or AOF
-- No time wasted on background saves
-- Pod restarts = empty cache (by design)
+- Data resides entirely in memory
+- **Data durability achieved through replication, not disk persistence**
 
 **User Override**: If an expert user configures persistence via `spec.config.raw`, that's their choice. The operator won't prevent it, but won't manage volumes for it either.
 
-**Future Consideration**: Operator-managed persistence (with proper PVC handling) may be added as an opt-in feature later. But the default promise remains: **pure in-memory cache, no storage.**
+**Future Consideration**: Operator-managed persistence (with proper PVC handling) may be added as an opt-in feature later. But the default promise remains: **in-memory data store with no disk storage.**
 
 ### 4.4 Authentication
 
@@ -182,25 +199,29 @@ User-selectable via CR:
 
 ### 6.1 In Scope
 
-| Item | Phase |
-|------|-------|
-| Single standalone Redis/Valkey | Pre-MVP |
-| Sentinel HA (1+2+3 topology) | MVP |
-| Redis 7.2+ / Valkey 7.2+ | Pre-MVP |
-| In-memory operation (no persistence) | Pre-MVP |
-| Prometheus metrics | Pre-MVP |
-| Optional ServiceMonitor | MVP |
-| Optional TLS | MVP |
-| Optional password auth | Pre-MVP |
-| Rolling & recreate upgrades | MVP |
-| Full config override | Pre-MVP |
+| Item | Phase | Status |
+|------|-------|--------|
+| Single standalone Redis/Valkey | Pre-MVP | ✅ |
+| Sentinel HA (1+2+3 topology) | MVP | ✅ |
+| Cluster mode (sharding with replicas) | Phase 2 | ✅ |
+| Redis 7.2+ / Valkey 7.2+ | Pre-MVP | ✅ |
+| In-memory operation (no persistence) | Pre-MVP | ✅ |
+| Data durability through replication | Phase 2 | ✅ |
+| Prometheus metrics | Pre-MVP | ✅ |
+| Optional ServiceMonitor | MVP | ✅ |
+| Optional TLS | MVP | ✅ |
+| Optional password auth | Pre-MVP | ✅ |
+| Explicit maxmemory config (CRD field) | Phase 2 | 🔴 TODO |
+| Explicit maxmemory-policy config (CRD field) | Phase 2 | 🔴 TODO |
+| Rolling & recreate upgrades | MVP | ✅ |
+| Full config override | Pre-MVP | ✅ |
 
-### 6.2 Out of Scope (Initial)
+### 6.2 Out of Scope (Current)
 
 | Item | Notes |
 |------|-------|
-| Redis Cluster (sharding) | Future - may be separate operator |
-| Persistence (RDB/AOF) | Future consideration |
+| Persistence (RDB/AOF with PVC) | Future consideration |
+| Cluster slot migration | Future - needed for dynamic scaling |
 | Redis < 7.2 | Not required |
 | Redis 8.x | Future consideration |
 | ACL-based auth | Future consideration |
@@ -247,6 +268,10 @@ While out of initial scope, architecture should not preclude:
 | 2026-01-30 | Image composed from registry/path:tag | Easy registry mirror support without copy-pasting image names |
 | 2026-01-30 | Fully qualified image refs by default | Unqualified images deprecated in modern runtimes (CRI-O, containerd) |
 | 2026-01-30 | Exporter inherits registry from main image | Single registry setting applies to all images |
+| 2026-02-03 | Cluster mode: No PVCs, topology in CR status | Enables deployment on K8s without local storage, simpler than managing nodes.conf |
+| 2026-02-03 | Data durability through replication, not disk | Replicas exist to prevent data loss during pod restarts |
+| 2026-02-03 | Follow upstream defaults for eviction | More honest/general-purpose; users opt-in to caching behavior explicitly |
+| 2026-02-03 | Expose maxmemory/maxmemory-policy as CRD fields | Easy configuration without raw config manipulation |
 
 ---
 
