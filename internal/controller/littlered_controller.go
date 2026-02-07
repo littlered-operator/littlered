@@ -716,6 +716,51 @@ func (r *LittleRedReconciler) reconcileMasterService(ctx context.Context, little
 	return r.Update(ctx, existing)
 }
 
+// getMasterPodName queries Sentinel to find the current master pod name.
+// Returns a fallback pod-0 name if Sentinel query fails.
+func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, podList *corev1.PodList) string {
+	log := logf.FromContext(ctx)
+	
+	// Default to pod-0 as initial master
+	fallbackName := fmt.Sprintf("%s-redis-0", littleRed.Name)
+
+	// Try to get real master from Sentinel
+	sentinelAddr := fmt.Sprintf("%s-sentinel.%s.svc:%d", 
+		littleRed.Name, littleRed.Namespace, littleredv1alpha1.SentinelPort)
+	
+	password := ""
+	if littleRed.Spec.Auth.Enabled {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      littleRed.Spec.Auth.ExistingSecret,
+			Namespace: littleRed.Namespace,
+		}, secret); err == nil {
+			password = string(secret.Data["password"])
+		}
+	}
+
+	// Use a short timeout for the check
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	sc := redisclient.NewSentinelClient([]string{sentinelAddr}, password)
+	masterInfo, err := sc.GetMaster(checkCtx)
+	if err != nil {
+		log.Info("Failed to get master from Sentinel (using fallback)", "error", err)
+		return fallbackName
+	}
+
+	// Find pod with this IP
+	for _, pod := range podList.Items {
+		if pod.Status.PodIP == masterInfo.IP {
+			return pod.Name
+		}
+	}
+
+	log.Info("Sentinel reported master IP not found in pod list", "ip", masterInfo.IP)
+	return fallbackName
+}
+
 // updateMasterLabel updates the role labels on Redis pods based on current master
 func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
 	log := logf.FromContext(ctx)
@@ -734,46 +779,7 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 		return nil // No pods yet
 	}
 
-	// Default to pod-0 as initial master
-	masterPodName := fmt.Sprintf("%s-redis-0", littleRed.Name)
-
-	// Try to get real master from Sentinel
-	sentinelAddr := fmt.Sprintf("%s-sentinel.%s.svc:%d",
-		littleRed.Name, littleRed.Namespace, littleredv1alpha1.SentinelPort)
-
-	password := ""
-	if littleRed.Spec.Auth.Enabled {
-		secret := &corev1.Secret{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      littleRed.Spec.Auth.ExistingSecret,
-			Namespace: littleRed.Namespace,
-		}, secret); err == nil {
-			password = string(secret.Data["password"])
-		}
-	}
-
-	// Use a short timeout for the check
-	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	sc := redisclient.NewSentinelClient([]string{sentinelAddr}, password)
-	masterInfo, err := sc.GetMaster(checkCtx)
-	if err == nil {
-		// Find pod with this IP
-		found := false
-		for _, pod := range podList.Items {
-			if pod.Status.PodIP == masterInfo.IP {
-				masterPodName = pod.Name
-				found = true
-				break
-			}
-		}
-		if !found {
-			log.Info("Sentinel reported master IP not found in pod list", "ip", masterInfo.IP)
-		}
-	} else {
-		log.Info("Failed to get master from Sentinel (using fallback)", "error", err)
-	}
+	masterPodName := r.getMasterPodName(ctx, littleRed, podList)
 
 	for i := range podList.Items {
 		pod := &podList.Items[i]
@@ -857,8 +863,16 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRe
 	if littleRed.Status.Master == nil {
 		littleRed.Status.Master = &littleredv1alpha1.MasterStatus{}
 	}
-	// For now, assume pod-0 is master (in future, query sentinel)
-	masterPodName := fmt.Sprintf("%s-redis-0", littleRed.Name)
+
+	// List Redis pods to find the master IP
+	podList := &corev1.PodList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(littleRed.Namespace),
+		client.MatchingLabels(redisSelectorLabels(littleRed)),
+	}
+	_ = r.List(ctx, podList, listOpts...)
+
+	masterPodName := r.getMasterPodName(ctx, littleRed, podList)
 	littleRed.Status.Master.PodName = masterPodName
 
 	// Try to get master pod IP
@@ -869,7 +883,6 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRe
 	}, masterPod); err == nil {
 		littleRed.Status.Master.IP = masterPod.Status.PodIP
 	}
-
 	// Determine phase
 	allReady := littleRed.Status.Redis.Ready == littleRed.Status.Redis.Total &&
 		littleRed.Status.Sentinels.Ready == littleRed.Status.Sentinels.Total &&
