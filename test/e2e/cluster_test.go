@@ -51,7 +51,7 @@ var _ = Describe("LittleRed Cluster Mode", Ordered, func() {
 		const crName = "test-cluster"
 
 		BeforeAll(func() {
-			By("creating a Redis Cluster with 3 shards and 1 replica per shard")
+			By("Test ID: CLUST-001 - creating a Redis Cluster with 3 shards and 1 replica per shard")
 			cr := fmt.Sprintf(`
 apiVersion: littlered.tanne3.de/v1alpha1
 kind: LittleRed
@@ -94,7 +94,7 @@ spec:
 		})
 
 		It("should create required services", func() {
-			By("checking client service")
+			By("Test ID: CLUST-002 - checking client service")
 			cmd := exec.Command("kubectl", "get", "service", crName, "-n", testNamespace)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
@@ -116,6 +116,7 @@ spec:
 		})
 
 		It("should have cluster state 'ok'", func() {
+			By("Test ID: CLUST-003")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 					"-n", testNamespace, "-c", "redis", "--",
@@ -127,6 +128,7 @@ spec:
 		})
 
 		It("should have all 16384 slots assigned", func() {
+			By("Test ID: CLUST-004")
 			cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 				"-n", testNamespace, "-c", "redis", "--",
 				"valkey-cli", "CLUSTER", "INFO")
@@ -137,6 +139,7 @@ spec:
 		})
 
 		It("should have correct cluster topology (3 masters, 3 replicas)", func() {
+			By("Test ID: CLUST-005")
 			cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 				"-n", testNamespace, "-c", "redis", "--",
 				"valkey-cli", "CLUSTER", "NODES")
@@ -182,7 +185,7 @@ spec:
 		})
 
 		It("should store and retrieve data using cluster mode", func() {
-			By("setting a key with cluster mode")
+			By("Test ID: CLUST-010 - setting a key with cluster mode")
 			cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 				"-n", testNamespace, "-c", "redis", "--",
 				"valkey-cli", "-c", "SET", "cluster-test-key", "cluster-test-value")
@@ -200,7 +203,7 @@ spec:
 		})
 
 		It("should distribute keys across different shards", func() {
-			By("writing multiple keys")
+			By("Test ID: CLUST-011 - writing multiple keys")
 			keys := []string{"key1", "key2", "key3", "key4", "key5"}
 			for _, key := range keys {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
@@ -244,6 +247,7 @@ spec:
 		})
 
 		It("should track cluster state in CR status", func() {
+			By("Test ID: CLUST-020")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "littlered", crName,
 					"-n", testNamespace, "-o", "jsonpath={.status.cluster.state}")
@@ -262,6 +266,7 @@ spec:
 		})
 
 		It("should have ClusterReady condition set to True", func() {
+			By("Test ID: CLUST-021")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "littlered", crName,
 					"-n", testNamespace, "-o", "jsonpath={.status.conditions[?(@.type=='ClusterReady')].status}")
@@ -344,7 +349,7 @@ spec:
 		})
 
 		It("should recover after a replica pod is deleted", func() {
-			By("identifying a replica pod")
+			By("Test ID: CLUST-030 - identifying a replica pod")
 			cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 				"-n", testNamespace, "-c", "redis", "--",
 				"valkey-cli", "CLUSTER", "NODES")
@@ -469,7 +474,7 @@ spec:
 		})
 
 		It("should handle master pod deletion with replica promotion", func() {
-			By("identifying a master pod with replicas")
+			By("Test ID: CLUST-031 - identifying a master pod with replicas")
 			cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 				"-n", testNamespace, "-c", "redis", "--",
 				"valkey-cli", "CLUSTER", "NODES")
@@ -538,7 +543,7 @@ spec:
 		})
 
 		It("should recover after multiple pod deletions", func() {
-			By("deleting 3 pods (half the cluster)")
+			By("Test ID: CLUST-032 - deleting 3 pods (half the cluster)")
 			podsToDelete := []string{
 				fmt.Sprintf("%s-cluster-1", crName),
 				fmt.Sprintf("%s-cluster-3", crName),
@@ -713,7 +718,7 @@ spec:
 		})
 
 		It("should track all node details in status", func() {
-			By("checking node count")
+			By("Test ID: CLUST-022 - checking node count")
 			cmd := exec.Command("kubectl", "get", "littlered", crName,
 				"-n", testNamespace, "-o", "jsonpath={.status.cluster.nodes}")
 			output, err := utils.Run(cmd)
@@ -852,7 +857,7 @@ spec:
 		})
 
 		It("should clean up all resources when CR is deleted", func() {
-			By("deleting the LittleRed CR")
+			By("Test ID: CLUST-033 - deleting the LittleRed CR")
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())

@@ -64,7 +64,7 @@ var _ = Describe("LittleRed", Ordered, func() {
 		})
 
 		It("should create a standalone Redis instance", func() {
-			By("applying the LittleRed CR")
+			By("Test ID: STAN-001 - applying the LittleRed CR")
 			cr := fmt.Sprintf(`
 apiVersion: littlered.tanne3.de/v1alpha1
 kind: LittleRed
@@ -114,6 +114,7 @@ spec:
 		})
 
 		It("should respond to Redis PING", func() {
+			By("Test ID: STAN-010")
 			cmd := exec.Command("kubectl", "exec", crName+"-redis-0",
 				"-n", testNamespace, "-c", "redis", "--",
 				"valkey-cli", "PING")
@@ -123,7 +124,7 @@ spec:
 		})
 
 		It("should execute SET and GET operations", func() {
-			By("setting a key")
+			By("Test ID: STAN-011 - setting a key")
 			cmd := exec.Command("kubectl", "exec", crName+"-redis-0",
 				"-n", testNamespace, "-c", "redis", "--",
 				"valkey-cli", "SET", "e2e-test-key", "e2e-test-value")
@@ -141,6 +142,7 @@ spec:
 		})
 
 		It("should expose metrics on port 9121", func() {
+			By("Test ID: STAN-012")
 			// Use curl from the redis container since exporter image is minimal
 			cmd := exec.Command("kubectl", "exec", crName+"-redis-0",
 				"-n", testNamespace, "-c", "redis", "--",
@@ -155,7 +157,7 @@ spec:
 		})
 
 		It("should recreate pod after deletion", func() {
-			By("deleting the pod")
+			By("Test ID: STAN-013 - deleting the pod")
 			cmd := exec.Command("kubectl", "delete", "pod", crName+"-redis-0",
 				"-n", testNamespace)
 			_, err := utils.Run(cmd)
@@ -182,7 +184,7 @@ spec:
 		})
 
 		It("should clean up resources when CR is deleted", func() {
-			By("deleting the LittleRed CR")
+			By("Test ID: STAN-002 - deleting the LittleRed CR")
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
@@ -215,7 +217,7 @@ spec:
 		})
 
 		It("should create a sentinel Redis cluster", func() {
-			By("applying the LittleRed CR with sentinel mode")
+			By("Test ID: SEN-001 - applying the LittleRed CR with sentinel mode")
 			cr := fmt.Sprintf(`
 apiVersion: littlered.tanne3.de/v1alpha1
 kind: LittleRed
@@ -253,7 +255,7 @@ spec:
 		})
 
 		It("should create all required services", func() {
-			By("checking master service")
+			By("Test ID: SEN-002 - checking master service")
 			cmd := exec.Command("kubectl", "get", "service", crName, "-n", testNamespace)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
@@ -280,6 +282,7 @@ spec:
 		})
 
 		It("should have sentinel quorum established", func() {
+			By("Test ID: SEN-003")
 			Eventually(func(g Gomega) {
 				// Query sentinel for master info
 				cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
@@ -293,6 +296,7 @@ spec:
 		})
 
 		It("should report master info in status", func() {
+			By("Test ID: SEN-004")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "littlered", crName,
 					"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
@@ -303,7 +307,7 @@ spec:
 		})
 
 		It("should have working replication", func() {
-			By("getting master pod name")
+			By("Test ID: SEN-010 - getting master pod name")
 			cmd := exec.Command("kubectl", "get", "littlered", crName,
 				"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
 			masterPod, err := utils.Run(cmd)
@@ -393,7 +397,7 @@ spec:
 		})
 
 		It("should perform rolling update when resources are changed", func() {
-			By("getting the current pod UID before update")
+			By("Test ID: STAN-004 - getting the current pod UID before update")
 			cmd := exec.Command("kubectl", "get", "pod", crName+"-redis-0",
 				"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
 			oldUID, err := utils.Run(cmd)
@@ -489,7 +493,7 @@ spec:
 		})
 
 		It("should trigger rolling update when config changes", func() {
-			By("getting the current pod UID and config hash")
+			By("Test ID: STAN-005 - getting the current pod UID and config hash")
 			cmd := exec.Command("kubectl", "get", "pod", crName+"-redis-0",
 				"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
 			oldUID, err := utils.Run(cmd)
@@ -619,7 +623,7 @@ spec:
 		})
 
 		It("should perform rolling update on sentinel cluster without losing quorum", func() {
-			By("getting current sentinel pod UIDs")
+			By("Test ID: SEN-005 - getting current sentinel pod UIDs")
 			var oldSentinelUIDs []string
 			for i := 0; i < 3; i++ {
 				cmd := exec.Command("kubectl", "get", "pod", fmt.Sprintf("%s-sentinel-%d", crName, i),
@@ -772,7 +776,7 @@ spec:
 		})
 
 		It("should elect new master after master pod deletion", func() {
-			By("getting current master pod")
+			By("Test ID: SEN-011 - getting current master pod")
 			cmd := exec.Command("kubectl", "get", "littlered", crName,
 				"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
 			originalMaster, err := utils.Run(cmd)
@@ -820,7 +824,7 @@ spec:
 				_, _ = fmt.Fprintf(GinkgoWriter, "Sentinel reports master: %s\n", output)
 			}, 30*time.Second, 3*time.Second).Should(Succeed())
 
-			By("verifying data is preserved after failover")
+			By("Test ID: SEN-012 - verifying data is preserved after failover")
 			Eventually(func(g Gomega) {
 				// Query sentinel for current master address
 				cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
@@ -847,7 +851,7 @@ spec:
 		})
 
 		It("should restore full cluster after failover", func() {
-			By("waiting for all pods to be ready")
+			By("Test ID: SEN-013 - waiting for all pods to be ready")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "statefulset", crName+"-redis",
 					"-n", testNamespace, "-o", "jsonpath={.status.readyReplicas}")

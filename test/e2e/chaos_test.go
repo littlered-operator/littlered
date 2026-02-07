@@ -201,6 +201,7 @@ spec:
 		})
 
 		It("should maintain data integrity during replica pod deletion", func() {
+			By("Test ID: CHAOS-001")
 			const testName = "replica-delete"
 			const testDuration = 40 * time.Second
 
@@ -253,6 +254,7 @@ spec:
 		})
 
 		It("should maintain data integrity during master pod deletion with failover", func() {
+			By("Test ID: CHAOS-002")
 			const testName = "master-delete"
 			const testDuration = 50 * time.Second
 
@@ -303,6 +305,7 @@ spec:
 		})
 
 		It("should survive rolling restart without data loss", func() {
+			By("Test ID: CHAOS-003")
 			const testName = "rolling-restart"
 			const testDuration = 90 * time.Second
 
@@ -394,6 +397,7 @@ spec:
 		})
 
 		It("should recover after pod restart", func() {
+			By("Test ID: CHAOS-010")
 			const testName = "standalone-restart"
 			const testDuration = 40 * time.Second
 

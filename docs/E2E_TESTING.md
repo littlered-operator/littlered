@@ -132,44 +132,11 @@ Run only failover tests:
 SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -ginkgo.focus="Failover"
 ```
 
-## What the Tests Cover
+## Test Coverage
 
-### Standalone Mode Tests
+For a detailed list of implemented test cases, scenarios, and their IDs, please refer to [TEST_CASES.md](TEST_CASES.md).
 
-| Test | Description |
-|------|-------------|
-| CR Creation | Creates a LittleRed resource with `mode: standalone` |
-| StatefulSet | Verifies StatefulSet is created with 1 replica |
-| Service | Verifies Service is created |
-| Status | Verifies LittleRed status becomes "Running" |
-| Redis PING | Executes `PING` command, expects `PONG` |
-| SET/GET | Writes and reads a key-value pair |
-| Metrics | Verifies Prometheus metrics are exposed on port 9121 |
-| Pod Recreation | Deletes the pod, verifies it's recreated and Redis works |
-| Cleanup | Deletes the CR, verifies all resources are removed |
-
-### Sentinel Mode Tests
-
-| Test | Description |
-|------|-------------|
-| CR Creation | Creates a LittleRed resource with `mode: sentinel` |
-| StatefulSet | Verifies StatefulSet is created with 3 replicas |
-| Services | Verifies master, replicas, and sentinel services exist |
-| Status | Verifies LittleRed status becomes "Running" |
-| Sentinel Quorum | Verifies sentinels have established quorum |
-| Master Info | Verifies status reports current master pod |
-| Replication | Writes to master, reads from replica |
-
-### Failover Tests
-
-| Test | Description |
-|------|-------------|
-| Setup | Creates sentinel cluster with fast failover settings |
-| Master Deletion | Deletes the master pod |
-| New Master Election | Verifies a new master is elected within timeout |
-| Data Preservation | Verifies data written before failover is still accessible |
-| Cluster Recovery | Verifies all 3 pods return to ready state |
-| Replica Count | Verifies sentinel sees 2 replicas after recovery |
+## Running the Tests
 
 ## Troubleshooting
 
