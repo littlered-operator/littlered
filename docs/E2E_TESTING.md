@@ -110,7 +110,7 @@ Once the operator is deployed, run the e2e tests against it.
 
 ```bash
 # Skip operator deployment (use existing ArgoCD deployment)
-SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 30m
 ```
 
 The `-v` and `-ginkgo.v` flags provide verbose output so you can see test progress.
@@ -195,9 +195,9 @@ argocd app get littlered-operator
 
 ### Tests Timeout Waiting for Resources
 
-Increase timeouts by setting Ginkgo flags:
+Increase timeouts by setting Ginkgo flags (the default is 30m):
 ```bash
-SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 20m
+SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 45m
 ```
 
 ### View Test Resources

@@ -1,6 +1,6 @@
-# Redis Cluster Mode End-to-End Tests
+# LittleRed End-to-End Tests
 
-This document describes the comprehensive end-to-end tests for LittleRed Redis Cluster mode.
+This document describes the comprehensive end-to-end tests for LittleRed, including cluster mode and chaos/resilience testing.
 
 ## Test Coverage
 
@@ -101,13 +101,13 @@ make test-e2e
 
 ```bash
 # Run only cluster tests
-KIND_CLUSTER=redis-operator-test-e2e go test -tags=e2e ./test/e2e/cluster_test.go -v -ginkgo.v -ginkgo.focus="Cluster Mode"
+KIND_CLUSTER=redis-operator-test-e2e go test -tags=e2e ./test/e2e/cluster_test.go -v -ginkgo.v -timeout 30m -ginkgo.focus="Cluster Mode"
 
 # Run specific test context
-KIND_CLUSTER=redis-operator-test-e2e go test -tags=e2e ./test/e2e/cluster_test.go -v -ginkgo.focus="Basic Cluster Operations"
+KIND_CLUSTER=redis-operator-test-e2e go test -tags=e2e ./test/e2e/cluster_test.go -v -timeout 30m -ginkgo.focus="Basic Cluster Operations"
 
 # Run specific test
-KIND_CLUSTER=redis-operator-test-e2e go test -tags=e2e ./test/e2e/cluster_test.go -v -ginkgo.focus="should create a Redis Cluster"
+KIND_CLUSTER=redis-operator-test-e2e go test -tags=e2e ./test/e2e/cluster_test.go -v -timeout 30m -ginkgo.focus="should create a Redis Cluster"
 ```
 
 ### Run Tests with Custom Cluster
@@ -119,7 +119,7 @@ If you have a specific Kubernetes cluster configured:
 kubectl config current-context
 
 # Run tests
-go test -tags=e2e ./test/e2e/cluster_test.go -v -ginkgo.v
+go test -tags=e2e ./test/e2e/cluster_test.go -v -ginkgo.v -timeout 30m
 ```
 
 ### Cleanup After Tests

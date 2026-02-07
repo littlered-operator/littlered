@@ -258,7 +258,7 @@ See [docs/E2E_TESTING.md](docs/E2E_TESTING.md) for the complete guide on buildin
 Quick start (against existing deployment):
 
 ```bash
-SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 30m
 ```
 
 ### Build

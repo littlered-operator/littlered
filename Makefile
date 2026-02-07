@@ -83,10 +83,30 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
 	esac
 
+# E2E_SETUP_DEP defines the dependency for setting up the E2E environment.
+# If SKIP_OPERATOR_DEPLOY is true, we assume an existing cluster and skip Kind setup.
+ifeq ($(SKIP_OPERATOR_DEPLOY),true)
+E2E_SETUP_DEP =
+E2E_CLEANUP_DEP =
+E2E_VARS =
+else
+E2E_SETUP_DEP = setup-test-e2e
+E2E_CLEANUP_DEP = cleanup-test-e2e
+E2E_VARS = KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER)
+endif
+
+# FOCUS allows running specific tests by name.
+# Example: make test-e2e FOCUS="Standalone"
+ifneq ($(FOCUS),)
+E2E_FOCUS = -ginkgo.focus='$(FOCUS)'
+endif
+
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
-	$(MAKE) cleanup-test-e2e
+test-e2e: $(E2E_SETUP_DEP) run-test-e2e $(E2E_CLEANUP_DEP) ## Run the e2e tests.
+
+.PHONY: run-test-e2e
+run-test-e2e: manifests generate fmt vet
+	$(E2E_VARS) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 30m $(E2E_FOCUS) $(ARGS)
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
