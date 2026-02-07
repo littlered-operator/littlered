@@ -781,6 +781,19 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 
 	masterPodName := r.getMasterPodName(ctx, littleRed, podList)
 
+	// Log master change if detected
+	currentMaster := ""
+	for _, pod := range podList.Items {
+		if pod.Labels[LabelRole] == RoleMaster {
+			currentMaster = pod.Name
+			break
+		}
+	}
+	
+	if currentMaster != "" && currentMaster != masterPodName {
+		log.Info("Master switch detected", "oldMaster", currentMaster, "newMaster", masterPodName)
+	}
+
 	for i := range podList.Items {
 		pod := &podList.Items[i]
 		currentRole := pod.Labels[LabelRole]
@@ -939,7 +952,12 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRe
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// Periodically requeue to update master info
+	// Periodically requeue to update master info, unless disabled via annotation
+	if littleRed.Annotations[AnnotationDisablePolling] == "true" {
+		log.Info("Sentinel polling disabled via annotation")
+		return ctrl.Result{}, nil
+	}
+
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 

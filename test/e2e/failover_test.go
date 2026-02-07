@@ -59,6 +59,8 @@ kind: LittleRed
 metadata:
   name: %s
   namespace: %s
+  annotations:
+    littlered.tanne3.de/disable-polling: "true"
 spec:
   mode: sentinel
   resources:
@@ -190,25 +192,83 @@ spec:
 
 	
 
-				By("Step 4: Verify Operator updated the label on the new master")
+							By("Step 4: Verify Operator updated the label on the new master")
 
-				// This is the key functional test: The operator must have reacted to the Sentinel event
+	
 
-				// and updated the Kubernetes label.
+							// This is the key functional test: The operator must have reacted to the Sentinel event
 
-				Eventually(func(g Gomega) {
+	
 
-					cmd := exec.Command("kubectl", "get", "pod", secondMaster, "-n", testNamespace, 
+							// and updated the Kubernetes label.
 
-						"-o", "jsonpath={.metadata.labels.littlered\\.tanne3\\.de/role}")
+	
 
-					role, err := utils.Run(cmd)
+							Eventually(func(g Gomega) {
 
-					g.Expect(err).NotTo(HaveOccurred())
+	
 
-					g.Expect(role).To(Equal("master"))
+								cmd := exec.Command("kubectl", "get", "pod", secondMaster, "-n", testNamespace, 
 
-				}, 20*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label quickly enough")
+	
+
+									"-o", "jsonpath={.metadata.labels.littlered\\.tanne3\\.de/role}")
+
+	
+
+								role, err := utils.Run(cmd)
+
+	
+
+								g.Expect(err).NotTo(HaveOccurred())
+
+	
+
+								g.Expect(role).To(Equal("master"))
+
+	
+
+							}, 20*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label quickly enough")
+
+	
+
+				
+
+	
+
+							By("Step 5: Verify Operator logs show event reception")
+
+	
+
+							// Verify that the event mechanism actually triggered (vs just polling or STS events)
+
+	
+
+							cmd = exec.Command("kubectl", "logs", "-n", "littlered-system", "-l", "control-plane=controller-manager", "--tail=200")
+
+	
+
+							logs, err := utils.Run(cmd)
+
+	
+
+							Expect(err).NotTo(HaveOccurred())
+
+	
+
+							Expect(logs).To(ContainSubstring("Received Sentinel event"), "Operator should have received Sentinel event")
+
+	
+
+							Expect(logs).To(ContainSubstring("Master switch detected"), "Operator should have detected master switch")
+
+	
+
+							Expect(logs).To(ContainSubstring("Sentinel polling disabled via annotation"), "Polling should be disabled")
+
+	
+
+				
 
 			})
 
