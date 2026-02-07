@@ -34,7 +34,9 @@ import (
 
 // Annotation keys for config hash
 const (
-	AnnotationConfigHash = "littlered.tanne3.de/config-hash"
+	AnnotationConfigHash             = "littlered.tanne3.de/config-hash"
+	AnnotationDisablePolling         = "littlered.tanne3.de/disable-polling"
+	AnnotationDisableEventMonitoring = "littlered.tanne3.de/disable-event-monitoring"
 )
 
 // Resource name helpers
@@ -853,8 +855,11 @@ func buildRedisStatefulSetSentinel(lr *littleredv1alpha1.LittleRed) *appsv1.Stat
 func buildRedisContainerSentinel(lr *littleredv1alpha1.LittleRed) corev1.Container {
 	// Script to configure replication based on pod index
 	// Pod-0 starts as master, others start as replicas
+	// We copy the config to /data so it's writable for CONFIG REWRITE
 	startupScript := `#!/bin/sh
 set -e
+
+cp /etc/redis/redis.conf /data/redis.conf
 
 HOSTNAME=$(hostname)
 INDEX=${HOSTNAME##*-}
@@ -862,10 +867,10 @@ MASTER_HOST="%s-redis-0.%s.%s.svc.cluster.local"
 
 if [ "$INDEX" = "0" ]; then
   echo "Starting as initial master"
-  exec redis-server /etc/redis/redis.conf %s
+  exec redis-server /data/redis.conf %s
 else
   echo "Starting as replica of $MASTER_HOST"
-  exec redis-server /etc/redis/redis.conf --replicaof $MASTER_HOST %d %s
+  exec redis-server /data/redis.conf --replicaof $MASTER_HOST %d %s
 fi
 `
 	authArgs := ""
