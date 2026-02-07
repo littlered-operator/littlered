@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -752,7 +753,7 @@ func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *l
 
 	// masterInfo.IP might be an IP address OR a FQDN (if announce-hostnames is enabled)
 	reportedIdentity := masterInfo.IP
-	
+
 	// If it's a FQDN, extract the short pod name (the part before the first dot)
 	reportedPodName := reportedIdentity
 	if dotIdx := strings.Index(reportedIdentity, "."); dotIdx != -1 {
