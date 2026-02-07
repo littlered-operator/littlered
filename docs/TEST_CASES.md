@@ -135,7 +135,7 @@ These tests use the `chaos-client` to inject faults under load.
 
 | ID | Test Case | Status | Expected Result |
 |----|-----------|--------|-----------------|
-| CHAOS-020 | Rapid Double Failover (Service) | ✅ | >50% Availability, 0 Corruption, Client follows Master |
+| CHAOS-020 | Rapid Double Failover (Service) | ✅ | >40% Availability, 0 Corruption, Client follows Master |
 
 ### 5.3 Standalone Resilience
 

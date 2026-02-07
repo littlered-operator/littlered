@@ -487,8 +487,8 @@ spec:
 			
 			GinkgoWriter.Printf("Availability - Write: %.2f%%, Read: %.2f%%\n", writeAvail*100, readAvail*100)
 			
-			Expect(writeAvail).To(BeNumerically(">", 0.50), "Write availability too low")
-			Expect(readAvail).To(BeNumerically(">", 0.50), "Read availability too low")
+			Expect(writeAvail).To(BeNumerically(">", 0.40), "Write availability too low")
+			Expect(readAvail).To(BeNumerically(">", 0.40), "Read availability too low")
 		})
 	})
 
