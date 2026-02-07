@@ -1,6 +1,16 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
 
+# Get the git tag or short hash, adding -dirty if there are uncommitted changes
+GIT_TAG := $(shell if [ -n "$$(git describe --tags --exact-match 2>/dev/null)" ]; then \
+                   git describe --tags --exact-match; \
+               else \
+                   git rev-parse --short HEAD; \
+               fi)$(shell if ! git diff-index --quiet HEAD; then echo "-dirty"; fi)
+
+# Image for chaos testing
+CHAOS_CLIENT_IMAGE ?= registry.tanne3.de/littlered-chaos-client:$(GIT_TAG)
+
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
@@ -106,7 +116,7 @@ test-e2e: $(E2E_SETUP_DEP) run-test-e2e $(E2E_CLEANUP_DEP) ## Run the e2e tests.
 
 .PHONY: run-test-e2e
 run-test-e2e: manifests generate fmt vet
-	$(E2E_VARS) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 30m $(E2E_FOCUS) $(ARGS)
+	$(E2E_VARS) CHAOS_CLIENT_IMAGE=$(CHAOS_CLIENT_IMAGE) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 30m $(E2E_FOCUS) $(ARGS)
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
