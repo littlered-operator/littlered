@@ -519,6 +519,7 @@ type ClusterNodeState struct {
 // +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`,description="Deployment mode"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`,description="Current phase"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.redis.ready`,description="Ready pods"
+// +kubebuilder:printcolumn:name="Master",type=string,JSONPath=`.status.master.podName`,description="Current master pod name"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // LittleRed is the Schema for the littlereds API

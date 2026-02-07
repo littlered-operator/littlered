@@ -77,6 +77,9 @@
 | SEN-012 | Data Survival (Failover) | ✅ | Data exists on new master after failover |
 | SEN-013 | Cluster Recovery | ✅ | All pods eventually return to Ready state |
 | SEN-014 | Rapid Double Failover | ✅ | Traffic follows master through two rapid kills (Event-driven) |
+| SEN-015 | Event-Only Recovery | ✅ | Polling disabled, only Pub/Sub events trigger updates |
+| SEN-016 | Polling-Only Recovery | ✅ | Events disabled, only periodic polling triggers updates |
+| SEN-017 | Hybrid (Prod) Recovery | ✅ | Both events and polling active (standard prod config) |
 
 ---
 

@@ -734,6 +734,9 @@ func buildRedisConfigSentinel(lr *littleredv1alpha1.LittleRed) string {
 	sb.WriteString("\n# Replication settings\n")
 	sb.WriteString("replica-serve-stale-data yes\n")
 	sb.WriteString("replica-read-only yes\n")
+	sb.WriteString("repl-diskless-sync yes\n")
+	sb.WriteString("repl-diskless-sync-delay 5\n")
+	sb.WriteString("repl-diskless-load on-empty-db\n")
 
 	// TLS settings
 	if lr.Spec.TLS.Enabled {
@@ -1264,6 +1267,12 @@ func buildClusterRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 	sb.WriteString("cluster-config-file /data/nodes.conf\n")
 	sb.WriteString(fmt.Sprintf("cluster-node-timeout %d\n", cluster.ClusterNodeTimeout))
 	sb.WriteString("cluster-announce-hostname yes\n")
+
+	// Replication settings
+	sb.WriteString("\n# Replication settings\n")
+	sb.WriteString("repl-diskless-sync yes\n")
+	sb.WriteString("repl-diskless-sync-delay 5\n")
+	sb.WriteString("repl-diskless-load on-empty-db\n")
 
 	// Disable persistence (pure cache)
 	sb.WriteString("\n# Persistence disabled (cache mode)\n")

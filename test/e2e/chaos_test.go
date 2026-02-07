@@ -355,16 +355,19 @@ spec:
 	})
 
 	Context("Sentinel Resilience", Ordered, func() {
-		const crName = "chaos-sentinel"
+		var crName string
 
 		BeforeAll(func() {
-			By("creating a Sentinel cluster for chaos testing")
+			crName = fmt.Sprintf("chaos-sentinel-%d", time.Now().Unix())
+			By(fmt.Sprintf("creating Sentinel cluster %s for chaos testing", crName))
 			cr := fmt.Sprintf(`
 apiVersion: littlered.tanne3.de/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
   namespace: %s
+  annotations:
+    littlered.tanne3.de/disable-polling: "true"
 spec:
   mode: sentinel
   resources:

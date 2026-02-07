@@ -36,6 +36,12 @@ func (r *LittleRedReconciler) ensureSentinelMonitor(ctx context.Context, littleR
 	log := logf.FromContext(ctx)
 	nn := types.NamespacedName{Name: littleRed.Name, Namespace: littleRed.Namespace}
 
+	if littleRed.Annotations[AnnotationDisableEventMonitoring] == "true" {
+		log.Info("Sentinel event monitoring disabled via annotation")
+		r.stopSentinelMonitor(nn)
+		return
+	}
+
 	r.monitorsMu.Lock()
 	defer r.monitorsMu.Unlock()
 
@@ -137,6 +143,7 @@ func (r *LittleRedReconciler) monitorSentinel(ctx context.Context, littleRed *li
 				log.Info("Received Sentinel event", "channel", msg.Channel, "payload", msg.Payload)
 
 				// Trigger reconciliation
+				log.Info("Triggering reconciliation via Sentinel event")
 				r.sentinelEvents <- event.GenericEvent{
 					Object: &littleredv1alpha1.LittleRed{
 						ObjectMeta: ctrl.ObjectMeta{
