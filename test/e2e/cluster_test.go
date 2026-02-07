@@ -50,14 +50,8 @@ var _ = Describe("LittleRed Cluster Mode", Ordered, func() {
 	Context("Basic Cluster Operations", Ordered, func() {
 		const crName = "test-cluster"
 
-		AfterAll(func() {
-			By("cleaning up cluster CR")
-			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=1m")
-			_, _ = utils.Run(cmd)
-		})
-
-		It("should create a Redis Cluster with 3 shards and 1 replica per shard", func() {
-			By("applying the LittleRed CR with cluster mode")
+		BeforeAll(func() {
+			By("creating a Redis Cluster with 3 shards and 1 replica per shard")
 			cr := fmt.Sprintf(`
 apiVersion: littlered.tanne3.de/v1alpha1
 kind: LittleRed
@@ -81,6 +75,12 @@ spec:
 			cmd.Stdin = strings.NewReader(cr)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterAll(func() {
+			By("cleaning up cluster CR")
+			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=1m")
+			_, _ = utils.Run(cmd)
 		})
 
 		It("should create StatefulSet with 6 replicas (3 masters + 3 replicas)", func() {
@@ -275,14 +275,8 @@ spec:
 	Context("Cluster Recovery and Resilience", Ordered, func() {
 		const crName = "test-cluster-recovery"
 
-		AfterAll(func() {
-			By("cleaning up recovery test CR")
-			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=1m")
-			_, _ = utils.Run(cmd)
-		})
-
-		It("should create a cluster for recovery testing", func() {
-			By("applying the LittleRed CR")
+		BeforeAll(func() {
+			By("creating a Redis Cluster for recovery testing")
 			cr := fmt.Sprintf(`
 apiVersion: littlered.tanne3.de/v1alpha1
 kind: LittleRed
@@ -316,7 +310,7 @@ spec:
 				g.Expect(output).To(Equal("Running"))
 			}, 4*time.Minute, 5*time.Second).Should(Succeed())
 
-			By("writing test data")
+			By("writing initial test data")
 			cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
 				"-n", testNamespace, "-c", "redis", "--",
 				"valkey-cli", "-c", "SET", "recovery-test-key", "recovery-test-value")
@@ -341,6 +335,12 @@ spec:
 				dbsize, _ := utils.Run(cmd)
 				_, _ = fmt.Fprintf(GinkgoWriter, "BEFORE deletion - Master %s DBSIZE: %s\n", podName, strings.TrimSpace(dbsize))
 			}
+		})
+
+		AfterAll(func() {
+			By("cleaning up recovery test CR")
+			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=1m")
+			_, _ = utils.Run(cmd)
 		})
 
 		It("should recover after a replica pod is deleted", func() {
@@ -589,14 +589,8 @@ spec:
 	Context("Cluster Configuration", Ordered, func() {
 		const crName = "test-cluster-config"
 
-		AfterAll(func() {
-			By("cleaning up config test CR")
-			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=1m")
-			_, _ = utils.Run(cmd)
-		})
-
-		It("should create cluster with custom configuration", func() {
-			By("applying CR with custom shard and replica settings")
+		BeforeAll(func() {
+			By("creating cluster with custom configuration")
 			cr := fmt.Sprintf(`
 apiVersion: littlered.tanne3.de/v1alpha1
 kind: LittleRed
@@ -635,6 +629,12 @@ spec:
 			}, 4*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
+		AfterAll(func() {
+			By("cleaning up config test CR")
+			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=1m")
+			_, _ = utils.Run(cmd)
+		})
+
 		It("should apply custom maxmemory configuration", func() {
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
@@ -669,14 +669,8 @@ spec:
 	Context("Cluster Status Tracking", Ordered, func() {
 		const crName = "test-cluster-status"
 
-		AfterAll(func() {
-			By("cleaning up status test CR")
-			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=1m")
-			_, _ = utils.Run(cmd)
-		})
-
-		It("should create cluster and track detailed status", func() {
-			By("applying the LittleRed CR")
+		BeforeAll(func() {
+			By("creating a Redis Cluster for status tracking tests")
 			cr := fmt.Sprintf(`
 apiVersion: littlered.tanne3.de/v1alpha1
 kind: LittleRed
@@ -702,6 +696,12 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Running"))
 			}, 4*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		AfterAll(func() {
+			By("cleaning up status test CR")
+			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=1m")
+			_, _ = utils.Run(cmd)
 		})
 
 		It("should track lastBootstrap timestamp", func() {
@@ -822,8 +822,8 @@ spec:
 	Context("Cluster Cleanup", Ordered, func() {
 		const crName = "test-cluster-cleanup"
 
-		It("should create a cluster for cleanup testing", func() {
-			By("applying the LittleRed CR")
+		BeforeAll(func() {
+			By("creating a Redis Cluster for cleanup testing")
 			cr := fmt.Sprintf(`
 apiVersion: littlered.tanne3.de/v1alpha1
 kind: LittleRed
