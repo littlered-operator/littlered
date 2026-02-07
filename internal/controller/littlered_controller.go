@@ -750,14 +750,23 @@ func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *l
 		return fallbackName
 	}
 
-	// Find pod with this IP
+	// masterInfo.IP might be an IP address OR a FQDN (if announce-hostnames is enabled)
+	reportedIdentity := masterInfo.IP
+	
+	// If it's a FQDN, extract the short pod name (the part before the first dot)
+	reportedPodName := reportedIdentity
+	if dotIdx := strings.Index(reportedIdentity, "."); dotIdx != -1 {
+		reportedPodName = reportedIdentity[:dotIdx]
+	}
+
+	// Find pod with matching IP or Name
 	for _, pod := range podList.Items {
-		if pod.Status.PodIP == masterInfo.IP {
+		if pod.Status.PodIP == reportedIdentity || pod.Name == reportedPodName {
 			return pod.Name
 		}
 	}
 
-	log.Info("Sentinel reported master IP not found in pod list", "ip", masterInfo.IP)
+	log.Info("Sentinel reported master identity not found in pod list", "identity", reportedIdentity)
 	return fallbackName
 }
 
@@ -789,7 +798,7 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 			break
 		}
 	}
-	
+
 	if currentMaster != "" && currentMaster != masterPodName {
 		log.Info("Master switch detected", "oldMaster", currentMaster, "newMaster", masterPodName)
 	}
