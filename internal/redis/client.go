@@ -70,6 +70,56 @@ func (c *SentinelClient) GetMaster(ctx context.Context) (*MasterInfo, error) {
 	return nil, fmt.Errorf("no sentinels available")
 }
 
+// Subscribe connects to a sentinel and subscribes to the given channels.
+// It returns a channel that receives messages and a close function.
+// Note: This connects to the first available sentinel address.
+func (c *SentinelClient) Subscribe(ctx context.Context, channels ...string) (<-chan *redis.Message, func(), error) {
+	var client *redis.Client
+	var lastErr error
+
+	// Try to connect to any available sentinel
+	for _, addr := range c.addresses {
+		// Use a standard client for Pub/Sub connections to Sentinel
+		rdb := redis.NewClient(&redis.Options{
+			Addr:        addr,
+			Password:    c.password,
+			DialTimeout: DefaultTimeout,
+			// No read timeout for Pub/Sub
+			ReadTimeout: -1,
+		})
+
+		if err := rdb.Ping(ctx).Err(); err == nil {
+			client = rdb
+			break
+		} else {
+			lastErr = err
+			rdb.Close()
+		}
+	}
+
+	if client == nil {
+		if lastErr != nil {
+			return nil, nil, fmt.Errorf("failed to connect to any sentinel: %w", lastErr)
+		}
+		return nil, nil, fmt.Errorf("no sentinels available")
+	}
+
+	pubsub := client.Subscribe(ctx, channels...)
+	
+	// Verify subscription
+	if _, err := pubsub.Receive(ctx); err != nil {
+		pubsub.Close()
+		client.Close()
+		return nil, nil, fmt.Errorf("failed to subscribe: %w", err)
+	}
+
+	// Return the channel and a cleanup function
+	return pubsub.Channel(), func() {
+		pubsub.Close()
+		client.Close()
+	}, nil
+}
+
 func (c *SentinelClient) getMasterFromSentinel(ctx context.Context, addr string) (*MasterInfo, error) {
 	client := redis.NewSentinelClient(&redis.Options{
 		Addr:        addr,

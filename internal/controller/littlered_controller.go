@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -31,9 +32,13 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	littleredv1alpha1 "github.com/tanne3/littlered-operator/api/v1alpha1"
+	redisclient "github.com/tanne3/littlered-operator/internal/redis"
 )
 
 const (
@@ -44,6 +49,11 @@ const (
 type LittleRedReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// Sentinel monitoring
+	sentinelEvents chan event.GenericEvent
+	monitors       map[types.NamespacedName]func()
+	monitorsMu     sync.Mutex
 }
 
 // +kubebuilder:rbac:groups=littlered.tanne3.de,resources=littlereds,verbs=get;list;watch;create;update;patch;delete
@@ -103,6 +113,10 @@ func (r *LittleRedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	})
 
 	// Reconcile based on mode
+	if littleRed.Spec.Mode != "sentinel" {
+		r.stopSentinelMonitor(req.NamespacedName)
+	}
+
 	switch littleRed.Spec.Mode {
 	case "standalone":
 		return r.reconcileStandalone(ctx, littleRed)
@@ -133,6 +147,12 @@ func (r *LittleRedReconciler) reconcileDelete(ctx context.Context, littleRed *li
 	if err := r.Update(ctx, littleRed); err != nil {
 		return ctrl.Result{}, err
 	}
+
+	// Stop sentinel monitor if running
+	r.stopSentinelMonitor(types.NamespacedName{
+		Name:      littleRed.Name,
+		Namespace: littleRed.Namespace,
+	})
 
 	return ctrl.Result{}, nil
 }
@@ -513,6 +533,9 @@ func (r *LittleRedReconciler) reconcileSentinel(ctx context.Context, littleRed *
 		}
 	}
 
+	// Ensure background sentinel monitoring is running
+	r.ensureSentinelMonitor(ctx, littleRed)
+
 	// Update status
 	return r.updateSentinelStatus(ctx, littleRed)
 }
@@ -711,9 +734,46 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 		return nil // No pods yet
 	}
 
-	// For initial setup, pod-0 is the master
-	// In the future, we can query sentinel to find the real master
+	// Default to pod-0 as initial master
 	masterPodName := fmt.Sprintf("%s-redis-0", littleRed.Name)
+
+	// Try to get real master from Sentinel
+	sentinelAddr := fmt.Sprintf("%s-sentinel.%s.svc:%d", 
+		littleRed.Name, littleRed.Namespace, littleredv1alpha1.SentinelPort)
+	
+	password := ""
+	if littleRed.Spec.Auth.Enabled {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      littleRed.Spec.Auth.ExistingSecret,
+			Namespace: littleRed.Namespace,
+		}, secret); err == nil {
+			password = string(secret.Data["password"])
+		}
+	}
+
+	// Use a short timeout for the check
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	sc := redisclient.NewSentinelClient([]string{sentinelAddr}, password)
+	masterInfo, err := sc.GetMaster(checkCtx)
+	if err == nil {
+		// Find pod with this IP
+		found := false
+		for _, pod := range podList.Items {
+			if pod.Status.PodIP == masterInfo.IP {
+				masterPodName = pod.Name
+				found = true
+				break
+			}
+		}
+		if !found {
+			log.Info("Sentinel reported master IP not found in pod list", "ip", masterInfo.IP)
+		}
+	} else {
+		log.Info("Failed to get master from Sentinel (using fallback)", "error", err)
+	}
 
 	for i := range podList.Items {
 		pod := &podList.Items[i]
@@ -902,11 +962,15 @@ func (r *LittleRedReconciler) setFailedStatus(ctx context.Context, littleRed *li
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *LittleRedReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.sentinelEvents = make(chan event.GenericEvent)
+	r.monitors = make(map[types.NamespacedName]func())
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&littleredv1alpha1.LittleRed{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Service{}).
 		Owns(&appsv1.StatefulSet{}).
+		WatchesRawSource(&source.Channel{Source: r.sentinelEvents}, &handler.EnqueueRequestForObject{}).
 		Named("littlered").
 		Complete(r)
 }

@@ -76,6 +76,7 @@
 | SEN-011 | Master Pod Deletion | ✅ | New master elected, cluster recovers |
 | SEN-012 | Data Survival (Failover) | ✅ | Data exists on new master after failover |
 | SEN-013 | Cluster Recovery | ✅ | All pods eventually return to Ready state |
+| SEN-014 | Rapid Double Failover | ✅ | Traffic follows master through two rapid kills (Event-driven) |
 
 ---
 
