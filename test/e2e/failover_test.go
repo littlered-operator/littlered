@@ -53,45 +53,26 @@ var _ = Describe("Sentinel Advanced Failover", Ordered, func() {
 
 				By("deploying a Sentinel cluster for label testing")
 
-				cr := fmt.Sprintf(`
-
-	apiVersion: littlered.tanne3.de/v1alpha1
-
-	kind: LittleRed
-
-	metadata:
-
-	  name: %s
-
-	  namespace: %s
-
-	spec:
-
-	  mode: sentinel
-
-	  resources:
-
-	    requests:
-
-	      cpu: "100m"
-
-	      memory: "128Mi"
-
-	    limits:
-
-	      cpu: "100m"
-
-	      memory: "128Mi"
-
-	  sentinel:
-
-	    quorum: 2
-
-	    downAfterMilliseconds: 5000
-
-	    failoverTimeout: 10000
-
-	`, crName, testNamespace)
+			cr := fmt.Sprintf(`
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: sentinel
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+  sentinel:
+    quorum: 2
+    downAfterMilliseconds: 5000
+    failoverTimeout: 10000
+`, crName, testNamespace)
 
 				cmd := exec.Command("kubectl", "apply", "-f", "-")
 

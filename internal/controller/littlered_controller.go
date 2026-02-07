@@ -720,14 +720,14 @@ func (r *LittleRedReconciler) reconcileMasterService(ctx context.Context, little
 // Returns a fallback pod-0 name if Sentinel query fails.
 func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, podList *corev1.PodList) string {
 	log := logf.FromContext(ctx)
-	
+
 	// Default to pod-0 as initial master
 	fallbackName := fmt.Sprintf("%s-redis-0", littleRed.Name)
 
 	// Try to get real master from Sentinel
-	sentinelAddr := fmt.Sprintf("%s-sentinel.%s.svc:%d", 
+	sentinelAddr := fmt.Sprintf("%s-sentinel.%s.svc:%d",
 		littleRed.Name, littleRed.Namespace, littleredv1alpha1.SentinelPort)
-	
+
 	password := ""
 	if littleRed.Spec.Auth.Enabled {
 		secret := &corev1.Secret{}
