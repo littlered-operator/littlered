@@ -31,3 +31,4 @@ go.work
 
 # Local Helm values overrides
 charts/*/values-local.yaml
+.aider*
