@@ -354,6 +354,144 @@ spec:
 		})
 	})
 
+	Context("Sentinel Resilience", Ordered, func() {
+		const crName = "chaos-sentinel"
+
+		BeforeAll(func() {
+			By("creating a Sentinel cluster for chaos testing")
+			cr := fmt.Sprintf(`
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: sentinel
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+  sentinel:
+    quorum: 2
+    downAfterMilliseconds: 5000
+    failoverTimeout: 10000
+`, crName, testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(cr)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for cluster to be ready")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		AfterAll(func() {
+			By("cleaning up sentinel cluster")
+			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=2m")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should maintain availability during rapid double failover", func() {
+			By("Test ID: CHAOS-020")
+			const testName = "sentinel-double-failover"
+			const testDuration = 90 * time.Second
+
+			// Target the Kubernetes Service, not individual pods
+			// chaos-client sees it as a single "standalone" instance
+			serviceName := crName // The operator creates a service with the same name
+			
+			By("deploying chaos client targeting the Master Service")
+			podName, err := deployChaosClient(testNamespace, testName, serviceName, false, "chaos-failover", testDuration)
+			Expect(err).NotTo(HaveOccurred())
+			defer deleteChaosClient(testNamespace, podName)
+
+			By("waiting for baseline (15 seconds)")
+			time.Sleep(15 * time.Second)
+
+			// --- Failover 1 ---
+			By("identifying first master")
+			cmd := exec.Command("kubectl", "get", "littlered", crName,
+				"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
+			master1, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			master1 = strings.TrimSpace(master1)
+			
+			By("killing first master")
+			GinkgoWriter.Printf("Killing Master 1: %s\n", master1)
+			cmd = exec.Command("kubectl", "delete", "pod", master1,
+				"-n", testNamespace, "--grace-period=0", "--force")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Wait for recovery
+			By("waiting for new master (approx 30s)")
+			time.Sleep(30 * time.Second)
+
+			// --- Failover 2 ---
+			By("identifying second master")
+			// Need to retry a bit as status update might lag slightly behind actual election
+			var master2 string
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				master2 = strings.TrimSpace(out)
+				g.Expect(master2).NotTo(Equal(master1), "New master should be different")
+				g.Expect(master2).NotTo(BeEmpty())
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			By("killing second master")
+			GinkgoWriter.Printf("Killing Master 2: %s\n", master2)
+			cmd = exec.Command("kubectl", "delete", "pod", master2,
+				"-n", testNamespace, "--grace-period=0", "--force")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Wait for rest of duration
+			By("waiting for chaos client to complete")
+			err = waitForChaosClientComplete(testNamespace, podName, testDuration+2*time.Minute)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("collecting metrics")
+			metrics, err := getChaosClientMetrics(testNamespace, podName)
+			Expect(err).NotTo(HaveOccurred())
+			GinkgoWriter.Printf("Final metrics:\n%s\n", metrics.String())
+
+			// Assertions
+			// 1. Data Integrity: ZERO corruption allowed.
+			//    Note: We might lose ACK'd writes if they were in memory but not replicated when we killed -9 the master.
+			//    However, chaos-client verifies "Read what was Confirmed Written".
+			//    If Redis acknowledges a write, it should be safe (if replication is sync, or if we accept async loss).
+			//    Redis Sentinel defaults are async replication. We MIGHT see data loss (not corruption, but missing keys).
+			//    Corruption = Read Key X, got Value Y (wrong).
+			//    Loss = Read Key X, got "Nil" (missing).
+			
+			Expect(metrics.DataCorruptions).To(Equal(int64(0)), "Data corruption detected!")
+
+			// 2. Availability
+			// We killed the master twice. Each failover takes ~5-10s.
+			// We expect some downtime, but it should recover.
+			// Let's assert > 50% write availability (conservative).
+			writeAvail := metrics.WriteAvailability()
+			readAvail := metrics.ReadAvailability()
+			
+			GinkgoWriter.Printf("Availability - Write: %.2f%%, Read: %.2f%%\n", writeAvail*100, readAvail*100)
+			
+			Expect(writeAvail).To(BeNumerically(">", 0.50), "Write availability too low")
+			Expect(readAvail).To(BeNumerically(">", 0.50), "Read availability too low")
+		})
+	})
+
 	Context("Standalone Mode Resilience", Ordered, func() {
 		const crName = "chaos-standalone"
 

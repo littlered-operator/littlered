@@ -131,7 +131,13 @@ These tests use the `chaos-client` to inject faults under load.
 | CHAOS-002 | Master Deletion under Load | ✅ | 0 Data Corruption, Cluster recovers automatically |
 | CHAOS-003 | Rolling Restart under Load | ✅ | 0 Data Corruption, >70% availability |
 
-### 5.2 Standalone Resilience
+### 5.2 Sentinel Resilience
+
+| ID | Test Case | Status | Expected Result |
+|----|-----------|--------|-----------------|
+| CHAOS-020 | Rapid Double Failover (Service) | ✅ | >50% Availability, 0 Corruption, Client follows Master |
+
+### 5.3 Standalone Resilience
 
 | ID | Test Case | Status | Expected Result |
 |----|-----------|--------|-----------------|

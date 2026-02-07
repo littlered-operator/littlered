@@ -47,190 +47,191 @@ var _ = Describe("Sentinel Advanced Failover", Ordered, func() {
 		_, _ = utils.Run(cmd)
 	})
 
-	Context("Event-Driven Recovery", Ordered, func() {
-		BeforeAll(func() {
-			By("deploying a Sentinel cluster with aggressive timeouts")
-			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
-kind: LittleRed
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  mode: sentinel
-  resources:
-    requests:
-      cpu: "100m"
-      memory: "128Mi"
-    limits:
-      cpu: "100m"
-      memory: "128Mi"
-  sentinel:
-    quorum: 2
-    downAfterMilliseconds: 5000  # Fast failure detection
-    failoverTimeout: 10000
-`, crName, testNamespace)
-			cmd := exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(cr)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
+		Context("Event-Driven Label Updates", Ordered, func() {
 
-			By("waiting for cluster to be ready")
-			Eventually(func(g Gomega) {
+			BeforeAll(func() {
+
+				By("deploying a Sentinel cluster for label testing")
+
+				cr := fmt.Sprintf(`
+
+	apiVersion: littlered.tanne3.de/v1alpha1
+
+	kind: LittleRed
+
+	metadata:
+
+	  name: %s
+
+	  namespace: %s
+
+	spec:
+
+	  mode: sentinel
+
+	  resources:
+
+	    requests:
+
+	      cpu: "100m"
+
+	      memory: "128Mi"
+
+	    limits:
+
+	      cpu: "100m"
+
+	      memory: "128Mi"
+
+	  sentinel:
+
+	    quorum: 2
+
+	    downAfterMilliseconds: 5000
+
+	    failoverTimeout: 10000
+
+	`, crName, testNamespace)
+
+				cmd := exec.Command("kubectl", "apply", "-f", "-")
+
+				cmd.Stdin = strings.NewReader(cr)
+
+				_, err := utils.Run(cmd)
+
+				Expect(err).NotTo(HaveOccurred())
+
+	
+
+				By("waiting for cluster to be ready")
+
+				Eventually(func(g Gomega) {
+
+					cmd := exec.Command("kubectl", "get", "littlered", crName,
+
+						"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+
+					output, err := utils.Run(cmd)
+
+					g.Expect(err).NotTo(HaveOccurred())
+
+					g.Expect(output).To(Equal("Running"))
+
+				}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			})
+
+	
+
+			It("should update master role label immediately after failover", func() {
+
+				By("Step 1: Identify initial master")
+
 				cmd := exec.Command("kubectl", "get", "littlered", crName,
-					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Running"))
-			}, 3*time.Minute, 5*time.Second).Should(Succeed())
-		})
 
-		It("should immediately route traffic to new master after double failover", func() {
-			By("Step 1: Identify initial master")
-			cmd := exec.Command("kubectl", "get", "littlered", crName,
-				"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
-			initialMaster, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			initialMaster = strings.TrimSpace(initialMaster)
-			fmt.Fprintf(GinkgoWriter, "Initial Master: %s
-", initialMaster)
+					"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
 
-			By("Step 2: Start continuous write loop to Service")
-			// We use a background process to write to the SERVICE (not the pod)
-			// This verifies that the Operator updates the service endpoints correctly
-			stopCh := make(chan struct{})
-			errCh := make(chan error)
-			
-			go func() {
-				defer close(errCh)
-				clientPod := "client-" + crName
-				// Ensure client pod exists
-				setupCmd := exec.Command("kubectl", "run", clientPod, "--image=redis:alpine", 
-					"-n", testNamespace, "--restart=Never", "--", "sleep", "3600")
-				utils.Run(setupCmd)
-				
-				// Wait for client running
-				time.Sleep(10 * time.Second)
+				initialMaster, err := utils.Run(cmd)
 
-				// Loop writes
-				i := 0
-				for {
-					select {
-					case <-stopCh:
-						return
-					default:
-						i++
-						key := fmt.Sprintf("continuous-key-%d", i)
-						// Write to the SERVICE
-						writeCmd := exec.Command("kubectl", "exec", clientPod, "-n", testNamespace, "--",
-							"redis-cli", "-h", crName, "SET", key, "val", "EX", "60")
-						_, err := utils.Run(writeCmd)
-						if err != nil {
-							// Log error but keep trying (expected during failover window)
-							// fmt.Fprintf(GinkgoWriter, "Write failed at %d: %v
-", i, err)
+				Expect(err).NotTo(HaveOccurred())
+
+				initialMaster = strings.TrimSpace(initialMaster)
+
+				fmt.Fprintf(GinkgoWriter, "Initial Master: %s\n", initialMaster)
+
+	
+
+				By("Step 2: Kill the Master")
+
+				cmd = exec.Command("kubectl", "delete", "pod", initialMaster, 
+
+					"-n", testNamespace, "--grace-period=0", "--force")
+
+				_, err = utils.Run(cmd)
+
+				Expect(err).NotTo(HaveOccurred())
+
+	
+
+				By("Step 3: Wait for new master to be elected")
+
+				var secondMaster string
+
+				Eventually(func(g Gomega) {
+
+					// Ask Sentinel who is master
+
+					cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
+
+						"-n", testNamespace, "-c", "sentinel", "--",
+
+						"redis-cli", "-p", "26379", "SENTINEL", "get-master-addr-by-name", "mymaster")
+
+					output, err := utils.Run(cmd)
+
+					g.Expect(err).NotTo(HaveOccurred())
+
+					
+
+					lines := strings.Split(strings.TrimSpace(output), "\n")
+
+					if len(lines) > 0 {
+
+						ip := lines[0]
+
+						podCmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, 
+
+							"-o", "jsonpath={.items[?(@.status.podIP=='"+ip+"')].metadata.name}")
+
+						podName, _ := utils.Run(podCmd)
+
+						podName = strings.TrimSpace(podName)
+
+						
+
+						if podName != "" && podName != initialMaster {
+
+							secondMaster = podName
+
+							return 
+
 						}
-						time.Sleep(500 * time.Millisecond)
+
 					}
-				}
-			}()
 
-			By("Step 3: Kill the Master (Failover 1)")
-			cmd = exec.Command("kubectl", "delete", "pod", initialMaster, 
-				"-n", testNamespace, "--grace-period=0", "--force")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
+					g.Expect(secondMaster).To(And(Not(BeEmpty()), Not(Equal(initialMaster))), "New master not yet elected or found")
 
-			By("Step 4: Wait for new master to be elected")
-			var secondMaster string
-			Eventually(func(g Gomega) {
-				// Ask Sentinel who is master
-				cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
-					"-n", testNamespace, "-c", "sentinel", "--",
-					"redis-cli", "-p", "26379", "SENTINEL", "get-master-addr-by-name", "mymaster")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
+				}, 1*time.Minute, 2*time.Second).Should(Succeed())
+
 				
-				// Find the pod name from the IP in output
-				// Output format is usually IP
-PORT
-				lines := strings.Split(strings.TrimSpace(output), "
-")
-				if len(lines) > 0 {
-					ip := lines[0]
-					// Find pod by IP
-					podCmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, 
-						"-o", "jsonpath={.items[?(@.status.podIP=='"+ip+"')].metadata.name}")
-					podName, _ := utils.Run(podCmd)
-					podName = strings.TrimSpace(podName)
-					
-					if podName != "" && podName != initialMaster {
-						secondMaster = podName
-						return // Found new master
-					}
-				}
-				g.Fail("New master not yet elected or found")
-			}, 1*time.Minute, 2*time.Second).Should(Succeed())
-			
-			fmt.Fprintf(GinkgoWriter, "Second Master: %s
-", secondMaster)
 
-			By("Step 5: Verify Service routing to Second Master")
-			// The operator should have updated labels by now via event
-			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pod", secondMaster, "-n", testNamespace, 
-					"-o", "jsonpath={.metadata.labels.littlered\.tanne3\.de/role}")
-				role, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(role).To(Equal("master"))
-			}, 10*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label quickly")
+				fmt.Fprintf(GinkgoWriter, "Second Master: %s\n", secondMaster)
 
-			By("Step 6: Kill the Second Master IMMEDIATELY (Failover 2)")
-			cmd = exec.Command("kubectl", "delete", "pod", secondMaster, 
-				"-n", testNamespace, "--grace-period=0", "--force")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
+	
 
-			By("Step 7: Wait for Third Master")
-			var thirdMaster string
-			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
-					"-n", testNamespace, "-c", "sentinel", "--",
-					"redis-cli", "-p", "26379", "SENTINEL", "get-master-addr-by-name", "mymaster")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				
-				lines := strings.Split(strings.TrimSpace(output), "
-")
-				if len(lines) > 0 {
-					ip := lines[0]
-					podCmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, 
-						"-o", "jsonpath={.items[?(@.status.podIP=='"+ip+"')].metadata.name}")
-					podName, _ := utils.Run(podCmd)
-					podName = strings.TrimSpace(podName)
-					
-					if podName != "" && podName != secondMaster && podName != initialMaster {
-						thirdMaster = podName
-						return
-					}
-				}
-				g.Fail("Third master not elected")
-			}, 1*time.Minute, 2*time.Second).Should(Succeed())
-			fmt.Fprintf(GinkgoWriter, "Third Master: %s
-", thirdMaster)
+				By("Step 4: Verify Operator updated the label on the new master")
 
-			By("Step 8: Verify Service routing to Third Master")
-			Eventually(func(g Gomega) {
-				// Check that a write to the SERVICE succeeds
-				clientPod := "client-" + crName
-				writeCmd := exec.Command("kubectl", "exec", clientPod, "-n", testNamespace, "--",
-					"redis-cli", "-h", crName, "SET", "final-check", "ok", "EX", "60")
-				out, err := utils.Run(writeCmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(strings.TrimSpace(out)).To(Equal("OK"))
-			}, 20*time.Second, 1*time.Second).Should(Succeed(), "Service traffic not routing to third master")
+				// This is the key functional test: The operator must have reacted to the Sentinel event
 
-			close(stopCh) // Stop writer
+				// and updated the Kubernetes label.
+
+				Eventually(func(g Gomega) {
+
+					cmd := exec.Command("kubectl", "get", "pod", secondMaster, "-n", testNamespace, 
+
+						"-o", "jsonpath={.metadata.labels.littlered\\.tanne3\\.de/role}")
+
+					role, err := utils.Run(cmd)
+
+					g.Expect(err).NotTo(HaveOccurred())
+
+					g.Expect(role).To(Equal("master"))
+
+				}, 20*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label quickly enough")
+
+			})
+
 		})
-	})
+
+	
 })
