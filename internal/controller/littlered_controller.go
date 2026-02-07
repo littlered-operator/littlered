@@ -738,9 +738,9 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 	masterPodName := fmt.Sprintf("%s-redis-0", littleRed.Name)
 
 	// Try to get real master from Sentinel
-	sentinelAddr := fmt.Sprintf("%s-sentinel.%s.svc:%d", 
+	sentinelAddr := fmt.Sprintf("%s-sentinel.%s.svc:%d",
 		littleRed.Name, littleRed.Namespace, littleredv1alpha1.SentinelPort)
-	
+
 	password := ""
 	if littleRed.Spec.Auth.Enabled {
 		secret := &corev1.Secret{}
@@ -970,7 +970,7 @@ func (r *LittleRedReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Service{}).
 		Owns(&appsv1.StatefulSet{}).
-		WatchesRawSource(&source.Channel{Source: r.sentinelEvents}, &handler.EnqueueRequestForObject{}).
+		WatchesRawSource(source.Channel(r.sentinelEvents, &handler.EnqueueRequestForObject{})).
 		Named("littlered").
 		Complete(r)
 }

@@ -105,7 +105,7 @@ func (c *SentinelClient) Subscribe(ctx context.Context, channels ...string) (<-c
 	}
 
 	pubsub := client.Subscribe(ctx, channels...)
-	
+
 	// Verify subscription
 	if _, err := pubsub.Receive(ctx); err != nil {
 		pubsub.Close()

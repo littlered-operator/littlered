@@ -24,7 +24,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -69,13 +68,13 @@ func (r *LittleRedReconciler) stopSentinelMonitor(nn types.NamespacedName) {
 // monitorSentinel runs the main loop for monitoring Sentinel events
 func (r *LittleRedReconciler) monitorSentinel(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) {
 	log := logf.Log.WithName("sentinel-monitor").WithValues("littlered", littleRed.Name, "namespace", littleRed.Namespace)
-	
+
 	// Construct Sentinel address
 	// We use the headless service to get DNS for all sentinels
 	// Format: <name>-sentinel.<namespace>.svc:<port>
-	sentinelAddress := fmt.Sprintf("%s-sentinel.%s.svc:%d", 
+	sentinelAddress := fmt.Sprintf("%s-sentinel.%s.svc:%d",
 		littleRed.Name, littleRed.Namespace, littleredv1alpha1.SentinelPort)
-	
+
 	// We can also try individual pod addresses if the service one fails or for better redundancy
 	// For now, let's use the headless service which should round-robin or resolving to IPs
 	addresses := []string{sentinelAddress}
@@ -84,17 +83,17 @@ func (r *LittleRedReconciler) monitorSentinel(ctx context.Context, littleRed *li
 	password := ""
 	if littleRed.Spec.Auth.Enabled {
 		// We need to fetch the secret. Note: We use a new context because the passed ctx might be cancelled
-		// However, for the monitor loop, we want to respect the cancellation. 
+		// However, for the monitor loop, we want to respect the cancellation.
 		// For the initial setup, we can use a separate timeout context.
 		setupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		
+
 		secret := &corev1.Secret{}
 		err := r.Get(setupCtx, types.NamespacedName{
 			Name:      littleRed.Spec.Auth.ExistingSecret,
 			Namespace: littleRed.Namespace,
 		}, secret)
-		
+
 		if err == nil {
 			password = string(secret.Data["password"])
 		} else {
@@ -115,11 +114,11 @@ func (r *LittleRedReconciler) monitorSentinel(ctx context.Context, littleRed *li
 			// Connect and subscribe
 			// +switch-master is the event we care about
 			log.Info("Connecting to Sentinel for monitoring", "address", sentinelAddress)
-			
+
 			// Use a dedicated context for the subscription so we can cancel it if the parent ctx is cancelled
 			subCtx, cancelSub := context.WithCancel(ctx)
 			msgChan, cleanup, err := sentinelClient.Subscribe(subCtx, "+switch-master")
-			
+
 			if err != nil {
 				log.Error(err, "Failed to subscribe to Sentinel, retrying in 10s")
 				cancelSub()
@@ -136,7 +135,7 @@ func (r *LittleRedReconciler) monitorSentinel(ctx context.Context, littleRed *li
 			// Process messages
 			for msg := range msgChan {
 				log.Info("Received Sentinel event", "channel", msg.Channel, "payload", msg.Payload)
-				
+
 				// Trigger reconciliation
 				r.sentinelEvents <- event.GenericEvent{
 					Object: &littleredv1alpha1.LittleRed{
@@ -147,7 +146,7 @@ func (r *LittleRedReconciler) monitorSentinel(ctx context.Context, littleRed *li
 					},
 				}
 			}
-			
+
 			cleanup() // Close connection
 			cancelSub()
 			log.Info("Sentinel subscription ended, reconnecting...")
