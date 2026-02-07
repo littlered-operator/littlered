@@ -242,3 +242,206 @@ These tests are designed to run in CI/CD pipelines:
 ```
 
 The tests use isolated namespaces (`littlered-cluster-e2e-test`) to avoid conflicts with other test suites.
+
+---
+
+## Chaos Testing
+
+The chaos tests validate resilience and data integrity under failure scenarios using a dedicated chaos test client.
+
+### Chaos Test Client
+
+The chaos client (`cmd/chaos-client/`) is a standalone tool that:
+
+- **Writes** at a configurable rate (default: 10 ops/sec)
+- **Keys**: Auto-incrementing integers (0, 1, 2, ...)
+- **Values**: SHA256 hash of the key (deterministic, verifiable)
+- **Reads**: Random keys from confirmed-written set, verifies value integrity
+- **Tracks**: Write/read success, failures, and data corruptions
+- **Timeout**: Short operation timeouts (500ms default) for fast failure detection
+
+#### Building the Chaos Client
+
+```bash
+# Build locally
+go build -o chaos-client ./cmd/chaos-client
+
+# Build container image
+docker build -t registry.tanne3.de/littlered-chaos-client:latest -f cmd/chaos-client/Dockerfile .
+docker push registry.tanne3.de/littlered-chaos-client:latest
+```
+
+#### Running Manually
+
+```bash
+# Against a cluster
+./chaos-client -addrs=redis-cluster:6379 -cluster -duration=60s -prefix=test
+
+# Against standalone
+./chaos-client -addrs=redis:6379 -duration=60s -prefix=test
+
+# All flags
+./chaos-client \
+  -addrs=host1:6379,host2:6379 \  # Comma-separated addresses
+  -password=secret \               # Redis password (optional)
+  -cluster \                       # Enable cluster mode
+  -write-rate=100ms \              # Interval between writes
+  -timeout=500ms \                 # Per-operation timeout
+  -prefix=mytest \                 # Key prefix
+  -duration=60s \                  # Test duration (0=until interrupted)
+  -status-interval=5s              # Status output interval
+```
+
+#### Output Format
+
+The client outputs periodic status and a final JSON metrics line:
+
+```
+[5s] Writes: 50/50 (100.0%), Reads: 48/48 (100.0%), Corruptions: 0
+[10s] Writes: 100/100 (100.0%), Reads: 95/95 (100.0%), Corruptions: 0
+...
+========== FINAL RESULTS ==========
+Writes: 600 attempted, 580 succeeded, 20 failed (96.67% availability)
+Reads: 590 attempted, 570 succeeded, 20 failed (96.61% availability)
+Data corruptions: 0
+Highest confirmed key: 580
+
+METRICS_JSON:{"writeAttempts":600,"writeSuccesses":580,...}
+```
+
+### Chaos Test Suites
+
+#### 6. Cluster Mode Resilience
+**Test Suite:** `Context("Cluster Mode Resilience")`
+
+Tests cluster behavior under chaos conditions:
+
+- ✅ **Replica Pod Deletion**: Continuous load while deleting replica
+  - Expects: ≥80% write availability, ≥80% read availability, 0 data corruptions
+
+- ✅ **Master Pod Deletion with Failover**: Continuous load while deleting master
+  - Expects: ≥50% write availability (one shard affected), 0 data corruptions
+
+- ✅ **Rolling Restart**: Continuous load during cluster annotation change
+  - Expects: ≥70% availability, 0 data corruptions
+
+#### 7. Standalone Mode Resilience
+**Test Suite:** `Context("Standalone Mode Resilience")`
+
+- ✅ **Pod Restart**: Tests recovery after standalone pod deletion
+  - Expects: Data loss (no replication), but no data corruption
+  - Verifies operator restores the pod
+
+### Running Chaos Tests
+
+#### Prerequisites
+
+1. Chaos client image pushed to registry
+2. Kubernetes cluster with operator deployed
+3. Registry accessible from cluster
+
+#### Run All Chaos Tests
+
+```bash
+# Set the chaos client image
+export CHAOS_CLIENT_IMAGE=registry.tanne3.de/littlered-chaos-client:latest
+
+# Run chaos tests
+SKIP_OPERATOR_DEPLOY=true go test -tags=e2e -v ./test/e2e/... \
+  -ginkgo.focus="Chaos Testing"
+```
+
+#### Run Specific Chaos Test
+
+```bash
+# Test replica deletion resilience
+CHAOS_CLIENT_IMAGE=registry.tanne3.de/littlered-chaos-client:latest \
+SKIP_OPERATOR_DEPLOY=true go test -tags=e2e -v ./test/e2e/... \
+  -ginkgo.focus="replica pod deletion"
+
+# Test master failover
+CHAOS_CLIENT_IMAGE=registry.tanne3.de/littlered-chaos-client:latest \
+SKIP_OPERATOR_DEPLOY=true go test -tags=e2e -v ./test/e2e/... \
+  -ginkgo.focus="master pod deletion"
+```
+
+### Chaos Test Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         E2E Test Process                         │
+│  1. Creates LittleRed cluster                                   │
+│  2. Deploys chaos-client Pod                                    │
+│  3. Waits for baseline                                          │
+│  4. Performs chaos action (delete pod, annotate, etc.)          │
+│  5. Waits for chaos-client to complete                          │
+│  6. Parses METRICS_JSON from pod logs                           │
+│  7. Asserts availability and data integrity                     │
+└─────────────────────────────────────────────────────────────────┘
+         │                                      │
+         │ kubectl apply                        │ kubectl logs
+         ▼                                      ▼
+┌─────────────────────┐              ┌─────────────────────┐
+│   chaos-client Pod  │─────────────▶│   Redis Cluster     │
+│                     │   SET/GET    │   (6 pods)          │
+│  - Writes 10/sec    │◀─────────────│                     │
+│  - Reads & verifies │              │                     │
+│  - Tracks metrics   │              │                     │
+└─────────────────────┘              └─────────────────────┘
+```
+
+### Key Metrics
+
+| Metric | Description |
+|--------|-------------|
+| `writeAttempts` | Total SET operations attempted |
+| `writeSuccesses` | SET operations confirmed (got OK) |
+| `writeFailures` | SET operations that failed/timed out |
+| `readAttempts` | GET operations attempted |
+| `readSuccesses` | GET operations with correct value |
+| `readFailures` | GET operations that failed/timed out |
+| `dataCorruptions` | GET returned wrong value (**critical!**) |
+
+### Test Expectations
+
+The chaos tests assert **data integrity only** - availability metrics are logged but not asserted:
+
+| Scenario | Data Corruption | Availability |
+|----------|-----------------|--------------|
+| Replica deletion | **Must be 0** | Logged (informational) |
+| Master deletion (failover) | **Must be 0** | Logged (informational) |
+| Rolling restart | **Must be 0** | Logged (informational) |
+| Standalone restart | **Must be 0** | Logged (informational) |
+
+**Rationale**: Availability during chaos varies based on timing, cluster resources, and network conditions. Data integrity is the critical guarantee - we must never return wrong data.
+
+### Debugging Chaos Tests
+
+#### Check Chaos Client Logs
+
+```bash
+# Get chaos client pod logs
+kubectl logs chaos-client-replica-delete -n littlered-chaos-e2e-test
+
+# Watch chaos client in real-time
+kubectl logs -f chaos-client-replica-delete -n littlered-chaos-e2e-test
+```
+
+#### Check Cluster During Chaos
+
+```bash
+# Cluster state
+kubectl exec chaos-cluster-cluster-0 -n littlered-chaos-e2e-test -c redis -- \
+  valkey-cli CLUSTER INFO
+
+# Node status
+kubectl exec chaos-cluster-cluster-0 -n littlered-chaos-e2e-test -c redis -- \
+  valkey-cli CLUSTER NODES
+```
+
+#### Common Issues
+
+1. **Chaos client can't connect**: Check service DNS resolution and network policies
+2. **High failure rate**: Check operation timeout (-timeout flag) vs network latency
+3. **Data corruption detected**: Critical bug - investigate immediately
+4. **Test timeout**: Chaos client pod might be stuck - check pod status and logs
