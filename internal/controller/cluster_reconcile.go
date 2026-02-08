@@ -946,6 +946,13 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 	// Update observed generation
 	littleRed.Status.ObservedGeneration = littleRed.Generation
 
+	// Update high-level status summary
+	if littleRed.Status.Cluster != nil {
+		littleRed.Status.Status = fmt.Sprintf("%s (%d shards)", littleRed.Status.Cluster.State, littleRed.Spec.Cluster.Shards)
+	} else {
+		littleRed.Status.Status = string(littleRed.Status.Phase)
+	}
+
 	// Update status
 	if err := r.Status().Update(ctx, littleRed); err != nil {
 		if apierrors.IsConflict(err) {

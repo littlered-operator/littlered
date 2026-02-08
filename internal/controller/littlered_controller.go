@@ -452,6 +452,13 @@ func (r *LittleRedReconciler) updateStatus(ctx context.Context, littleRed *littl
 	// Update observed generation
 	littleRed.Status.ObservedGeneration = littleRed.Generation
 
+	// Update high-level status summary
+	if littleRed.Status.Phase == littleredv1alpha1.PhaseRunning {
+		littleRed.Status.Status = "Ready"
+	} else {
+		littleRed.Status.Status = string(littleRed.Status.Phase)
+	}
+
 	// Update status
 	if err := r.Status().Update(ctx, littleRed); err != nil {
 		if apierrors.IsConflict(err) {
@@ -947,6 +954,13 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRe
 
 	// Update observed generation
 	littleRed.Status.ObservedGeneration = littleRed.Generation
+
+	// Update high-level status summary
+	if littleRed.Status.Phase == littleredv1alpha1.PhaseRunning {
+		littleRed.Status.Status = littleRed.Status.Master.PodName
+	} else {
+		littleRed.Status.Status = string(littleRed.Status.Phase)
+	}
 
 	// Update status
 	if err := r.Status().Update(ctx, littleRed); err != nil {
