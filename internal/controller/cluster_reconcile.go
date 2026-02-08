@@ -320,8 +320,8 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 
 		log.Info("Meeting node", "target", firstAddr, "newNodeIP", podIPs[i])
 		if err := clusterClient.ClusterMeet(ctx, firstAddr, podIPs[i], littleredv1alpha1.RedisPort); err != nil {
-			log.Info("Failed to meet node (might already be known)", "pod", podName, "error", err)
-			// Continue - meet is eventually consistent and retries are fine
+			log.Error(err, "Failed to meet node", "pod", podName, "ip", podIPs[i])
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 	}
 
@@ -350,9 +350,33 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 			"slots", redisclient.FormatSlotRange(slotRanges[shard].Start, slotRanges[shard].End))
 
 		if err := clusterClient.ClusterAddSlots(ctx, masterAddr, slots...); err != nil {
-			// Ignore "Slot ... is already busy" errors, as this means we're retrying a partial bootstrap
+			// If slots are busy, verify if this node already owns them
 			if strings.Contains(err.Error(), "busy") {
-				log.Info("Slots already assigned (idempotent)", "master", masterPodName)
+				// We need to check if the node actually has slots assigned
+				// A simple check is to fetch cluster nodes and see if this node has slots
+				nodes, nodeErr := clusterClient.GetClusterNodes(ctx, masterAddr)
+				if nodeErr != nil {
+					log.Error(nodeErr, "Failed to verify slot assignment after busy error", "master", masterPodName)
+					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+				}
+				
+				// Find myself
+				myID := nodeIDs[masterIdx]
+				hasSlots := false
+				for _, n := range nodes {
+					if n.NodeID == myID && len(n.Slots) > 0 {
+						hasSlots = true
+						break
+					}
+				}
+
+				if hasSlots {
+					log.Info("Slots already assigned (verified)", "master", masterPodName)
+				} else {
+					// Slots are busy but not owned by us -> Conflict!
+					log.Error(err, "Slots busy but not owned by target master (possible conflict)", "master", masterPodName)
+					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+				}
 			} else {
 				log.Error(err, "Failed to add slots", "master", masterPodName)
 				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
@@ -386,8 +410,29 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 				"masterNodeID", masterNodeID)
 
 			if err := clusterClient.ClusterReplicate(ctx, replicaAddr, masterNodeID); err != nil {
-				log.Info("Failed to assign replica (might already be assigned)", 
-					"replica", replicaPodName, "error", err)
+				// Verify if already replicating
+				nodes, nodeErr := clusterClient.GetClusterNodes(ctx, replicaAddr)
+				if nodeErr != nil {
+					log.Error(nodeErr, "Failed to verify replica status after error", "replica", replicaPodName)
+					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+				}
+
+				// Find myself and check master ID
+				myID := nodeIDs[replicaIdx]
+				isCorrect := false
+				for _, n := range nodes {
+					if n.NodeID == myID && n.MasterID == masterNodeID {
+						isCorrect = true
+						break
+					}
+				}
+
+				if isCorrect {
+					log.Info("Replica already assigned (verified)", "replica", replicaPodName)
+				} else {
+					log.Error(err, "Failed to assign replica", "replica", replicaPodName)
+					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+				}
 			}
 
 			// Record replica state
