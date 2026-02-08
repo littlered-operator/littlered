@@ -88,7 +88,7 @@ func main() {
 
 	// Start the client
 	client.Start()
-	fmt.Println("Client started, running...")
+	fmt.Printf("Client started at %s, running...\n", time.Now().Format(time.RFC3339Nano))
 
 	// Status ticker
 	statusTicker := time.NewTicker(statusInterval)
