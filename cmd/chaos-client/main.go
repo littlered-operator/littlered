@@ -115,7 +115,7 @@ loop:
 		case <-statusTicker.C:
 			m := client.GetMetrics()
 			elapsed := time.Since(startTime).Round(time.Second)
-			
+
 			// Calculate deltas
 			dWrite := m.WriteSuccesses - lastMetrics.WriteSuccesses
 			dRead := m.ReadSuccesses - lastMetrics.ReadSuccesses

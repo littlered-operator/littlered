@@ -80,6 +80,7 @@
 | SEN-015 | Event-Only Recovery | ✅ | Polling disabled, only Pub/Sub events trigger updates |
 | SEN-016 | Polling-Only Recovery | ✅ | Events disabled, only periodic polling triggers updates |
 | SEN-017 | Hybrid (Prod) Recovery | ✅ | Both events and polling active (standard prod config) |
+| SEN-018 | Sentinel Pod Resilience | ✅ | System survives 1/3 Sentinel loss; failover still works |
 
 ---
 

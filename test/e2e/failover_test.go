@@ -246,4 +246,69 @@ spec:
 			}, 20*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label")
 		})
 	})
+
+	Context("Sentinel Pod Resilience", Ordered, func() {
+		var crName string
+
+		BeforeAll(func() {
+			crName = fmt.Sprintf("sentinel-death-%d", time.Now().Unix())
+			By(fmt.Sprintf("deploying cluster %s for sentinel death testing", crName))
+			cr := fmt.Sprintf(`
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: sentinel
+  sentinel:
+    quorum: 2
+    downAfterMilliseconds: 5000
+    failoverTimeout: 10000
+`, crName, testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(cr)
+			utils.Run(cmd)
+
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				out, _ := utils.Run(cmd)
+				g.Expect(out).To(Equal("Running"))
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should still perform failover after a sentinel pod is restarted", func() {
+			By("Step 1: Identify initial master and a sentinel pod")
+			cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
+			initialMaster, _ := utils.Run(cmd)
+			initialMaster = strings.TrimSpace(initialMaster)
+
+			sentinelPod := fmt.Sprintf("%s-sentinel-0", crName)
+
+			By("Step 2: Kill the Sentinel pod")
+			// This tests if the Operator's background monitor handles connection loss and reconnects
+			exec.Command("kubectl", "delete", "pod", sentinelPod, "-n", testNamespace, "--grace-period=0", "--force").Run()
+
+			By("Step 3: Wait for sentinel pod to be recreated and ready")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", sentinelPod, "-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				out, _ := utils.Run(cmd)
+				g.Expect(out).To(Equal("Running"))
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Step 4: Kill the Redis Master")
+			exec.Command("kubectl", "delete", "pod", initialMaster, "-n", testNamespace, "--grace-period=0", "--force").Run()
+
+			By("Step 5: Verify failover still happens (proving monitor re-subscribed)")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.tanne3.de/role=master", "-o", "jsonpath={.items[*].metadata.name}")
+				out, _ := utils.Run(cmd)
+				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
+					return
+				}
+				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))), 
+					fmt.Sprintf("Failover failed after sentinel restart. Current masters: %q", out))
+			}, 45*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label after sentinel restart")
+		})
+	})
 })
