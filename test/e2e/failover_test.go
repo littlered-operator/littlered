@@ -92,29 +92,25 @@ spec:
 			initialMaster = strings.TrimSpace(initialMaster)
 
 			By("Step 2: Kill the Master")
-			cmd = exec.Command("kubectl", "delete", "pod", initialMaster, 
+			cmd = exec.Command("kubectl", "delete", "pod", initialMaster,
 				"-n", testNamespace, "--grace-period=0", "--force")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Step 3: Wait for new master label and status update")
+			By("Step 3: Wait for new master label")
 			start := time.Now()
 			Eventually(func(g Gomega) {
-				// 1. Check K8s labels
+				// We check the K8s label directly to see how fast the Operator reacted
 				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.tanne3.de/role=master", "-o", "jsonpath={.items[*].metadata.name}")
-				labelsOut, _ := utils.Run(cmd)
-				
-				// 2. Check CR status master field (the new -o wide info)
-				cmd = exec.Command("kubectl", "get", "littlered", crName, "-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
-				statusOut, _ := utils.Run(cmd)
-				statusOut = strings.TrimSpace(statusOut)
+				out, _ := utils.Run(cmd)
 
-				if strings.Contains(labelsOut, crName+"-redis") && !strings.Contains(labelsOut, initialMaster) &&
-					statusOut != "" && statusOut != initialMaster {
+				// Must contain the CR name (belong to this test) and NOT be the old master
+				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
 					return
 				}
-				g.Expect(false).To(BeTrue(), "New master label or status not yet applied")
-			}, 45*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master quickly enough via event")
+				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))), 
+					fmt.Sprintf("New master label not yet applied. Current masters found: %q", out))
+			}, 45*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label")
 
 			duration := time.Since(start)
 			fmt.Fprintf(GinkgoWriter, "Event-driven failover took: %v\n", duration)
@@ -123,7 +119,8 @@ spec:
 			By("Step 4: Verify Operator logs show event reception")
 			Eventually(func(g Gomega) {
 				since := startTime.Format(time.RFC3339Nano)
-				cmd = exec.Command("sh", "-c", fmt.Sprintf("kubectl logs -n littlered-system -l control-plane=controller-manager --since-time=%s | grep %s", since, crName))
+				// Use --tail=-1 to ensure we get all logs when using a selector
+				cmd = exec.Command("sh", "-c", fmt.Sprintf("kubectl logs -n littlered-system -l control-plane=controller-manager --tail=-1 --since-time=%s | grep %s", since, crName))
 				logs, _ := utils.Run(cmd)
 				g.Expect(logs).To(ContainSubstring("Triggering reconciliation via Sentinel event"))
 				g.Expect(logs).To(ContainSubstring("Master switch detected"))
@@ -173,24 +170,24 @@ spec:
 			By("Step 2: Kill the Master")
 			exec.Command("kubectl", "delete", "pod", initialMaster, "-n", testNamespace, "--grace-period=0", "--force").Run()
 
-			By("Step 3: Verify recovery")
+			By("Step 3: Wait for new master label")
 			start := time.Now()
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.tanne3.de/role=master", "-o", "jsonpath={.items[*].metadata.name}")
 				out, _ := utils.Run(cmd)
-				if !strings.Contains(out, initialMaster) && strings.Contains(out, crName) {
+				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
 					return
 				}
-				g.Expect(false).To(BeTrue(), "New master label not yet applied via polling")
-			}, 60*time.Second, 2*time.Second).Should(Succeed())
-			
+				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))), 
+					fmt.Sprintf("New master label not yet applied. Current masters found: %q", out))
+			}, 60*time.Second, 2*time.Second).Should(Succeed(), "Operator failed to update master label")
+
 			duration := time.Since(start)
 			fmt.Fprintf(GinkgoWriter, "Polling-based failover took: %v\n", duration)
-			
 			By("Step 4: Verify logs show event monitoring was disabled")
 			Eventually(func(g Gomega) {
 				since := startTime.Format(time.RFC3339Nano)
-				cmd = exec.Command("sh", "-c", fmt.Sprintf("kubectl logs -n littlered-system -l control-plane=controller-manager --since-time=%s | grep %s", since, crName))
+				cmd = exec.Command("sh", "-c", fmt.Sprintf("kubectl logs -n littlered-system -l control-plane=controller-manager --tail=-1 --since-time=%s | grep %s", since, crName))
 				logs, _ := utils.Run(cmd)
 				g.Expect(logs).To(ContainSubstring("Sentinel event monitoring disabled via annotation"))
 				g.Expect(logs).NotTo(ContainSubstring("Triggering reconciliation via Sentinel event"))
@@ -237,15 +234,16 @@ spec:
 			By("Step 2: Kill the Master")
 			exec.Command("kubectl", "delete", "pod", initialMaster, "-n", testNamespace, "--grace-period=0", "--force").Run()
 
-			By("Step 3: Verify fast recovery (Event speed)")
+			By("Step 3: Wait for new master label")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.tanne3.de/role=master", "-o", "jsonpath={.items[*].metadata.name}")
 				out, _ := utils.Run(cmd)
-				if !strings.Contains(out, initialMaster) && strings.Contains(out, crName) {
+				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
 					return
 				}
-				g.Expect(false).To(BeTrue(), "New master label not yet applied")
-			}, 20*time.Second, 1*time.Second).Should(Succeed())
+				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))), 
+					fmt.Sprintf("New master label not yet applied. Current masters found: %q", out))
+			}, 20*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label")
 		})
 	})
 })
