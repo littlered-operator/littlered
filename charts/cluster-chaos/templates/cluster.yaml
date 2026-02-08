@@ -1,0 +1,10 @@
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: {{ .Values.cluster.name }}
+spec:
+  mode: cluster
+  cluster:
+    shards: {{ .Values.cluster.shards }}
+    replicasPerShard: {{ .Values.cluster.replicasPerShard }}
+    clusterNodeTimeout: {{ .Values.cluster.nodeTimeout }}

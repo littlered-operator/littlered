@@ -4,6 +4,7 @@ This guide explains how to use the `sentinel-chaos` Helm chart to manually inves
 
 ## 1. Deploy the Test Environment
 
+### Option A: Sentinel Mode (3 Nodes + 3 Sentinels)
 Install the Sentinel cluster and the chaos client pod:
 
 ```bash
@@ -14,6 +15,19 @@ helm upgrade --install sentinel-investigation ./charts/sentinel-chaos \
 
 # Uninstall
 helm delete sentinel-investigation
+```
+
+### Option B: Cluster Mode (3 Shards x 2 Replicas = 6 Nodes)
+Install the Redis Cluster and the chaos client pod:
+
+```bash
+# Install or Upgrade
+helm upgrade --install cluster-investigation ./charts/cluster-chaos \
+  --set chaosClient.image.tag=$(git rev-parse --short HEAD) \
+  --namespace default
+
+# Uninstall
+helm delete cluster-investigation
 ```
 
 ## 2. Monitor the System
@@ -35,23 +49,27 @@ kubectl logs manual-chaos-chaos-client -f
 ### Window 3: Redis Pod Logs
 Watch the individual Redis nodes (open one per pod or use a loop):
 ```bash
-# Example for redis-0
+# Example for sentinel mode
 while true; do kubectl logs manual-chaos-redis-0 -f; sleep 1; done
-```
-*(Repeat for `manual-chaos-redis-1` and `manual-chaos-redis-2`)*
 
-### Window 4: Sentinel Pod Logs
+# Example for cluster mode
+while true; do kubectl logs manual-chaos-cluster-0 -f; sleep 1; done
+```
+
+### Window 4: Sentinel Pod Logs (Sentinel Mode only)
 Watch the Sentinels performing elections:
 ```bash
-# Example for sentinel-0
 while true; do kubectl logs manual-chaos-sentinel-0 -f; sleep 1; done
 ```
-*(Repeat for `manual-chaos-sentinel-1` and `manual-chaos-sentinel-2`)*
 
 ### Window 5: High-Level Status
 Monitor the CR status and the current Master identity:
 ```bash
+# Sentinel mode
 while true; do kubectl get littlereds.littlered.tanne3.de manual-chaos -o wide; sleep 1; done
+
+# Cluster mode
+while true; do kubectl get littlereds.littlered.tanne3.de manual-chaos-cluster -o wide; sleep 1; done
 ```
 
 ## 3. Perform Manual Chaos
@@ -59,14 +77,15 @@ while true; do kubectl get littlereds.littlered.tanne3.de manual-chaos -o wide; 
 While watching the logs, randomly kill one or more pods to stress the system. 
 
 ### Scenarios to try:
-- **Kill the Master**: Find the current master in Window 5 and kill it.
-- **Kill a Master and a Replica**: Kill two Redis pods simultaneously.
-- **Kill Sentinel Peers**: Kill one or two Sentinel pods.
-- **Combined Failure**: Kill the Master Redis and one Sentinel pod.
+- **Kill the Master (Sentinel)**: Find the current master in Window 5 and kill it.
+- **Kill a Shard Master (Cluster)**: Use `kubectl exec` to find a master node and kill its pod.
+- **Kill a Master and a Replica**: Kill two Redis pods in the same shard/set simultaneously.
+- **Kill Sentinel Peers (Sentinel)**: Kill one or two Sentinel pods.
 
 **Survival Criteria**:
-- As long as **at least one Redis replica** survives and a **Sentinel quorum** can be reached (or recovers), the cluster must eventually stabilize.
-- The Kubernetes Service must eventually point to a healthy Master.
+- **Sentinel**: As long as at least one Redis replica survives and a Sentinel quorum can be reached, the cluster must eventually stabilize.
+- **Cluster**: As long as a majority of masters are up and at least one node for every slot range is available (eventually), the cluster must recover.
+- The Kubernetes Service must eventually point to healthy nodes.
 - The `chaos-client` should show recovery of throughput and **0 data corruptions**.
 
 ## 4. Investigate
