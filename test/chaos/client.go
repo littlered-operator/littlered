@@ -112,6 +112,8 @@ type TestClient struct {
 	client           redis.UniversalClient
 	metrics          *Metrics
 	confirmedKeys    sync.Map // map[int64]struct{} - keys we confirmed were written
+	confirmedSlice   []int64  // slice of keys for efficient random selection
+	sliceMu          sync.Mutex
 	writeRate        time.Duration
 	operationTimeout time.Duration
 	keyPrefix        string
@@ -207,6 +209,11 @@ func (tc *TestClient) doWrite(n int64) {
 	tc.metrics.WriteSuccesses.Add(1)
 	tc.confirmedKeys.Store(n, struct{}{})
 
+	// Add to slice for efficient random selection in reads
+	tc.sliceMu.Lock()
+	tc.confirmedSlice = append(tc.confirmedSlice, n)
+	tc.sliceMu.Unlock()
+
 	// Update highest confirmed using CAS loop
 	for {
 		current := tc.metrics.HighestConfirmed.Load()
@@ -221,19 +228,15 @@ func (tc *TestClient) doWrite(n int64) {
 
 // doRead attempts to read and verify a random confirmed key
 func (tc *TestClient) doRead() {
-	highest := tc.metrics.HighestConfirmed.Load()
-	if highest <= 0 {
+	// Pick a random key from the confirmed slice
+	tc.sliceMu.Lock()
+	count := len(tc.confirmedSlice)
+	if count == 0 {
+		tc.sliceMu.Unlock()
 		return // No confirmed writes yet
 	}
-
-	// Pick a random key from [1, highest]
-	n := rand.Int63n(highest) + 1
-
-	// Check if this key was actually confirmed
-	if _, ok := tc.confirmedKeys.Load(n); !ok {
-		// This key wasn't confirmed, skip
-		return
-	}
+	n := tc.confirmedSlice[rand.Intn(count)]
+	tc.sliceMu.Unlock()
 
 	tc.metrics.ReadAttempts.Add(1)
 
