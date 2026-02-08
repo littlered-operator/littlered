@@ -948,7 +948,24 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 
 	// Update high-level status summary
 	if littleRed.Status.Cluster != nil {
-		littleRed.Status.Status = fmt.Sprintf("%s (%d shards)", littleRed.Status.Cluster.State, littleRed.Spec.Cluster.Shards)
+		masterIndices := []string{}
+		// Sort nodes by pod name to get consistent ordering
+		for i := 0; i < littleRed.Spec.Cluster.GetTotalNodes(); i++ {
+			podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
+			for _, node := range littleRed.Status.Cluster.Nodes {
+				if node.PodName == podName && node.Role == "master" {
+					masterIndices = append(masterIndices, fmt.Sprintf("%d", i))
+					break
+				}
+			}
+		}
+		
+		masterInfo := ""
+		if len(masterIndices) > 0 {
+			masterInfo = fmt.Sprintf(" (M: %s)", strings.Join(masterIndices, ","))
+		}
+
+		littleRed.Status.Status = fmt.Sprintf("%s%s", littleRed.Status.Cluster.State, masterInfo)
 	} else {
 		littleRed.Status.Status = string(littleRed.Status.Phase)
 	}
