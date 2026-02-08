@@ -359,7 +359,7 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 					log.Error(nodeErr, "Failed to verify slot assignment after busy error", "master", masterPodName)
 					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 				}
-				
+
 				// Find myself
 				myID := nodeIDs[masterIdx]
 				hasSlots := false
@@ -904,8 +904,13 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 
 		if clusterInfo, err := clusterClient.GetClusterInfo(ctx, firstAddr); err == nil {
 			actualClusterState = clusterInfo.State
+			// Update healthy flag based on actual state
+			if actualClusterState != "ok" {
+				healthy = false
+			}
 		} else {
 			log.Error(err, "Failed to get cluster info from Redis")
+			healthy = false
 		}
 	}
 
