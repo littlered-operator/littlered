@@ -8,9 +8,12 @@ metadata:
 spec:
   restartPolicy: Never
   initContainers:
-  - name: wait-for-redis
-    image: busybox:1.36
-    command: ['sh', '-c', 'until nc -z {{ .Values.cluster.name }} 6379; do echo waiting for redis; sleep 2; done;']
+  - name: wait-for-cluster
+    image: valkey/valkey:8.0
+    command: 
+    - "sh"
+    - "-c"
+    - "until valkey-cli -h {{ .Values.cluster.name }} cluster info | grep 'cluster_state:ok'; do echo waiting for cluster to be ok; sleep 2; done;"
   containers:
   - name: chaos-client
     image: {{ .Values.chaosClient.image.repository }}:{{ .Values.chaosClient.image.tag }}
