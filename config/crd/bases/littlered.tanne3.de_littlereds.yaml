@@ -27,9 +27,9 @@ spec:
       jsonPath: .status.redis.ready
       name: Ready
       type: string
-    - description: Current master pod name
-      jsonPath: .status.master.podName
-      name: Master
+    - description: High-level status summary
+      jsonPath: .status.status
+      name: Status
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -1669,6 +1669,22 @@ spec:
                       type: object
                     type: array
                 type: object
+              requeueIntervals:
+                description: |-
+                  RequeueIntervals defines how often the operator checks the state.
+                  This is useful for tuning large-scale installations to avoid API server pressure.
+                properties:
+                  fast:
+                    default: 2s
+                    description: Fast is the interval used when the system is initializing
+                      or recovering.
+                    type: string
+                  steadyState:
+                    default: 30s
+                    description: SteadyState is the interval used for periodic health
+                      checks when Running.
+                    type: string
+                type: object
               resources:
                 description: Resources defines CPU/memory for Redis container
                 properties:
@@ -2030,6 +2046,9 @@ spec:
                 - ready
                 - total
                 type: object
+              status:
+                description: Status is a human-readable summary of the current state
+                type: string
             type: object
         type: object
     served: true

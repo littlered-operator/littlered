@@ -608,6 +608,31 @@ spec:
 
 ---
 
+## Large-Scale Tuning
+
+For installations with hundreds or thousands of instances, you can tune the reconciliation frequency to reduce pressure on the Kubernetes API server and the Redis nodes.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `requeueIntervals.fast` | `2s` | Interval used during initialization, recovery, or when the system is not 'Running'. |
+| `requeueIntervals.steadyState` | `30s` | Interval used for periodic health checks once the system is stable ('Running'). |
+
+**Example:**
+
+```yaml
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: tuned-cache
+spec:
+  mode: sentinel
+  requeueIntervals:
+    fast: "10s"
+    steadyState: "1m"
+```
+
+---
+
 ## Cleanup
 
 ```bash

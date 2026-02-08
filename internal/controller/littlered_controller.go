@@ -468,12 +468,14 @@ func (r *LittleRedReconciler) updateStatus(ctx context.Context, littleRed *littl
 		return ctrl.Result{}, err
 	}
 
+	fast, steady := littleRed.GetRequeueIntervals()
+
 	// Requeue if not running to check status
 	if littleRed.Status.Phase != littleredv1alpha1.PhaseRunning {
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: fast}, nil
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: steady}, nil
 }
 
 // reconcileSentinel reconciles sentinel mode
@@ -971,9 +973,11 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRe
 		return ctrl.Result{}, err
 	}
 
+	fast, steady := littleRed.GetRequeueIntervals()
+
 	// Requeue if not running
 	if littleRed.Status.Phase != littleredv1alpha1.PhaseRunning {
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: fast}, nil
 	}
 
 	// Periodically requeue to update master info, unless disabled via annotation
@@ -982,7 +986,7 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRe
 		return ctrl.Result{}, nil
 	}
 
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: steady}, nil
 }
 
 // setFailedStatus sets the LittleRed status to Failed

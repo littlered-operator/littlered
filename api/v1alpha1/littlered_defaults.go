@@ -49,6 +49,10 @@ const (
 	RedisExporterPort      = 9121
 	SentinelPort           = 26379
 
+	// Requeue defaults
+	DefaultFastRequeueInterval        = 2 * time.Second
+	DefaultSteadyStateRequeueInterval = 30 * time.Second
+
 	// Cluster defaults
 	DefaultClusterShards      = 3
 	DefaultReplicasPerShard   = 1
@@ -319,6 +323,22 @@ func (r *LittleRed) GetPort() int32 {
 // GetExporterPort returns the metrics exporter port
 func (r *LittleRed) GetExporterPort() int32 {
 	return RedisExporterPort
+}
+
+// GetRequeueIntervals returns the effective requeue intervals
+func (r *LittleRed) GetRequeueIntervals() (fast, steady time.Duration) {
+	fast = DefaultFastRequeueInterval
+	steady = DefaultSteadyStateRequeueInterval
+
+	if r.Spec.RequeueIntervals != nil {
+		if r.Spec.RequeueIntervals.Fast != nil {
+			fast = r.Spec.RequeueIntervals.Fast.Duration
+		}
+		if r.Spec.RequeueIntervals.SteadyState != nil {
+			steady = r.Spec.RequeueIntervals.SteadyState.Duration
+		}
+	}
+	return
 }
 
 // ParseMaxmemory parses the maxmemory string into bytes

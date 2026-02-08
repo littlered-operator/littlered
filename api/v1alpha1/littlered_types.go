@@ -68,6 +68,11 @@ type LittleRedSpec struct {
 	// +optional
 	PodTemplate PodTemplateSpec `json:"podTemplate,omitempty"`
 
+	// RequeueIntervals defines how often the operator checks the state.
+	// This is useful for tuning large-scale installations to avoid API server pressure.
+	// +optional
+	RequeueIntervals *RequeueIntervals `json:"requeueIntervals,omitempty"`
+
 	// Sentinel defines sentinel-specific settings (sentinel mode only)
 	// +optional
 	Sentinel *SentinelSpec `json:"sentinel,omitempty"`
@@ -75,6 +80,19 @@ type LittleRedSpec struct {
 	// Cluster defines cluster-specific settings (cluster mode only)
 	// +optional
 	Cluster *ClusterSpec `json:"cluster,omitempty"`
+}
+
+// RequeueIntervals defines the timings for reconciliation loops
+type RequeueIntervals struct {
+	// Fast is the interval used when the system is initializing or recovering.
+	// +kubebuilder:default="2s"
+	// +optional
+	Fast *metav1.Duration `json:"fast,omitempty"`
+
+	// SteadyState is the interval used for periodic health checks when Running.
+	// +kubebuilder:default="30s"
+	// +optional
+	SteadyState *metav1.Duration `json:"steadyState,omitempty"`
 }
 
 // ImageSpec defines container image configuration

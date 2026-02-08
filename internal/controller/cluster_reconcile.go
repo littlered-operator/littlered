@@ -60,7 +60,8 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 		Namespace: littleRed.Namespace,
 	}, sts); err != nil {
 		if apierrors.IsNotFound(err) {
-			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 		}
 		return ctrl.Result{}, err
 	}
@@ -291,11 +292,13 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 			Namespace: littleRed.Namespace,
 		}, pod); err != nil {
 			log.Error(err, "Failed to get pod", "pod", podName)
-			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 		}
 		if pod.Status.PodIP == "" {
 			log.Info("Pod has no IP yet", "pod", podName)
-			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 		}
 		podIPs[i] = pod.Status.PodIP
 		podAddrs[i] = fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
@@ -307,7 +310,8 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 		nodeID, err := clusterClient.GetMyID(ctx, addr)
 		if err != nil {
 			log.Error(err, "Failed to get node ID", "addr", addr)
-			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 		}
 		nodeIDs[i] = nodeID
 		log.Info("Got node ID", "pod", fmt.Sprintf("%s-cluster-%d", littleRed.Name, i), "nodeID", nodeID)
@@ -321,7 +325,8 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 		log.Info("Meeting node", "target", firstAddr, "newNodeIP", podIPs[i])
 		if err := clusterClient.ClusterMeet(ctx, firstAddr, podIPs[i], littleredv1alpha1.RedisPort); err != nil {
 			log.Error(err, "Failed to meet node", "pod", podName, "ip", podIPs[i])
-			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 		}
 	}
 
@@ -357,7 +362,8 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 				nodes, nodeErr := clusterClient.GetClusterNodes(ctx, masterAddr)
 				if nodeErr != nil {
 					log.Error(nodeErr, "Failed to verify slot assignment after busy error", "master", masterPodName)
-					return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+					fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 				}
 
 				// Find myself
@@ -375,11 +381,13 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 				} else {
 					// Slots are busy but not owned by us -> Conflict!
 					log.Error(err, "Slots busy but not owned by target master (possible conflict)", "master", masterPodName)
-					return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+					fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 				}
 			} else {
 				log.Error(err, "Failed to add slots", "master", masterPodName)
-				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+				fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 			}
 		}
 
@@ -414,7 +422,8 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 				nodes, nodeErr := clusterClient.GetClusterNodes(ctx, replicaAddr)
 				if nodeErr != nil {
 					log.Error(nodeErr, "Failed to verify replica status after error", "replica", replicaPodName)
-					return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+					fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 				}
 
 				// Find myself and check master ID
@@ -431,7 +440,8 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 					log.Info("Replica already assigned (verified)", "replica", replicaPodName)
 				} else {
 					log.Error(err, "Failed to assign replica", "replica", replicaPodName)
-					return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+					fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 				}
 			}
 
@@ -458,7 +468,8 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 	}
 
 	log.Info("Cluster bootstrap complete", "nodes", len(nodeStates))
-	return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 }
 
 // getClusterState queries the cluster to get current node states
@@ -695,7 +706,8 @@ func (r *LittleRedReconciler) recoverCluster(ctx context.Context, littleRed *lit
 		// CLUSTER MEET new node using IP address
 		if err := clusterClient.ClusterMeet(ctx, healthyAddr, pod.Status.PodIP, littleredv1alpha1.RedisPort); err != nil {
 			log.Error(err, "Failed to meet new node", "pod", stored.PodName, "ip", pod.Status.PodIP)
-			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 		}
 
 		time.Sleep(1 * time.Second)
@@ -812,7 +824,8 @@ func (r *LittleRedReconciler) recoverCluster(ctx context.Context, littleRed *lit
 	}
 
 	log.Info("Cluster recovery operations completed, waiting for stabilization")
-	return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 }
 
 // fullRecovery performs a full cluster re-bootstrap when all nodes lost identity
@@ -861,7 +874,8 @@ func (r *LittleRedReconciler) fullRecovery(ctx context.Context, littleRed *littl
 	}
 
 	log.Info("Cluster reset complete, will re-bootstrap on next reconcile")
-	return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 }
 
 // updateClusterStatus updates the LittleRed status for cluster mode
@@ -1036,7 +1050,8 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 
 	// Requeue if not running
 	if littleRed.Status.Phase != littleredv1alpha1.PhaseRunning {
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 	}
 
 	// Periodically requeue to check cluster health
@@ -1153,14 +1168,16 @@ func (r *LittleRedReconciler) recoverStatusFromCluster(ctx context.Context, litt
 		Name:      podName,
 		Namespace: littleRed.Namespace,
 	}, pod); err != nil {
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 	}
 
 	addr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
 	nodes, err := clusterClient.GetClusterNodes(ctx, addr)
 	if err != nil {
 		log.Error(err, "Failed to get cluster nodes")
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 	}
 
 	// Build pod IP to pod name mapping
@@ -1219,5 +1236,6 @@ func (r *LittleRedReconciler) recoverStatusFromCluster(ctx context.Context, litt
 	}
 
 	log.Info("Recovered cluster status", "nodes", len(nodeStates))
-	return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 }
