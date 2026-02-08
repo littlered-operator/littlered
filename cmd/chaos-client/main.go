@@ -101,6 +101,7 @@ func main() {
 	}
 
 	startTime := time.Now()
+	var lastMetrics chaos.MetricsSnapshot
 
 loop:
 	for {
@@ -114,10 +115,16 @@ loop:
 		case <-statusTicker.C:
 			m := client.GetMetrics()
 			elapsed := time.Since(startTime).Round(time.Second)
-			fmt.Printf("[%v] Writes: %d/%d (%.1f%%), Reads: %d/%d (%.1f%%), Corruptions: %d\n",
+			
+			// Calculate deltas
+			dWrite := m.WriteSuccesses - lastMetrics.WriteSuccesses
+			dRead := m.ReadSuccesses - lastMetrics.ReadSuccesses
+			lastMetrics = m
+
+			fmt.Printf("[%v] Writes: %d/%d (%.1f%%, +%d), Reads: %d/%d (%.1f%%, +%d), Corruptions: %d\n",
 				elapsed,
-				m.WriteSuccesses, m.WriteAttempts, m.WriteAvailability()*100,
-				m.ReadSuccesses, m.ReadAttempts, m.ReadAvailability()*100,
+				m.WriteSuccesses, m.WriteAttempts, m.WriteAvailability()*100, dWrite,
+				m.ReadSuccesses, m.ReadAttempts, m.ReadAvailability()*100, dRead,
 				m.DataCorruptions)
 		}
 	}
