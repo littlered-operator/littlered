@@ -1,12 +1,12 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
 
-# Get the git tag or short hash, adding -dirty if there are uncommitted changes
+# Get the git tag or short hash
 GIT_TAG := $(shell if [ -n "$$(git describe --tags --exact-match 2>/dev/null)" ]; then \
                    git describe --tags --exact-match; \
                else \
                    git rev-parse --short HEAD; \
-               fi)$(shell if ! git diff-index --quiet HEAD; then echo "-dirty"; fi)
+               fi)
 
 # Image for chaos testing
 CHAOS_CLIENT_IMAGE ?= registry.tanne3.de/littlered-chaos-client:$(GIT_TAG)
