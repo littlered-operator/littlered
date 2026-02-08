@@ -182,6 +182,7 @@ func buildRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 	sb.WriteString("# LittleRed generated configuration\n")
 	sb.WriteString("bind 0.0.0.0\n")
 	sb.WriteString(fmt.Sprintf("port %d\n", littleredv1alpha1.RedisPort))
+	sb.WriteString("dir /data\n")
 
 	// Disable persistence (pure cache)
 	sb.WriteString("\n# Persistence disabled (cache mode)\n")
@@ -683,7 +684,7 @@ func buildSentinelConfig(lr *littleredv1alpha1.LittleRed) string {
 
 	sb.WriteString("# LittleRed Sentinel configuration\n")
 	sb.WriteString(fmt.Sprintf("port %d\n", littleredv1alpha1.SentinelPort))
-	sb.WriteString("dir /tmp\n")
+	sb.WriteString("dir /data\n")
 	sb.WriteString("\n# Master monitoring\n")
 	sb.WriteString(fmt.Sprintf("sentinel monitor mymaster %s %d %d\n",
 		initialMaster, littleredv1alpha1.RedisPort, quorum))
@@ -713,6 +714,7 @@ func buildRedisConfigSentinel(lr *littleredv1alpha1.LittleRed) string {
 	sb.WriteString("# LittleRed generated configuration (sentinel mode)\n")
 	sb.WriteString("bind 0.0.0.0\n")
 	sb.WriteString(fmt.Sprintf("port %d\n", littleredv1alpha1.RedisPort))
+	sb.WriteString("dir /data\n")
 
 	// Disable persistence (pure cache)
 	sb.WriteString("\n# Persistence disabled (cache mode)\n")
@@ -1260,6 +1262,7 @@ func buildClusterRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 	sb.WriteString("# LittleRed generated configuration (cluster mode)\n")
 	sb.WriteString("bind 0.0.0.0\n")
 	sb.WriteString(fmt.Sprintf("port %d\n", littleredv1alpha1.RedisPort))
+	sb.WriteString("dir /data\n")
 
 	// Cluster configuration
 	sb.WriteString("\n# Cluster configuration\n")
