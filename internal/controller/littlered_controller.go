@@ -470,7 +470,7 @@ func (r *LittleRedReconciler) updateStatus(ctx context.Context, littleRed *littl
 
 	// Requeue if not running to check status
 	if littleRed.Status.Phase != littleredv1alpha1.PhaseRunning {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -973,7 +973,7 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRe
 
 	// Requeue if not running
 	if littleRed.Status.Phase != littleredv1alpha1.PhaseRunning {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
 	// Periodically requeue to update master info, unless disabled via annotation
