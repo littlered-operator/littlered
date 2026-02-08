@@ -320,8 +320,8 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 
 		log.Info("Meeting node", "target", firstAddr, "newNodeIP", podIPs[i])
 		if err := clusterClient.ClusterMeet(ctx, firstAddr, podIPs[i], littleredv1alpha1.RedisPort); err != nil {
-			log.Error(err, "Failed to meet node", "pod", podName, "ip", podIPs[i])
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			log.Info("Failed to meet node (might already be known)", "pod", podName, "error", err)
+			// Continue - meet is eventually consistent and retries are fine
 		}
 	}
 
@@ -350,8 +350,13 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 			"slots", redisclient.FormatSlotRange(slotRanges[shard].Start, slotRanges[shard].End))
 
 		if err := clusterClient.ClusterAddSlots(ctx, masterAddr, slots...); err != nil {
-			log.Error(err, "Failed to add slots", "master", masterPodName)
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			// Ignore "Slot ... is already busy" errors, as this means we're retrying a partial bootstrap
+			if strings.Contains(err.Error(), "busy") {
+				log.Info("Slots already assigned (idempotent)", "master", masterPodName)
+			} else {
+				log.Error(err, "Failed to add slots", "master", masterPodName)
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			}
 		}
 
 		// Record master state
@@ -381,8 +386,8 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 				"masterNodeID", masterNodeID)
 
 			if err := clusterClient.ClusterReplicate(ctx, replicaAddr, masterNodeID); err != nil {
-				log.Error(err, "Failed to assign replica", "replica", replicaPodName)
-				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+				log.Info("Failed to assign replica (might already be assigned)", 
+					"replica", replicaPodName, "error", err)
 			}
 
 			// Record replica state
@@ -959,7 +964,7 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 				}
 			}
 		}
-		
+
 		masterInfo := ""
 		if len(masterIndices) > 0 {
 			masterInfo = fmt.Sprintf(" (M: %s)", strings.Join(masterIndices, ","))
