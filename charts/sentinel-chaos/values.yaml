@@ -1,0 +1,20 @@
+# Sentinel configuration
+sentinel:
+  name: manual-chaos
+  quorum: 2
+  downAfterMilliseconds: 5000
+  failoverTimeout: 10000
+  # Disable polling to test event-driven mechanism
+  disablePolling: "true"
+
+# Chaos Client configuration
+chaosClient:
+  image:
+    repository: registry.tanne3.de/littlered-chaos-client
+    tag: latest
+    pullPolicy: Always
+  # 0 means unlimited duration
+  duration: 0
+  writeRate: 100ms
+  timeout: 500ms
+  keyPrefix: manual-chaos

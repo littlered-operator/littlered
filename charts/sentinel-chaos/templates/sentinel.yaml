@@ -1,0 +1,12 @@
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: {{ .Values.sentinel.name }}
+  annotations:
+    littlered.tanne3.de/disable-polling: {{ .Values.sentinel.disablePolling | quote }}
+spec:
+  mode: sentinel
+  sentinel:
+    quorum: {{ .Values.sentinel.quorum }}
+    downAfterMilliseconds: {{ .Values.sentinel.downAfterMilliseconds }}
+    failoverTimeout: {{ .Values.sentinel.failoverTimeout }}

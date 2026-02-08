@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Values.sentinel.name }}-chaos-client
+  labels:
+    app: chaos-client
+    test: manual-investigation
+spec:
+  restartPolicy: Never
+  containers:
+  - name: chaos-client
+    image: {{ .Values.chaosClient.image.repository }}:{{ .Values.chaosClient.image.tag }}
+    imagePullPolicy: {{ .Values.chaosClient.image.pullPolicy }}
+    args:
+    - "-addrs={{ .Values.sentinel.name }}:6379"
+    - "-prefix={{ .Values.chaosClient.keyPrefix }}"
+    - "-duration={{ .Values.chaosClient.duration }}"
+    - "-write-rate={{ .Values.chaosClient.writeRate }}"
+    - "-timeout={{ .Values.chaosClient.timeout }}"
+    - "-status-interval=5s"

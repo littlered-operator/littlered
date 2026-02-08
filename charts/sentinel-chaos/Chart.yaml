@@ -1,0 +1,6 @@
+apiVersion: v2
+name: sentinel-chaos
+description: A Helm chart to deploy a LittleRed Sentinel cluster and a chaos test client for manual investigation.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
