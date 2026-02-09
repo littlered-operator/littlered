@@ -137,4 +137,91 @@ spec:
 			Expect(masterCount).To(Equal(3))
 		})
 	})
+
+	Context("Functional 3-node cluster (No replicas)", Ordered, func() {
+		const crName = "functional-3node-cluster"
+
+		BeforeAll(func() {
+			By("Creating a functional 3-shard cluster with no replicas")
+			cr := fmt.Sprintf(`
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: cluster
+  cluster:
+    shards: 3
+    replicasPerShard: 0
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+`, crName, testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(cr)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterAll(func() {
+			By("cleaning up cluster CR")
+			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=1m")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should have cluster state 'ok'", func() {
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
+					"-n", testNamespace, "-c", "redis", "--",
+					"valkey-cli", "CLUSTER", "INFO")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
+				g.Expect(output).To(ContainSubstring("cluster_slots_assigned:16384"))
+			}, 4*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should have 3 masters with slots in CLUSTER NODES", func() {
+			cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
+				"-n", testNamespace, "-c", "redis", "--",
+				"valkey-cli", "CLUSTER", "NODES")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := strings.Split(strings.TrimSpace(output), "\n")
+			masterCount := 0
+			for _, line := range lines {
+				if strings.Contains(line, "master") {
+					masterCount++
+					fields := strings.Fields(line)
+					// If slots are present, fields length should be > 8
+					Expect(len(fields)).To(BeNumerically(">", 8), fmt.Sprintf("Master node should have slots: %s", line))
+				}
+			}
+			Expect(masterCount).To(Equal(3))
+		})
+
+		It("should be able to set and get a key", func() {
+			By("setting a key")
+			cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
+				"-n", testNamespace, "-c", "redis", "--",
+				"valkey-cli", "-c", "SET", "foo", "bar")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(output)).To(Equal("OK"))
+
+			By("getting the key")
+			cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
+				"-n", testNamespace, "-c", "redis", "--",
+				"valkey-cli", "-c", "GET", "foo")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(output)).To(Equal("bar"))
+		})
+	})
 })
