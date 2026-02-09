@@ -1033,3 +1033,53 @@ func (r *LittleRedReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("littlered").
 		Complete(r)
 }
+
+// createOrUpdate is a simple helper to create or update an object.
+// Caution: This is a blunt tool and does not handle special cases like Service ClusterIP preservation.
+func (r *LittleRedReconciler) createOrUpdate(ctx context.Context, obj client.Object) error {
+	key := client.ObjectKeyFromObject(obj)
+	existing := obj.DeepCopyObject().(client.Object)
+
+	if err := r.Get(ctx, key, existing); err != nil {
+		if apierrors.IsNotFound(err) {
+			return r.Create(ctx, obj)
+		}
+		return err
+	}
+
+	obj.SetResourceVersion(existing.GetResourceVersion())
+	return r.Update(ctx, obj)
+}
+
+// getRedisPassword retrieves the Redis password from the secret if auth is enabled
+func (r *LittleRedReconciler) getRedisPassword(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) string {
+	if !littleRed.Spec.Auth.Enabled {
+		return ""
+	}
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      littleRed.Spec.Auth.ExistingSecret,
+		Namespace: littleRed.Namespace,
+	}, secret); err != nil {
+		return ""
+	}
+	return string(secret.Data["password"])
+}
+
+// validateClusterSpec validates cluster-specific configuration
+func (r *LittleRedReconciler) validateClusterSpec(littleRed *littleredv1alpha1.LittleRed) error {
+	cluster := littleRed.Spec.Cluster
+	if cluster == nil {
+		return nil
+	}
+
+	if cluster.Shards < 3 {
+		return fmt.Errorf("cluster.shards must be at least 3, got %d", cluster.Shards)
+	}
+
+	if cluster.ReplicasPerShard != nil && *cluster.ReplicasPerShard < 0 {
+		return fmt.Errorf("cluster.replicasPerShard cannot be negative, got %d", *cluster.ReplicasPerShard)
+	}
+
+	return nil
+}

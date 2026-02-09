@@ -34,9 +34,10 @@ import (
 
 // Annotation keys for config hash
 const (
-	AnnotationConfigHash             = "littlered.tanne3.de/config-hash"
-	AnnotationDisablePolling         = "littlered.tanne3.de/disable-polling"
-	AnnotationDisableEventMonitoring = "littlered.tanne3.de/disable-event-monitoring"
+	AnnotationConfigHash              = "littlered.tanne3.de/config-hash"
+	AnnotationDisablePolling          = "littlered.tanne3.de/disable-polling"
+	AnnotationDisableEventMonitoring  = "littlered.tanne3.de/disable-event-monitoring"
+	AnnotationDebugSkipSlotAssignment = "littlered.tanne3.de/debug-skip-slot-assignment"
 )
 
 // Resource name helpers
@@ -1401,27 +1402,13 @@ func buildClusterStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSe
 
 // buildClusterRedisContainer creates the Redis container for cluster mode
 func buildClusterRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
-	// Startup script that announces pod IP and enforces a DETERMINISTIC node ID.
-	// Since Redis doesn't allow setting the Node ID via CLI/Config, we must
-	// pre-generate a minimal nodes.conf file if it doesn't exist.
-	// This ensures stable identity across restarts without requiring PVCs.
+	// Startup script that announces pod IP.
+	// We let Redis generate its own Node ID and manage nodes.conf.
+	// This results in a new Node ID on every pod restart (since data is on EmptyDir).
 	startupScript := `#!/bin/sh
 set -e
 
-# Generate a deterministic 40-character hex Node ID from the pod name
-NODE_ID=$(echo -n ${POD_NAME} | sha1sum | cut -d' ' -f1)
-
-echo "Starting Redis cluster node ${POD_NAME} with ID: ${NODE_ID} and IP: ${POD_IP}"
-
-# If nodes.conf doesn't exist, pre-generate it with our ID
-if [ ! -f /data/nodes.conf ]; then
-  echo "Pre-generating nodes.conf with deterministic ID"
-  # Format: <id> <ip:port@cport> <flags> <master> <ping-sent> <pong-recv> <config-epoch> <link-state> <slot> ...
-  # We only need the 'myself' entry. Redis will fill in the rest via gossip.
-  # Note: 0.0.0.0 is used for IP as it will be auto-updated by Redis/Gossip or announce-ip
-  echo "${NODE_ID} 0.0.0.0:0@0 myself,master - 0 0 0 connected" > /data/nodes.conf
-  echo "vars currentEpoch 0 lastVoteEpoch 0" >> /data/nodes.conf
-fi
+echo "Starting Redis cluster node ${POD_NAME} with IP: ${POD_IP}"
 
 exec redis-server /etc/redis/redis.conf \
   --cluster-announce-ip ${POD_IP} \
@@ -1497,7 +1484,7 @@ exec redis-server /etc/redis/redis.conf \
 		},
 	})
 
-	// Add POD_NAME env var (required for deterministic node ID)
+	// Add POD_NAME env var (useful for logging)
 	container.Env = append(container.Env, corev1.EnvVar{
 		Name: "POD_NAME",
 		ValueFrom: &corev1.EnvVarSource{

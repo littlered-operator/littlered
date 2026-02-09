@@ -391,7 +391,7 @@ type ClusterSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=1
 	// +optional
-	ReplicasPerShard int `json:"replicasPerShard,omitempty"`
+	ReplicasPerShard *int `json:"replicasPerShard,omitempty"`
 
 	// ClusterNodeTimeout in milliseconds
 	// +kubebuilder:default=15000

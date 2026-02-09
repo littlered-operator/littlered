@@ -192,8 +192,8 @@ func (c *ClusterSpec) SetDefaults() {
 	if c.Shards == 0 {
 		c.Shards = DefaultClusterShards
 	}
-	if c.ReplicasPerShard == 0 {
-		c.ReplicasPerShard = DefaultReplicasPerShard
+	if c.ReplicasPerShard == nil {
+		c.ReplicasPerShard = ptr(DefaultReplicasPerShard)
 	}
 	if c.ClusterNodeTimeout == 0 {
 		c.ClusterNodeTimeout = DefaultClusterNodeTimeout
@@ -202,7 +202,11 @@ func (c *ClusterSpec) SetDefaults() {
 
 // GetTotalNodes returns the total number of cluster nodes (shards * (1 + replicas))
 func (c *ClusterSpec) GetTotalNodes() int {
-	return c.Shards * (1 + c.ReplicasPerShard)
+	replicas := 0
+	if c.ReplicasPerShard != nil {
+		replicas = *c.ReplicasPerShard
+	}
+	return c.Shards * (1 + replicas)
 }
 
 func setDefaultResources(r *corev1.ResourceRequirements) {
