@@ -92,7 +92,6 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 	}
 
 	// 4. All pods are ready. Gather Ground Truth.
-	// We query all pods to get their ID and their view of the cluster.
 	gt, err := r.gatherGroundTruth(ctx, littleRed)
 	if err != nil {
 		log.Error(err, "Failed to gather ground truth")
@@ -108,7 +107,8 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 		log.Info("Cluster not healthy or partitioning/ghosts detected, running repair",
 			"partitions", len(gt.Partitions),
 			"ghosts", len(gt.GhostNodes),
-			"orphanedSlots", gt.HasOrphanedSlots())
+			"orphanedSlots", gt.HasOrphanedSlots(),
+			"allNodesView", len(gt.AllNodeIDs))
 		return r.repairCluster(ctx, littleRed, gt)
 	}
 
@@ -127,11 +127,9 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 	// 1. Heal Partitions (CLUSTER MEET)
 	if gt.HasPartitions() {
 		log.Info("Healing partitions", "count", len(gt.Partitions))
-		// Pick the first node of the largest partition as the seed
 		seedNode := gt.GetLargestPartitionSeed()
 		if seedNode != nil {
 			seedAddr := fmt.Sprintf("%s:%d", seedNode.PodIP, littleredv1alpha1.RedisPort)
-			// Meet all other known nodes to this seed
 			for _, node := range gt.Nodes {
 				if node.NodeID == seedNode.NodeID {
 					continue
@@ -141,15 +139,13 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 					continue
 				}
 				log.Info("Meeting node", "seed", seedAddr, "target", targetIP)
-				// We don't fail hard here, gossip will eventually converge
 				_ = clusterClient.ClusterMeet(ctx, seedAddr, targetIP, littleredv1alpha1.RedisPort)
 			}
 		}
-		// Return fast to allow gossip to propagate before next check
 		return ctrl.Result{RequeueAfter: fast}, nil
 	}
 
-	// 2. Forget Ghost Nodes (Nodes in CLUSTER NODES that don't match any running Pod)
+	// 2. Forget Ghost Nodes
 	if gt.HasGhostNodes() {
 		log.Info("Removing ghost nodes", "count", len(gt.GhostNodes))
 		for _, ghostID := range gt.GhostNodes {
@@ -171,11 +167,9 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 	}
 
 	if isZeroReplicaMode && gt.HasOrphanedSlots() {
-		// Only proceed if not in debug skip mode
 		if littleRed.Annotations[AnnotationDebugSkipSlotAssignment] != "true" {
 			log.Info("Detected orphaned slots in 0-replica mode, attempting restoration")
 
-			// Find masters with NO slots (candidates for taking over)
 			emptyMasters := gt.GetEmptyMasters()
 			if len(emptyMasters) == 0 {
 				log.Info("No empty masters available to take over slots")
@@ -214,11 +208,12 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 
 // GroundTruth represents the state of the cluster as seen by the operator
 type GroundTruth struct {
-	Nodes        map[string]NodeState // Map PodName -> NodeState
-	Partitions   [][]string           // Sets of NodeIDs that see each other
-	GhostNodes   []string             // NodeIDs present in cluster but not in K8s
-	ClusterState string               // "ok" if ANY node says ok, else "fail" or "unknown"
-	TotalSlots   int                  // Max slots assigned reported by any node
+	Nodes        map[string]*NodeState // Map PodName -> NodeState
+	Partitions   [][]string            // Sets of NodeIDs that see each other
+	GhostNodes   []string              // NodeIDs present in cluster but not in K8s
+	ClusterState string                // "ok" if ANY node says ok, else "fail" or "unknown"
+	TotalSlots   int                   // Max slots assigned reported by any node
+	AllNodeIDs   map[string]bool       // Set of all NodeIDs seen in the mesh
 }
 
 type NodeState struct {
@@ -231,6 +226,9 @@ type NodeState struct {
 
 func (gt *GroundTruth) IsHealthy(expectedNodes int32) bool {
 	if len(gt.Nodes) < int(expectedNodes) {
+		return false
+	}
+	if len(gt.AllNodeIDs) != int(expectedNodes) {
 		return false
 	}
 	if gt.HasPartitions() {
@@ -254,7 +252,7 @@ func (gt *GroundTruth) HasOrphanedSlots() bool {
 func (gt *GroundTruth) GetLargestPartitionSeed() *NodeState {
 	if len(gt.Partitions) == 0 {
 		for _, n := range gt.Nodes {
-			return &n
+			return n
 		}
 		return nil
 	}
@@ -271,7 +269,7 @@ func (gt *GroundTruth) GetLargestPartitionSeed() *NodeState {
 	targetID := gt.Partitions[maxIdx][0]
 	for _, n := range gt.Nodes {
 		if n.NodeID == targetID {
-			return &n
+			return n
 		}
 	}
 	return nil
@@ -281,7 +279,7 @@ func (gt *GroundTruth) GetEmptyMasters() []NodeState {
 	var empty []NodeState
 	for _, n := range gt.Nodes {
 		if len(n.Slots) == 0 {
-			empty = append(empty, n)
+			empty = append(empty, *n)
 		}
 	}
 	return empty
@@ -290,7 +288,8 @@ func (gt *GroundTruth) GetEmptyMasters() []NodeState {
 // gatherGroundTruth queries all pods to build a view of the cluster
 func (r *LittleRedReconciler) gatherGroundTruth(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (*GroundTruth, error) {
 	gt := &GroundTruth{
-		Nodes: make(map[string]NodeState),
+		Nodes:      make(map[string]*NodeState),
+		AllNodeIDs: make(map[string]bool),
 	}
 
 	cluster := littleRed.Spec.Cluster
@@ -317,7 +316,7 @@ func (r *LittleRedReconciler) gatherGroundTruth(ctx context.Context, littleRed *
 			continue
 		}
 
-		gt.Nodes[podName] = NodeState{
+		gt.Nodes[podName] = &NodeState{
 			PodName: podName,
 			PodIP:   pod.Status.PodIP,
 			NodeID:  id,
@@ -350,6 +349,8 @@ func (r *LittleRedReconciler) gatherGroundTruth(ctx context.Context, littleRed *
 
 		var known []string
 		for _, knownNode := range nodes {
+			gt.AllNodeIDs[knownNode.NodeID] = true
+
 			isFailed := false
 			for _, f := range knownNode.Flags {
 				if f == "fail" || f == "noaddr" || f == "handshake" {
@@ -375,13 +376,11 @@ func (r *LittleRedReconciler) gatherGroundTruth(ctx context.Context, littleRed *
 			}
 
 			if knownNode.NodeID == n.NodeID {
-				ns := gt.Nodes[n.PodName]
-				ns.Slots = knownNode.Slots
-				ns.Role = "master"
+				n.Slots = knownNode.Slots
+				n.Role = "master"
 				if knownNode.IsReplica() {
-					ns.Role = "replica"
+					n.Role = "replica"
 				}
-				gt.Nodes[n.PodName] = ns
 			}
 		}
 		adj[n.NodeID] = known
@@ -548,15 +547,16 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 
 	// Gather ground truth to get node details for status
 	gt, err := r.gatherGroundTruth(ctx, littleRed)
+	clusterOK := false
 	if err == nil {
 		if littleRed.Status.Cluster == nil {
 			littleRed.Status.Cluster = &littleredv1alpha1.ClusterStatusInfo{}
 		}
 		littleRed.Status.Cluster.State = gt.ClusterState
+		clusterOK = gt.IsHealthy(littleRed.Status.Redis.Total)
 
 		// Populate node details
 		nodeStates := make([]littleredv1alpha1.ClusterNodeState, 0)
-		// Sort by pod name for consistency
 		for i := 0; i < int(*sts.Spec.Replicas); i++ {
 			podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
 			if node, ok := gt.Nodes[podName]; ok {
@@ -571,10 +571,7 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 	}
 
 	// Determine high level phase
-	if littleRed.Status.Redis.Ready == littleRed.Status.Redis.Total &&
-		littleRed.Status.Cluster != nil &&
-		littleRed.Status.Cluster.State == "ok" {
-
+	if littleRed.Status.Redis.Ready == littleRed.Status.Redis.Total && clusterOK {
 		littleRed.Status.Phase = littleredv1alpha1.PhaseRunning
 		littleRed.Status.Status = "Ready"
 
