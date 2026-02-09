@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -100,14 +101,16 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 	}
 
 	// Analyze state
-	isHealthy := gt.IsHealthy(expectedReplicas)
+	isHealthy := gt.IsHealthy(expectedReplicas, int32(cluster.Shards))
 
-	// If cluster is not fully healthy or has partitioning issues, run repair loop
-	if !isHealthy || gt.HasPartitions() || gt.HasGhostNodes() || gt.HasOrphanedSlots() {
-		log.Info("Cluster not healthy or partitioning/ghosts detected, running repair",
+	// If cluster is not fully healthy or has topology issues, run repair loop
+	if !isHealthy || gt.HasPartitions() || gt.HasGhostNodes() || gt.HasOrphanedSlots() || gt.HasEmptyMasters() {
+		log.Info("Cluster not healthy or topology issues detected, running repair",
 			"partitions", len(gt.Partitions),
 			"ghosts", len(gt.GhostNodes),
 			"orphanedSlots", gt.HasOrphanedSlots(),
+			"emptyMasters", gt.HasEmptyMasters(),
+			"masters", gt.CountMasters(),
 			"allNodesView", len(gt.AllNodeIDs))
 		return r.repairCluster(ctx, littleRed, gt)
 	}
@@ -116,7 +119,7 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 	return r.updateClusterStatus(ctx, littleRed)
 }
 
-// repairCluster handles healing: partitions, ghost nodes, and slot restoration
+// repairCluster handles healing: partitions, ghost nodes, slot restoration, and replication topology
 func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, gt *GroundTruth) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	fast, _ := littleRed.GetRequeueIntervals()
@@ -126,6 +129,16 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 
 	// 1. Heal Partitions (CLUSTER MEET)
 	if gt.HasPartitions() {
+		// If any replica is orphaned (no master or points to a non-existent node),
+		// wait for failover to complete before issuing CLUSTER MEET.
+		// Premature MEET breaks failover quorum because the new node can't vote
+		// for replica promotion (it doesn't know the master-replica relationship).
+		if gt.HasOrphanedReplicas() {
+			log.Info("Waiting for failover to complete before healing partition",
+				"reason", "orphaned replica detected")
+			return ctrl.Result{RequeueAfter: fast}, nil
+		}
+
 		log.Info("Healing partitions", "count", len(gt.Partitions))
 		seedNode := gt.GetLargestPartitionSeed()
 		if seedNode != nil {
@@ -199,6 +212,43 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		}
 	}
 
+	// 4. Replication Repair (Non-Zero Replica Mode)
+	if !isZeroReplicaMode {
+		emptyMasters := gt.GetEmptyMasters()
+		shardsWithReplicas := gt.GetMastersWithReplicas()
+
+		if len(emptyMasters) > 0 {
+			log.Info("Detected masters with no slots in replication mode, attempting to assign as replicas")
+
+			expectedReplicas := 1
+			if littleRed.Spec.Cluster.ReplicasPerShard != nil {
+				expectedReplicas = *littleRed.Spec.Cluster.ReplicasPerShard
+			}
+
+			for _, em := range emptyMasters {
+				var targetMaster *NodeState
+				for _, m := range gt.Nodes {
+					if m.Role == "master" && len(m.Slots) > 0 {
+						if len(shardsWithReplicas[m.NodeID]) < expectedReplicas {
+							targetMaster = m
+							break
+						}
+					}
+				}
+
+				if targetMaster != nil {
+					log.Info("Assigning empty master as replica", "pod", em.PodName, "masterNodeID", targetMaster.NodeID)
+					addr := fmt.Sprintf("%s:%d", em.PodIP, littleredv1alpha1.RedisPort)
+					if err := clusterClient.ClusterReplicate(ctx, addr, targetMaster.NodeID); err != nil {
+						log.Error(err, "Failed to replicate", "pod", em.PodName)
+					} else {
+						return ctrl.Result{RequeueAfter: fast}, nil
+					}
+				}
+			}
+		}
+	}
+
 	if gt.TotalSlots == 0 {
 		return r.bootstrapCluster(ctx, littleRed)
 	}
@@ -217,14 +267,15 @@ type GroundTruth struct {
 }
 
 type NodeState struct {
-	PodName string
-	PodIP   string
-	NodeID  string
-	Slots   []string
-	Role    string // "master" or "slave"
+	PodName      string
+	PodIP        string
+	NodeID       string
+	Slots        []string
+	Role         string // "master" or "replica"
+	MasterNodeID string // "-" if master
 }
 
-func (gt *GroundTruth) IsHealthy(expectedNodes int32) bool {
+func (gt *GroundTruth) IsHealthy(expectedNodes, expectedShards int32) bool {
 	if len(gt.Nodes) < int(expectedNodes) {
 		return false
 	}
@@ -232,6 +283,9 @@ func (gt *GroundTruth) IsHealthy(expectedNodes int32) bool {
 		return false
 	}
 	if gt.HasPartitions() {
+		return false
+	}
+	if gt.CountMasters() != int(expectedShards) {
 		return false
 	}
 	return gt.ClusterState == "ok" && gt.TotalSlots == 16384
@@ -247,6 +301,40 @@ func (gt *GroundTruth) HasGhostNodes() bool {
 
 func (gt *GroundTruth) HasOrphanedSlots() bool {
 	return gt.TotalSlots < 16384
+}
+
+// HasOrphanedReplicas returns true if any replica has no master or points to a
+// node that doesn't exist in our live nodes. This indicates failover is in progress.
+func (gt *GroundTruth) HasOrphanedReplicas() bool {
+	// Build set of live node IDs
+	liveNodeIDs := make(map[string]bool)
+	for _, n := range gt.Nodes {
+		liveNodeIDs[n.NodeID] = true
+	}
+
+	for _, node := range gt.Nodes {
+		if node.Role == "replica" {
+			// Replica with no master assigned (in failover transition)
+			if node.MasterNodeID == "-" || node.MasterNodeID == "" {
+				return true
+			}
+			// Replica pointing to a non-existent master (ghost)
+			if !liveNodeIDs[node.MasterNodeID] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (gt *GroundTruth) CountMasters() int {
+	count := 0
+	for _, n := range gt.Nodes {
+		if n.Role == "master" && len(n.Slots) > 0 {
+			count++
+		}
+	}
+	return count
 }
 
 func (gt *GroundTruth) GetLargestPartitionSeed() *NodeState {
@@ -275,14 +363,35 @@ func (gt *GroundTruth) GetLargestPartitionSeed() *NodeState {
 	return nil
 }
 
-func (gt *GroundTruth) GetEmptyMasters() []NodeState {
-	var empty []NodeState
+func (gt *GroundTruth) GetEmptyMasters() []*NodeState {
+	var empty []*NodeState
 	for _, n := range gt.Nodes {
-		if len(n.Slots) == 0 {
-			empty = append(empty, *n)
+		if n.Role == "master" && len(n.Slots) == 0 {
+			empty = append(empty, n)
 		}
 	}
 	return empty
+}
+
+// HasEmptyMasters returns true if any node is a master with no slots assigned.
+// This indicates a node that should be assigned as a replica.
+func (gt *GroundTruth) HasEmptyMasters() bool {
+	for _, n := range gt.Nodes {
+		if n.Role == "master" && len(n.Slots) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (gt *GroundTruth) GetMastersWithReplicas() map[string][]string {
+	m := make(map[string][]string)
+	for _, n := range gt.Nodes {
+		if n.Role == "replica" && n.MasterNodeID != "-" {
+			m[n.MasterNodeID] = append(m[n.MasterNodeID], n.NodeID)
+		}
+	}
+	return m
 }
 
 // gatherGroundTruth queries all pods to build a view of the cluster
@@ -381,6 +490,7 @@ func (r *LittleRedReconciler) gatherGroundTruth(ctx context.Context, littleRed *
 				if knownNode.IsReplica() {
 					n.Role = "replica"
 				}
+				n.MasterNodeID = knownNode.MasterID
 			}
 		}
 		adj[n.NodeID] = known
@@ -545,6 +655,11 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 	littleRed.Status.Redis.Ready = sts.Status.ReadyReplicas
 	littleRed.Status.Redis.Total = *sts.Spec.Replicas
 
+	clusterShards := int32(3)
+	if littleRed.Spec.Cluster != nil {
+		clusterShards = int32(littleRed.Spec.Cluster.Shards)
+	}
+
 	// Gather ground truth to get node details for status
 	gt, err := r.gatherGroundTruth(ctx, littleRed)
 	clusterOK := false
@@ -553,7 +668,7 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 			littleRed.Status.Cluster = &littleredv1alpha1.ClusterStatusInfo{}
 		}
 		littleRed.Status.Cluster.State = gt.ClusterState
-		clusterOK = gt.IsHealthy(littleRed.Status.Redis.Total)
+		clusterOK = gt.IsHealthy(littleRed.Status.Redis.Total, clusterShards)
 
 		// Populate node details
 		nodeStates := make([]littleredv1alpha1.ClusterNodeState, 0)
@@ -561,9 +676,11 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 			podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
 			if node, ok := gt.Nodes[podName]; ok {
 				nodeStates = append(nodeStates, littleredv1alpha1.ClusterNodeState{
-					PodName: podName,
-					NodeID:  node.NodeID,
-					Role:    node.Role,
+					PodName:      podName,
+					NodeID:       node.NodeID,
+					Role:         node.Role,
+					MasterNodeID: node.MasterNodeID,
+					SlotRanges:   strings.Join(node.Slots, ","),
 				})
 			}
 		}
