@@ -470,7 +470,7 @@ spec:
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(output)).To(Equal("recovery-test-value"),
-			"Data written before replica restart should still be accessible (master has the data)")
+				"Data written before replica restart should still be accessible (master has the data)")
 		})
 
 		It("should handle master pod deletion with replica promotion", func() {

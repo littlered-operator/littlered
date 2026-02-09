@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-chaos-client
+  labels:
+    app: chaos-client
+    test: my-chaos-client
+spec:
+  restartPolicy: Never
+  containers:
+  - name: chaos-client
+    image: %s
+    imagePullPolicy: Always
+    args:
+    - "-addrs=%s:6379"
+    - "-prefix=%s"
+    - "-duration=%s"
+    - "-status-interval=5s"
+    - "-write-rate=100ms"
+    - "-timeout=500ms"%s

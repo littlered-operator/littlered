@@ -411,7 +411,7 @@ spec:
 			// Target the Kubernetes Service, not individual pods
 			// chaos-client sees it as a single "standalone" instance
 			serviceName := crName // The operator creates a service with the same name
-			
+
 			By("deploying chaos client targeting the Master Service")
 			podName, err := deployChaosClient(testNamespace, testName, serviceName, false, "chaos-failover", testDuration)
 			Expect(err).NotTo(HaveOccurred())
@@ -427,7 +427,7 @@ spec:
 			master1, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			master1 = strings.TrimSpace(master1)
-			
+
 			By("killing first master")
 			GinkgoWriter.Printf("Killing Master 1: %s\n", master1)
 			cmd = exec.Command("kubectl", "delete", "pod", master1,
@@ -478,7 +478,7 @@ spec:
 			//    Redis Sentinel defaults are async replication. We MIGHT see data loss (not corruption, but missing keys).
 			//    Corruption = Read Key X, got Value Y (wrong).
 			//    Loss = Read Key X, got "Nil" (missing).
-			
+
 			Expect(metrics.DataCorruptions).To(Equal(int64(0)), "Data corruption detected!")
 
 			// 2. Availability
@@ -487,9 +487,9 @@ spec:
 			// Let's assert > 50% write availability (conservative).
 			writeAvail := metrics.WriteAvailability()
 			readAvail := metrics.ReadAvailability()
-			
+
 			GinkgoWriter.Printf("Availability - Write: %.2f%%, Read: %.2f%%\n", writeAvail*100, readAvail*100)
-			
+
 			Expect(writeAvail).To(BeNumerically(">", 0.40), "Write availability too low")
 			Expect(readAvail).To(BeNumerically(">", 0.40), "Read availability too low")
 		})

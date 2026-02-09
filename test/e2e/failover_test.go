@@ -108,7 +108,7 @@ spec:
 				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
 					return
 				}
-				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))), 
+				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))),
 					fmt.Sprintf("New master label not yet applied. Current masters found: %q", out))
 			}, 45*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label")
 
@@ -178,7 +178,7 @@ spec:
 				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
 					return
 				}
-				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))), 
+				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))),
 					fmt.Sprintf("New master label not yet applied. Current masters found: %q", out))
 			}, 60*time.Second, 2*time.Second).Should(Succeed(), "Operator failed to update master label")
 
@@ -241,7 +241,7 @@ spec:
 				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
 					return
 				}
-				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))), 
+				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))),
 					fmt.Sprintf("New master label not yet applied. Current masters found: %q", out))
 			}, 20*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label")
 		})
@@ -306,7 +306,7 @@ spec:
 				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
 					return
 				}
-				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))), 
+				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))),
 					fmt.Sprintf("Failover failed after sentinel restart. Current masters: %q", out))
 			}, 45*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label after sentinel restart")
 		})
