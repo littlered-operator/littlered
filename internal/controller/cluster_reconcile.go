@@ -73,13 +73,12 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 	expectedReplicas := int32(cluster.GetTotalNodes())
 	allPodsReady := sts.Status.ReadyReplicas == expectedReplicas
 
-	// 3. If not all pods ready, update status and wait
+	// 3. If not all pods ready, wait (update status to Initializing)
 	if !allPodsReady {
 		log.Info("Waiting for all pods to be ready",
 			"ready", sts.Status.ReadyReplicas,
 			"expected", expectedReplicas)
 
-		// Update status to Initializing
 		littleRed.Status.Phase = littleredv1alpha1.PhaseInitializing
 		littleRed.Status.Redis.Ready = sts.Status.ReadyReplicas
 		littleRed.Status.Redis.Total = *sts.Spec.Replicas
@@ -92,39 +91,333 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 		return ctrl.Result{RequeueAfter: fast}, nil
 	}
 
-	// 4. All pods are ready. Check cluster health.
-	// We use the first pod to check the cluster state.
-	pod0Name := fmt.Sprintf("%s-cluster-0", littleRed.Name)
-	pod0 := &corev1.Pod{}
-	if err := r.Get(ctx, types.NamespacedName{Name: pod0Name, Namespace: littleRed.Namespace}, pod0); err != nil {
-		return ctrl.Result{}, err
+	// 4. All pods are ready. Gather Ground Truth.
+	// We query all pods to get their ID and their view of the cluster.
+	gt, err := r.gatherGroundTruth(ctx, littleRed)
+	if err != nil {
+		log.Error(err, "Failed to gather ground truth")
+		fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
 	}
+
+	// Analyze state
+	isHealthy := gt.IsHealthy(expectedReplicas)
+
+	// If cluster is not fully healthy or has partitioning issues, run repair loop
+	if !isHealthy || gt.HasPartitions() || gt.HasGhostNodes() || gt.HasOrphanedSlots() {
+		log.Info("Cluster not healthy or partitioning/ghosts detected, running repair",
+			"partitions", len(gt.Partitions),
+			"ghosts", len(gt.GhostNodes),
+			"orphanedSlots", gt.HasOrphanedSlots())
+		return r.repairCluster(ctx, littleRed, gt)
+	}
+
+	// 5. Cluster is healthy and stable
+	return r.updateClusterStatus(ctx, littleRed)
+}
+
+// repairCluster handles healing: partitions, ghost nodes, and slot restoration
+func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, gt *GroundTruth) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	fast, _ := littleRed.GetRequeueIntervals()
 
 	password := r.getRedisPassword(ctx, littleRed)
 	clusterClient := redisclient.NewClusterClient(password)
-	addr0 := fmt.Sprintf("%s:%d", pod0.Status.PodIP, littleredv1alpha1.RedisPort)
 
-	info, err := clusterClient.GetClusterInfo(ctx, addr0)
+	// 1. Heal Partitions (CLUSTER MEET)
+	if gt.HasPartitions() {
+		log.Info("Healing partitions", "count", len(gt.Partitions))
+		// Pick the first node of the largest partition as the seed
+		seedNode := gt.GetLargestPartitionSeed()
+		if seedNode != nil {
+			seedAddr := fmt.Sprintf("%s:%d", seedNode.PodIP, littleredv1alpha1.RedisPort)
+			// Meet all other known nodes to this seed
+			for _, node := range gt.Nodes {
+				if node.NodeID == seedNode.NodeID {
+					continue
+				}
+				targetIP := node.PodIP
+				if targetIP == "" {
+					continue
+				}
+				log.Info("Meeting node", "seed", seedAddr, "target", targetIP)
+				// We don't fail hard here, gossip will eventually converge
+				_ = clusterClient.ClusterMeet(ctx, seedAddr, targetIP, littleredv1alpha1.RedisPort)
+			}
+		}
+		// Return fast to allow gossip to propagate before next check
+		return ctrl.Result{RequeueAfter: fast}, nil
+	}
 
-	needsBootstrap := false
-	if err != nil {
-		// Could be transient or not initialized
-		log.Info("Failed to get cluster info, assuming bootstrap needed", "error", err)
-		needsBootstrap = true
-	} else {
-		// If cluster state is not OK or we don't know enough nodes, we might need to bootstrap/heal
-		if info.State != "ok" || info.KnownNodes < int(expectedReplicas) {
-			log.Info("Cluster state not OK or nodes missing", "state", info.State, "known", info.KnownNodes, "expected", expectedReplicas)
-			needsBootstrap = true
+	// 2. Forget Ghost Nodes (Nodes in CLUSTER NODES that don't match any running Pod)
+	if gt.HasGhostNodes() {
+		log.Info("Removing ghost nodes", "count", len(gt.GhostNodes))
+		for _, ghostID := range gt.GhostNodes {
+			log.Info("Forgetting ghost node", "id", ghostID)
+			for _, node := range gt.Nodes {
+				addr := fmt.Sprintf("%s:%d", node.PodIP, littleredv1alpha1.RedisPort)
+				if err := clusterClient.ClusterForget(ctx, addr, ghostID); err != nil {
+					log.Info("Failed to forget node (might already be gone)", "node", addr, "ghost", ghostID, "error", err)
+				}
+			}
+		}
+		return ctrl.Result{RequeueAfter: fast}, nil
+	}
+
+	// 3. Restore Missing Slots (0-Replica Mode Only)
+	isZeroReplicaMode := false
+	if littleRed.Spec.Cluster.ReplicasPerShard != nil && *littleRed.Spec.Cluster.ReplicasPerShard == 0 {
+		isZeroReplicaMode = true
+	}
+
+	if isZeroReplicaMode && gt.HasOrphanedSlots() {
+		// Only proceed if not in debug skip mode
+		if littleRed.Annotations[AnnotationDebugSkipSlotAssignment] != "true" {
+			log.Info("Detected orphaned slots in 0-replica mode, attempting restoration")
+
+			// Find masters with NO slots (candidates for taking over)
+			emptyMasters := gt.GetEmptyMasters()
+			if len(emptyMasters) == 0 {
+				log.Info("No empty masters available to take over slots")
+				return r.updateClusterStatus(ctx, littleRed)
+			}
+
+			shards := littleRed.Spec.Cluster.Shards
+			slotRanges := redisclient.GenerateSlotRanges(shards)
+
+			for i := 0; i < shards; i++ {
+				podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
+				node, exists := gt.Nodes[podName]
+
+				if exists && len(node.Slots) == 0 {
+					targetRange := slotRanges[i]
+					log.Info("Restoring slots to empty master", "pod", podName, "slots", fmt.Sprintf("%d-%d", targetRange.Start, targetRange.End))
+
+					addr := fmt.Sprintf("%s:%d", node.PodIP, littleredv1alpha1.RedisPort)
+					slots, _ := redisclient.ExpandSlotRange(redisclient.FormatSlotRange(targetRange.Start, targetRange.End))
+
+					if err := clusterClient.ClusterAddSlots(ctx, addr, slots...); err != nil {
+						log.Error(err, "Failed to restore slots", "pod", podName)
+					}
+				}
+			}
+			return ctrl.Result{RequeueAfter: fast}, nil
 		}
 	}
 
-	if needsBootstrap {
+	if gt.TotalSlots == 0 {
 		return r.bootstrapCluster(ctx, littleRed)
 	}
 
-	// 5. Cluster is running and healthy
 	return r.updateClusterStatus(ctx, littleRed)
+}
+
+// GroundTruth represents the state of the cluster as seen by the operator
+type GroundTruth struct {
+	Nodes        map[string]NodeState // Map PodName -> NodeState
+	Partitions   [][]string           // Sets of NodeIDs that see each other
+	GhostNodes   []string             // NodeIDs present in cluster but not in K8s
+	ClusterState string               // "ok" if ANY node says ok, else "fail" or "unknown"
+	TotalSlots   int                  // Max slots assigned reported by any node
+}
+
+type NodeState struct {
+	PodName string
+	PodIP   string
+	NodeID  string
+	Slots   []string
+	Role    string // "master" or "slave"
+}
+
+func (gt *GroundTruth) IsHealthy(expectedNodes int32) bool {
+	if len(gt.Nodes) < int(expectedNodes) {
+		return false
+	}
+	if gt.HasPartitions() {
+		return false
+	}
+	return gt.ClusterState == "ok" && gt.TotalSlots == 16384
+}
+
+func (gt *GroundTruth) HasPartitions() bool {
+	return len(gt.Partitions) > 1
+}
+
+func (gt *GroundTruth) HasGhostNodes() bool {
+	return len(gt.GhostNodes) > 0
+}
+
+func (gt *GroundTruth) HasOrphanedSlots() bool {
+	return gt.TotalSlots < 16384
+}
+
+func (gt *GroundTruth) GetLargestPartitionSeed() *NodeState {
+	if len(gt.Partitions) == 0 {
+		for _, n := range gt.Nodes {
+			return &n
+		}
+		return nil
+	}
+
+	maxIdx := 0
+	maxLen := 0
+	for i, p := range gt.Partitions {
+		if len(p) > maxLen {
+			maxLen = len(p)
+			maxIdx = i
+		}
+	}
+
+	targetID := gt.Partitions[maxIdx][0]
+	for _, n := range gt.Nodes {
+		if n.NodeID == targetID {
+			return &n
+		}
+	}
+	return nil
+}
+
+func (gt *GroundTruth) GetEmptyMasters() []NodeState {
+	var empty []NodeState
+	for _, n := range gt.Nodes {
+		if len(n.Slots) == 0 {
+			empty = append(empty, n)
+		}
+	}
+	return empty
+}
+
+// gatherGroundTruth queries all pods to build a view of the cluster
+func (r *LittleRedReconciler) gatherGroundTruth(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (*GroundTruth, error) {
+	gt := &GroundTruth{
+		Nodes: make(map[string]NodeState),
+	}
+
+	cluster := littleRed.Spec.Cluster
+	totalNodes := cluster.GetTotalNodes()
+	password := r.getRedisPassword(ctx, littleRed)
+	clusterClient := redisclient.NewClusterClient(password)
+
+	nodeIDtoPod := make(map[string]string)
+
+	// 1. Gather Pod Identities (IP + MyID)
+	for i := 0; i < totalNodes; i++ {
+		podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
+		pod := &corev1.Pod{}
+		if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: littleRed.Namespace}, pod); err != nil {
+			continue
+		}
+		if pod.Status.PodIP == "" {
+			continue
+		}
+
+		addr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
+		id, err := clusterClient.GetMyID(ctx, addr)
+		if err != nil {
+			continue
+		}
+
+		gt.Nodes[podName] = NodeState{
+			PodName: podName,
+			PodIP:   pod.Status.PodIP,
+			NodeID:  id,
+		}
+		nodeIDtoPod[id] = podName
+	}
+
+	// 2. Query Topology from ALL reachable nodes
+	adj := make(map[string][]string)
+
+	for _, n := range gt.Nodes {
+		addr := fmt.Sprintf("%s:%d", n.PodIP, littleredv1alpha1.RedisPort)
+
+		info, err := clusterClient.GetClusterInfo(ctx, addr)
+		if err == nil {
+			if info.State == "ok" {
+				gt.ClusterState = "ok"
+			} else if gt.ClusterState == "" || gt.ClusterState == "unknown" {
+				gt.ClusterState = info.State
+			}
+			if info.SlotsAssigned > gt.TotalSlots {
+				gt.TotalSlots = info.SlotsAssigned
+			}
+		}
+
+		nodes, err := clusterClient.GetClusterNodes(ctx, addr)
+		if err != nil {
+			continue
+		}
+
+		var known []string
+		for _, knownNode := range nodes {
+			isFailed := false
+			for _, f := range knownNode.Flags {
+				if f == "fail" || f == "noaddr" || f == "handshake" {
+					isFailed = true
+				}
+			}
+
+			if !isFailed {
+				known = append(known, knownNode.NodeID)
+			} else {
+				if _, exists := nodeIDtoPod[knownNode.NodeID]; !exists {
+					found := false
+					for _, ghost := range gt.GhostNodes {
+						if ghost == knownNode.NodeID {
+							found = true
+							break
+						}
+					}
+					if !found {
+						gt.GhostNodes = append(gt.GhostNodes, knownNode.NodeID)
+					}
+				}
+			}
+
+			if knownNode.NodeID == n.NodeID {
+				ns := gt.Nodes[n.PodName]
+				ns.Slots = knownNode.Slots
+				ns.Role = "master"
+				if knownNode.IsReplica() {
+					ns.Role = "replica"
+				}
+				gt.Nodes[n.PodName] = ns
+			}
+		}
+		adj[n.NodeID] = known
+	}
+
+	if gt.ClusterState == "" {
+		gt.ClusterState = "unknown"
+	}
+
+	// 3. Compute Partitions
+	visited := make(map[string]bool)
+	for id := range nodeIDtoPod {
+		if visited[id] {
+			continue
+		}
+
+		var partition []string
+		queue := []string{id}
+		visited[id] = true
+
+		for len(queue) > 0 {
+			curr := queue[0]
+			queue = queue[1:]
+			partition = append(partition, curr)
+
+			for _, neighbor := range adj[curr] {
+				if _, valid := nodeIDtoPod[neighbor]; valid && !visited[neighbor] {
+					visited[neighbor] = true
+					queue = append(queue, neighbor)
+				}
+			}
+		}
+		gt.Partitions = append(gt.Partitions, partition)
+	}
+
+	return gt, nil
 }
 
 // bootstrapCluster initializes a new Redis Cluster
@@ -253,39 +546,28 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 	littleRed.Status.Redis.Ready = sts.Status.ReadyReplicas
 	littleRed.Status.Redis.Total = *sts.Spec.Replicas
 
-	// Check Cluster Info from Pod 0
-	pod0Name := fmt.Sprintf("%s-cluster-0", littleRed.Name)
-	pod0 := &corev1.Pod{}
-	if err := r.Get(ctx, types.NamespacedName{Name: pod0Name, Namespace: littleRed.Namespace}, pod0); err == nil {
-		password := r.getRedisPassword(ctx, littleRed)
-		clusterClient := redisclient.NewClusterClient(password)
-		addr0 := fmt.Sprintf("%s:%d", pod0.Status.PodIP, littleredv1alpha1.RedisPort)
+	// Gather ground truth to get node details for status
+	gt, err := r.gatherGroundTruth(ctx, littleRed)
+	if err == nil {
+		if littleRed.Status.Cluster == nil {
+			littleRed.Status.Cluster = &littleredv1alpha1.ClusterStatusInfo{}
+		}
+		littleRed.Status.Cluster.State = gt.ClusterState
 
-		info, err := clusterClient.GetClusterInfo(ctx, addr0)
-		if err == nil {
-			if littleRed.Status.Cluster == nil {
-				littleRed.Status.Cluster = &littleredv1alpha1.ClusterStatusInfo{}
-			}
-			littleRed.Status.Cluster.State = info.State
-
-			if info.State == "ok" {
-				nodes, err := clusterClient.GetClusterNodes(ctx, addr0)
-				if err == nil {
-					nodeStates := make([]littleredv1alpha1.ClusterNodeState, 0)
-					for _, n := range nodes {
-						role := "master"
-						if n.IsReplica() {
-							role = "replica"
-						}
-						nodeStates = append(nodeStates, littleredv1alpha1.ClusterNodeState{
-							NodeID: n.NodeID,
-							Role:   role,
-						})
-					}
-					littleRed.Status.Cluster.Nodes = nodeStates
-				}
+		// Populate node details
+		nodeStates := make([]littleredv1alpha1.ClusterNodeState, 0)
+		// Sort by pod name for consistency
+		for i := 0; i < int(*sts.Spec.Replicas); i++ {
+			podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
+			if node, ok := gt.Nodes[podName]; ok {
+				nodeStates = append(nodeStates, littleredv1alpha1.ClusterNodeState{
+					PodName: podName,
+					NodeID:  node.NodeID,
+					Role:    node.Role,
+				})
 			}
 		}
+		littleRed.Status.Cluster.Nodes = nodeStates
 	}
 
 	// Determine high level phase
@@ -325,8 +607,11 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 		return ctrl.Result{}, err
 	}
 
-	steady, _ := littleRed.GetRequeueIntervals()
-	return ctrl.Result{RequeueAfter: steady}, nil
+	fast, steady := littleRed.GetRequeueIntervals()
+	if littleRed.Status.Phase == littleredv1alpha1.PhaseRunning {
+		return ctrl.Result{RequeueAfter: steady}, nil
+	}
+	return ctrl.Result{RequeueAfter: fast}, nil
 }
 
 // ensureClusterResources creates/updates all resources for cluster mode
