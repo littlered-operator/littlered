@@ -165,10 +165,8 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 			
 			// We expect exactly 3 nodes
-			lines := strings.Split(strings.TrimSpace(output), "
-")
-			Expect(len(lines)).To(Equal(3), fmt.Sprintf("Should have exactly 3 nodes, got:
-%s", output))
+			lines := strings.Split(strings.TrimSpace(output), "\n")
+			Expect(len(lines)).To(Equal(3), fmt.Sprintf("Should have exactly 3 nodes, got:\n%s", output))
 			
 			// None should be in 'fail' state (except transiently PFAIL)
 			Expect(output).NotTo(ContainSubstring("fail"), "Should not have failed nodes")
