@@ -29,7 +29,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -123,7 +122,7 @@ func (r *LittleRedReconciler) ensureClusterConnectivity(ctx context.Context, lit
 		cluster.SetDefaults()
 	}
 
-	// Get password
+	// Get password if auth enabled
 	password := ""
 	if littleRed.Spec.Auth.Enabled {
 		secret := &corev1.Secret{}
@@ -164,9 +163,7 @@ func (r *LittleRedReconciler) ensureClusterConnectivity(ctx context.Context, lit
 	for i := 1; i < len(podIPs); i++ {
 		// MEET <target_ip> <port> executed on the Seed node
 		if err := clusterClient.ClusterMeet(ctx, seedAddr, podIPs[i], littleredv1alpha1.RedisPort); err != nil {
-			// If seed is down, this fails. We could try a different seed, but for now
-			// we assume at least one reconciliation loop will find a healthy seed.
-			// logf.FromContext(ctx).V(1).Info("MEET failed", "seed", seedIP, "target", podIPs[i], "error", err)
+			// Log but don't fail, transient errors are expected
 		}
 	}
 
@@ -189,9 +186,10 @@ func (r *LittleRedReconciler) getClusterState(ctx context.Context, littleRed *li
 		if err := r.Get(ctx, types.NamespacedName{
 			Name:      littleRed.Spec.Auth.ExistingSecret,
 			Namespace: littleRed.Namespace,
-		}, secret); err == nil {
-			password = string(secret.Data["password"])
+		}, secret); err != nil {
+			return nil, fmt.Errorf("failed to get auth secret: %w", err)
 		}
+		password = string(secret.Data["password"])
 	}
 
 	clusterClient := redisclient.NewClusterClient(password)
@@ -212,7 +210,7 @@ func (r *LittleRedReconciler) getClusterState(ctx context.Context, littleRed *li
 		}
 
 		addr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
-		
+
 		// 1. Get ID
 		nodeID, err := clusterClient.GetMyID(ctx, addr)
 		if err != nil {
@@ -240,7 +238,7 @@ func (r *LittleRedReconciler) getClusterState(ctx context.Context, littleRed *li
 		var err error
 		nodes, err = clusterClient.GetClusterNodes(ctx, bestNodeAddr)
 		if err != nil {
-			log.Info("Failed to get topology from best node", "node", bestNodeAddr)
+			log.Info("Failed to get topology from best node, falling back to basic status", "node", bestNodeAddr)
 		}
 	}
 
@@ -308,7 +306,6 @@ func (r *LittleRedReconciler) ensureClusterResources(ctx context.Context, little
 	if littleRed.Spec.Metrics.IsEnabled() && littleRed.Spec.Metrics.ServiceMonitor.Enabled {
 		if err := r.reconcileServiceMonitor(ctx, littleRed); err != nil {
 			log.Error(err, "Failed to reconcile ServiceMonitor")
-			// Don't fail - CRD might not be installed
 		}
 	}
 
@@ -520,7 +517,6 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 			// If slots are busy, verify if this node already owns them
 			if strings.Contains(err.Error(), "busy") {
 				// We need to check if the node actually has slots assigned
-				// A simple check is to fetch cluster nodes and see if this node has slots
 				nodes, nodeErr := clusterClient.GetClusterNodes(ctx, masterAddr)
 				if nodeErr != nil {
 					log.Error(nodeErr, "Failed to verify slot assignment after busy error", "master", masterPodName)
@@ -630,412 +626,6 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 	}
 
 	log.Info("Cluster bootstrap complete", "nodes", len(nodeStates))
-	fast, _ := littleRed.GetRequeueIntervals()
-	return ctrl.Result{RequeueAfter: fast}, nil
-}
-
-// getClusterState queries the cluster to get current node states
-func (r *LittleRedReconciler) getClusterState(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) ([]littleredv1alpha1.ClusterNodeState, error) {
-	cluster := littleRed.Spec.Cluster
-	if cluster == nil {
-		cluster = &littleredv1alpha1.ClusterSpec{}
-		cluster.SetDefaults()
-	}
-
-	// Get password if auth enabled
-	password := ""
-	if littleRed.Spec.Auth.Enabled {
-		secret := &corev1.Secret{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      littleRed.Spec.Auth.ExistingSecret,
-			Namespace: littleRed.Namespace,
-		}, secret); err != nil {
-			return nil, fmt.Errorf("failed to get auth secret: %w", err)
-		}
-		password = string(secret.Data["password"])
-	}
-
-	clusterClient := redisclient.NewClusterClient(password)
-
-	// Query first node for cluster state
-	firstAddr := fmt.Sprintf("%s-cluster-0.%s.%s.svc.cluster.local:%d",
-		littleRed.Name, clusterHeadlessServiceName(littleRed), littleRed.Namespace, littleredv1alpha1.RedisPort)
-
-	nodes, err := clusterClient.GetClusterNodes(ctx, firstAddr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get cluster nodes: %w", err)
-	}
-
-	// Get pod IPs for matching (since we use IP-based announce)
-	podIPs := make(map[string]string) // podName -> IP
-	for i := 0; i < cluster.GetTotalNodes(); i++ {
-		podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
-		pod := &corev1.Pod{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      podName,
-			Namespace: littleRed.Namespace,
-		}, pod); err != nil {
-			return nil, fmt.Errorf("failed to get pod %s: %w", podName, err)
-		}
-		if pod.Status.PodIP != "" {
-			podIPs[podName] = pod.Status.PodIP
-		}
-	}
-
-	// Convert to ClusterNodeState (match by IP address since we use --cluster-announce-ip with IPs)
-	states := make([]littleredv1alpha1.ClusterNodeState, 0, len(nodes))
-	for i := 0; i < cluster.GetTotalNodes(); i++ {
-		podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
-		podIP, ok := podIPs[podName]
-		if !ok {
-			continue
-		}
-
-		// Find this pod's node in the cluster nodes list by matching IP
-		for _, node := range nodes {
-			// node.Addr is "IP:port", extract just the IP
-			nodeIP := strings.Split(node.Addr, ":")[0]
-			if nodeIP == podIP {
-				state := littleredv1alpha1.ClusterNodeState{
-					PodName: podName,
-					NodeID:  node.NodeID,
-				}
-
-				if node.IsMaster() {
-					state.Role = "master"
-					if len(node.Slots) > 0 {
-						state.SlotRanges = node.Slots[0]
-					}
-				} else {
-					state.Role = "replica"
-					if node.MasterID != "-" {
-						state.MasterNodeID = node.MasterID
-					}
-				}
-
-				states = append(states, state)
-				break
-			}
-		}
-	}
-
-	return states, nil
-}
-
-// detectNodeChanges checks if any node IDs have changed (pod restarts)
-func (r *LittleRedReconciler) detectNodeChanges(current, stored []littleredv1alpha1.ClusterNodeState) bool {
-	if len(current) != len(stored) {
-		return true
-	}
-
-	storedMap := make(map[string]string) // podName -> nodeID
-	for _, s := range stored {
-		storedMap[s.PodName] = s.NodeID
-	}
-
-	for _, c := range current {
-		if storedID, ok := storedMap[c.PodName]; ok {
-			if storedID != c.NodeID {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-// recoverCluster handles recovery when pod(s) restart with new node IDs
-func (r *LittleRedReconciler) recoverCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, currentNodes []littleredv1alpha1.ClusterNodeState) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-	log.Info("Starting cluster recovery")
-
-	storedNodes := littleRed.Status.Cluster.Nodes
-
-	// Check if ALL nodes changed (full restart)
-	allChanged := true
-	storedMap := make(map[string]string)
-	for _, s := range storedNodes {
-		storedMap[s.PodName] = s.NodeID
-	}
-	for _, c := range currentNodes {
-		if storedID, ok := storedMap[c.PodName]; ok {
-			if storedID == c.NodeID {
-				allChanged = false
-				break
-			}
-		}
-	}
-
-	if allChanged {
-		log.Info("All node IDs changed - performing full recovery (re-bootstrap)")
-		return r.fullRecovery(ctx, littleRed)
-	}
-
-	// Partial recovery - some nodes restarted
-	log.Info("Partial node restart detected - attempting partial recovery")
-
-	// Get password if auth enabled
-	password := ""
-	if littleRed.Spec.Auth.Enabled {
-		secret := &corev1.Secret{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      littleRed.Spec.Auth.ExistingSecret,
-			Namespace: littleRed.Namespace,
-		}, secret); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to get auth secret: %w", err)
-		}
-		password = string(secret.Data["password"])
-	}
-
-	clusterClient := redisclient.NewClusterClient(password)
-
-	// Find a healthy node to use for recovery commands (need IP address)
-	var healthyAddr string
-	for _, c := range currentNodes {
-		if storedID, ok := storedMap[c.PodName]; ok && storedID == c.NodeID {
-			// Get pod IP
-			pod := &corev1.Pod{}
-			if err := r.Get(ctx, types.NamespacedName{
-				Name:      c.PodName,
-				Namespace: littleRed.Namespace,
-			}, pod); err != nil {
-				continue
-			}
-			healthyAddr = fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
-			break
-		}
-	}
-
-	if healthyAddr == "" {
-		log.Info("No healthy nodes found - falling back to full recovery")
-		return r.fullRecovery(ctx, littleRed)
-	}
-
-	// Iterate through all stored nodes and recover any that have changed
-	for _, stored := range storedNodes {
-		// Get pod
-		pod := &corev1.Pod{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      stored.PodName,
-			Namespace: littleRed.Namespace,
-		}, pod); err != nil {
-			log.Error(err, "Failed to get pod for recovery check", "pod", stored.PodName)
-			continue
-		}
-
-		if pod.Status.PodIP == "" {
-			log.Info("Pod has no IP yet, skipping", "pod", stored.PodName)
-			continue
-		}
-
-		// Get current node ID for this pod
-		podAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
-		currentNodeID, err := clusterClient.GetMyID(ctx, podAddr)
-		if err != nil {
-			log.Error(err, "Failed to get current node ID", "pod", stored.PodName)
-			continue
-		}
-
-		// Check if node ID changed
-		if currentNodeID == stored.NodeID {
-			continue // No change
-		}
-
-		log.Info("Recovering node", "pod", stored.PodName, "oldID", stored.NodeID, "newID", currentNodeID)
-
-		// CLUSTER FORGET old node ID on ALL healthy nodes (not just one)
-		// This is critical - FORGET must be run on every node, otherwise other nodes
-		// will gossip the old node ID back into the cluster
-		for _, otherStored := range storedNodes {
-			if otherStored.PodName == stored.PodName {
-				continue // Skip the node being recovered
-			}
-			otherPod := &corev1.Pod{}
-			if err := r.Get(ctx, types.NamespacedName{
-				Name:      otherStored.PodName,
-				Namespace: littleRed.Namespace,
-			}, otherPod); err != nil || otherPod.Status.PodIP == "" {
-				continue
-			}
-			otherAddr := fmt.Sprintf("%s:%d", otherPod.Status.PodIP, littleredv1alpha1.RedisPort)
-			if err := clusterClient.ClusterForget(ctx, otherAddr, stored.NodeID); err != nil {
-				log.Info("Failed to forget old node ID on peer (may already be forgotten)",
-					"peer", otherStored.PodName, "oldNodeID", stored.NodeID, "error", err)
-				// Continue - node might already be forgotten or peer might be the restarting node
-			}
-		}
-
-		// CLUSTER MEET new node using IP address
-		if err := clusterClient.ClusterMeet(ctx, healthyAddr, pod.Status.PodIP, littleredv1alpha1.RedisPort); err != nil {
-			log.Error(err, "Failed to meet new node", "pod", stored.PodName, "ip", pod.Status.PodIP)
-			fast, _ := littleRed.GetRequeueIntervals()
-			return ctrl.Result{RequeueAfter: fast}, nil
-		}
-
-		time.Sleep(1 * time.Second)
-
-		// If master, re-add slots
-		if stored.Role == "master" && stored.SlotRanges != "" {
-			slots, err := redisclient.ExpandSlotRange(stored.SlotRanges)
-			if err != nil {
-				log.Error(err, "Failed to expand slot range", "range", stored.SlotRanges)
-				continue
-			}
-			if err := clusterClient.ClusterAddSlots(ctx, podAddr, slots...); err != nil {
-				log.Error(err, "Failed to re-add slots", "pod", stored.PodName)
-			}
-		}
-
-		// If replica, re-assign to master (need to find current master node ID)
-		if stored.Role == "replica" && stored.MasterNodeID != "" {
-			// Find master's current node ID
-			masterNodeID := stored.MasterNodeID
-			for _, s2 := range storedNodes {
-				if s2.NodeID == stored.MasterNodeID {
-					// This is the master, get its current node ID
-					masterPod := &corev1.Pod{}
-					if err := r.Get(ctx, types.NamespacedName{
-						Name:      s2.PodName,
-						Namespace: littleRed.Namespace,
-					}, masterPod); err == nil && masterPod.Status.PodIP != "" {
-						masterAddr := fmt.Sprintf("%s:%d", masterPod.Status.PodIP, littleredv1alpha1.RedisPort)
-						if newMasterID, err := clusterClient.GetMyID(ctx, masterAddr); err == nil {
-							masterNodeID = newMasterID
-						}
-					}
-					break
-				}
-			}
-
-			if err := clusterClient.ClusterReplicate(ctx, podAddr, masterNodeID); err != nil {
-				log.Error(err, "Failed to re-assign replica", "pod", stored.PodName)
-			}
-		}
-	}
-
-	// Update status with new node IDs by querying each pod directly
-	// This ensures we get accurate node IDs even if pods haven't fully rejoined cluster yet
-	updatedNodes := make([]littleredv1alpha1.ClusterNodeState, 0, len(storedNodes))
-	for _, stored := range storedNodes {
-		pod := &corev1.Pod{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      stored.PodName,
-			Namespace: littleRed.Namespace,
-		}, pod); err != nil {
-			log.Error(err, "Failed to get pod for status update", "pod", stored.PodName)
-			// Keep stored state if we can't get pod
-			updatedNodes = append(updatedNodes, stored)
-			continue
-		}
-
-		if pod.Status.PodIP == "" {
-			log.Info("Pod has no IP yet, keeping stored state", "pod", stored.PodName)
-			updatedNodes = append(updatedNodes, stored)
-			continue
-		}
-
-		// Get current node ID directly from pod
-		podAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
-		currentNodeID, err := clusterClient.GetMyID(ctx, podAddr)
-		if err != nil {
-			log.Error(err, "Failed to get node ID for status update", "pod", stored.PodName)
-			// Keep stored state if we can't query
-			updatedNodes = append(updatedNodes, stored)
-			continue
-		}
-
-		// Create updated state with current node ID but preserved role/slots
-		updated := littleredv1alpha1.ClusterNodeState{
-			PodName:    stored.PodName,
-			NodeID:     currentNodeID,
-			Role:       stored.Role,
-			SlotRanges: stored.SlotRanges,
-		}
-
-		// For replicas, update master node ID if master also restarted
-		if stored.Role == "replica" && stored.MasterNodeID != "" {
-			// Find master pod and get its current node ID
-			for _, s2 := range storedNodes {
-				if s2.NodeID == stored.MasterNodeID && s2.Role == "master" {
-					masterPod := &corev1.Pod{}
-					if err := r.Get(ctx, types.NamespacedName{
-						Name:      s2.PodName,
-						Namespace: littleRed.Namespace,
-					}, masterPod); err == nil && masterPod.Status.PodIP != "" {
-						masterAddr := fmt.Sprintf("%s:%d", masterPod.Status.PodIP, littleredv1alpha1.RedisPort)
-						if newMasterID, err := clusterClient.GetMyID(ctx, masterAddr); err == nil {
-							updated.MasterNodeID = newMasterID
-						} else {
-							updated.MasterNodeID = stored.MasterNodeID
-						}
-					} else {
-						updated.MasterNodeID = stored.MasterNodeID
-					}
-					break
-				}
-			}
-		}
-
-		updatedNodes = append(updatedNodes, updated)
-	}
-
-	littleRed.Status.Cluster.Nodes = updatedNodes
-	littleRed.Status.Cluster.State = "recovering"
-	if err := r.Status().Update(ctx, littleRed); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	log.Info("Cluster recovery operations completed, waiting for stabilization")
-	fast, _ := littleRed.GetRequeueIntervals()
-	return ctrl.Result{RequeueAfter: fast}, nil
-}
-
-// fullRecovery performs a full cluster re-bootstrap when all nodes lost identity
-func (r *LittleRedReconciler) fullRecovery(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-	log.Info("Performing full cluster recovery (all nodes lost identity)")
-
-	cluster := littleRed.Spec.Cluster
-	if cluster == nil {
-		cluster = &littleredv1alpha1.ClusterSpec{}
-		cluster.SetDefaults()
-	}
-
-	// Get password if auth enabled
-	password := ""
-	if littleRed.Spec.Auth.Enabled {
-		secret := &corev1.Secret{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      littleRed.Spec.Auth.ExistingSecret,
-			Namespace: littleRed.Namespace,
-		}, secret); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to get auth secret: %w", err)
-		}
-		password = string(secret.Data["password"])
-	}
-
-	clusterClient := redisclient.NewClusterClient(password)
-
-	// Reset all nodes
-	for i := 0; i < cluster.GetTotalNodes(); i++ {
-		podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
-		addr := fmt.Sprintf("%s.%s.%s.svc.cluster.local:%d",
-			podName, clusterHeadlessServiceName(littleRed), littleRed.Namespace, littleredv1alpha1.RedisPort)
-
-		log.Info("Resetting node", "pod", podName)
-		if err := clusterClient.ClusterResetSoft(ctx, addr); err != nil {
-			log.Error(err, "Failed to reset node", "pod", podName)
-			// Continue - some nodes might fail
-		}
-	}
-
-	// Clear stored cluster state to trigger fresh bootstrap
-	littleRed.Status.Cluster = nil
-	if err := r.Status().Update(ctx, littleRed); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	log.Info("Cluster reset complete, will re-bootstrap on next reconcile")
 	fast, _ := littleRed.GetRequeueIntervals()
 	return ctrl.Result{RequeueAfter: fast}, nil
 }
@@ -1236,19 +826,6 @@ func (r *LittleRedReconciler) validateClusterSpec(littleRed *littleredv1alpha1.L
 	}
 
 	return nil
-}
-
-// getClusterPods returns all pods for the cluster
-func (r *LittleRedReconciler) getClusterPods(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (*corev1.PodList, error) {
-	podList := &corev1.PodList{}
-	listOpts := []client.ListOption{
-		client.InNamespace(littleRed.Namespace),
-		client.MatchingLabels(clusterSelectorLabels(littleRed)),
-	}
-	if err := r.List(ctx, podList, listOpts...); err != nil {
-		return nil, err
-	}
-	return podList, nil
 }
 
 // isClusterAlreadyFormed checks if a Redis cluster is already formed
