@@ -53,13 +53,13 @@ var _ = Describe("Sentinel Advanced Failover", func() {
 			crName = fmt.Sprintf("event-driven-%d", time.Now().Unix())
 			By(fmt.Sprintf("deploying cluster %s with polling disabled", crName))
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
   namespace: %s
   annotations:
-    littlered.tanne3.de/disable-polling: "true"
+    littlered.chuck-chuck-chuck.net/disable-polling: "true"
 spec:
   mode: sentinel
   sentinel:
@@ -101,7 +101,7 @@ spec:
 			start := time.Now()
 			Eventually(func(g Gomega) {
 				// We check the K8s label directly to see how fast the Operator reacted
-				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.tanne3.de/role=master", "-o", "jsonpath={.items[*].metadata.name}")
+				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
 				out, _ := utils.Run(cmd)
 
 				// Must contain the CR name (belong to this test) and NOT be the old master
@@ -137,13 +137,13 @@ spec:
 			crName = fmt.Sprintf("polling-only-%d", time.Now().Unix())
 			By(fmt.Sprintf("deploying cluster %s with events disabled", crName))
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
   namespace: %s
   annotations:
-    littlered.tanne3.de/disable-event-monitoring: "true"
+    littlered.chuck-chuck-chuck.net/disable-event-monitoring: "true"
 spec:
   mode: sentinel
   sentinel:
@@ -175,7 +175,7 @@ spec:
 			By("Step 3: Wait for new master label")
 			start := time.Now()
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.tanne3.de/role=master", "-o", "jsonpath={.items[*].metadata.name}")
+				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
 				out, _ := utils.Run(cmd)
 				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
 					return
@@ -204,7 +204,7 @@ spec:
 			crName = fmt.Sprintf("hybrid-%d", time.Now().Unix())
 			By(fmt.Sprintf("deploying cluster %s with standard settings", crName))
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -238,7 +238,7 @@ spec:
 
 			By("Step 3: Wait for new master label")
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.tanne3.de/role=master", "-o", "jsonpath={.items[*].metadata.name}")
+				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
 				out, _ := utils.Run(cmd)
 				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
 					return
@@ -258,7 +258,7 @@ spec:
 			crName = fmt.Sprintf("sentinel-death-%d", time.Now().Unix())
 			By(fmt.Sprintf("deploying cluster %s for sentinel death testing", crName))
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -305,7 +305,7 @@ spec:
 
 			By("Step 5: Verify failover still happens (proving monitor re-subscribed)")
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.tanne3.de/role=master", "-o", "jsonpath={.items[*].metadata.name}")
+				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
 				out, _ := utils.Run(cmd)
 				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
 					return

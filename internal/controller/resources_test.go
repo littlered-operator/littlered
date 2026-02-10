@@ -117,7 +117,7 @@ func TestCommonLabels(t *testing.T) {
 		{"app.kubernetes.io/instance", "my-cache"},
 		{"app.kubernetes.io/managed-by", "littlered-operator"},
 		{"app.kubernetes.io/version", "8.0"},
-		{"littlered.tanne3.de/mode", "standalone"},
+		{"littlered.chuck-chuck-chuck.net/mode", "standalone"},
 	}
 
 	for _, tt := range tests {

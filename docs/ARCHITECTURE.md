@@ -56,7 +56,7 @@
 ### 2.1 API Structure
 
 ```yaml
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -414,7 +414,7 @@ One of the key challenges is keeping the `{name}-master` Service pointing to the
 | **B: Manual Endpoints** | Full control | More code, manage Endpoints directly |
 | **C: Label on pod** | Elegant, selector works | Need to update pod labels |
 
-**Recommended: Option C** - Add a label `littlered.tanne3.de/role: master` to the master pod, update it on failover. Service selector uses this label.
+**Recommended: Option C** - Add a label `littlered.chuck-chuck-chuck.net/role: master` to the master pod, update it on failover. Service selector uses this label.
 
 ### 5.2 Failover Detection
 
@@ -576,7 +576,7 @@ securityContext:
 **Cluster-scoped mode**:
 ```yaml
 rules:
-  - apiGroups: ["littlered.tanne3.de"]
+  - apiGroups: ["littlered.chuck-chuck-chuck.net"]
     resources: ["littlereds", "littlereds/status", "littlereds/finalizers"]
     verbs: ["*"]
   - apiGroups: [""]

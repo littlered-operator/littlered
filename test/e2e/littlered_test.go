@@ -66,7 +66,7 @@ var _ = Describe("LittleRed", Ordered, func() {
 		It("should create a standalone Redis instance", func() {
 			By("Test ID: STAN-001 - applying the LittleRed CR")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -219,7 +219,7 @@ spec:
 		It("should create a sentinel Redis cluster", func() {
 			By("Test ID: SEN-001 - applying the LittleRed CR with sentinel mode")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -360,7 +360,7 @@ spec:
 		It("should create a standalone Redis instance for rolling update testing", func() {
 			By("applying the LittleRed CR")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -409,7 +409,7 @@ spec:
 
 			By("updating the resource limits")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -511,7 +511,7 @@ spec:
 
 			By("updating the config (maxmemory policy)")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -575,7 +575,7 @@ spec:
 		It("should create a sentinel cluster for rolling update testing", func() {
 			By("applying the LittleRed CR with sentinel mode")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -637,7 +637,7 @@ spec:
 
 			By("updating the sentinel resources")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -734,7 +734,7 @@ spec:
 		It("should create a sentinel cluster for failover testing", func() {
 			By("applying the LittleRed CR with fast failover settings")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s

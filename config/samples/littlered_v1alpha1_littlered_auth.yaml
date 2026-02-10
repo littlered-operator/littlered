@@ -1,4 +1,4 @@
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache-auth

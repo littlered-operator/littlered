@@ -25,7 +25,7 @@ helm install littlered charts/littlered-operator -n littlered-system --create-na
 Minimal standalone cache:
 
 ```yaml
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -35,7 +35,7 @@ spec: {}
 Sentinel mode with automatic failover:
 
 ```yaml
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -74,7 +74,7 @@ kubectl exec -it my-cache-redis-0 -c redis -- valkey-cli PING
 ### Spec Reference
 
 ```yaml
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache

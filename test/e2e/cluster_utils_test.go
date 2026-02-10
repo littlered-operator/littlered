@@ -148,7 +148,7 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 	Expect(lr.Status.Master.IP).To(Equal(actualMasterIP), "Master IP mismatch in Status")
 	
 	// Map IP back to pod name to verify Status.Master.PodName
-	cmd = exec.Command("kubectl", "get", "pods", "-n", namespace, "-l", "app.kubernetes.io/instance="+crName+",littlered.tanne3.de/mode=sentinel", "-o", "json")
+	cmd = exec.Command("kubectl", "get", "pods", "-n", namespace, "-l", "app.kubernetes.io/instance="+crName+",littlered.chuck-chuck-chuck.net/mode=sentinel", "-o", "json")
 	podsOutput, _ := utils.Run(cmd)
 	Expect(podsOutput).To(ContainSubstring(actualMasterIP), "Master IP not found in any pod")
 	

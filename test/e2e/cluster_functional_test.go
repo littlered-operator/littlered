@@ -52,7 +52,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 		BeforeAll(func() {
 			By("creating a Redis Cluster with 3 shards and 1 replica per shard")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -179,7 +179,7 @@ spec:
 		BeforeAll(func() {
 			By("creating a 3-shard cluster with no replicas")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -243,7 +243,7 @@ spec:
 		BeforeAll(func() {
 			By("creating a 3-shard cluster with 1 replica per shard")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -349,7 +349,7 @@ spec:
 		It("should clean up all resources when CR is deleted", func() {
 			By("creating cluster for cleanup")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -394,7 +394,7 @@ spec:
 		BeforeAll(func() {
 			By("creating cluster with custom configuration")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -456,13 +456,13 @@ spec:
 		BeforeAll(func() {
 			By("Creating an empty cluster with debug-skip-slot-assignment annotation")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
   namespace: %s
   annotations:
-    littlered.tanne3.de/debug-skip-slot-assignment: "true"
+    littlered.chuck-chuck-chuck.net/debug-skip-slot-assignment: "true"
 spec:
   mode: cluster
   cluster:

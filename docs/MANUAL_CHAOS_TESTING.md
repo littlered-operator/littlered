@@ -66,10 +66,10 @@ while true; do kubectl logs manual-chaos-sentinel-0 -f; sleep 1; done
 Monitor the CR status and the current Master identity:
 ```bash
 # Sentinel mode
-while true; do kubectl get littlereds.littlered.tanne3.de manual-chaos -o wide; sleep 1; done
+while true; do kubectl get littlereds.littlered.chuck-chuck-chuck.net manual-chaos -o wide; sleep 1; done
 
 # Cluster mode
-while true; do kubectl get littlereds.littlered.tanne3.de manual-chaos-cluster -o wide; sleep 1; done
+while true; do kubectl get littlereds.littlered.chuck-chuck-chuck.net manual-chaos-cluster -o wide; sleep 1; done
 ```
 
 ## 3. Perform Manual Chaos

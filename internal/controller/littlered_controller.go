@@ -43,7 +43,7 @@ import (
 )
 
 const (
-	finalizerName = "littlered.tanne3.de/finalizer"
+	finalizerName = "littlered.chuck-chuck-chuck.net/finalizer"
 )
 
 // LittleRedReconciler reconciles a LittleRed object
@@ -57,9 +57,9 @@ type LittleRedReconciler struct {
 	monitorsMu     sync.Mutex
 }
 
-// +kubebuilder:rbac:groups=littlered.tanne3.de,resources=littlereds,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=littlered.tanne3.de,resources=littlereds/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=littlered.tanne3.de,resources=littlereds/finalizers,verbs=update
+// +kubebuilder:rbac:groups=littlered.chuck-chuck-chuck.net,resources=littlereds,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=littlered.chuck-chuck-chuck.net,resources=littlereds/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=littlered.chuck-chuck-chuck.net,resources=littlereds/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch

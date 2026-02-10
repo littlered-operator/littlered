@@ -232,7 +232,7 @@ These can be configured via the LittleRed spec.
 
 ### Debug Annotations
 
-- `littlered.tanne3.de/debug-skip-slot-assignment`: Skip slot assignment during bootstrap (for testing)
+- `littlered.chuck-chuck-chuck.net/debug-skip-slot-assignment`: Skip slot assignment during bootstrap (for testing)
 
 ## Summary
 

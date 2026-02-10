@@ -53,13 +53,13 @@ var _ = Describe("Sentinel and Standalone Chaos Testing", Ordered, func() {
 			
 			By(fmt.Sprintf("creating Sentinel cluster %s and chaos client simultaneously", crName))
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
   namespace: %s
   annotations:
-    littlered.tanne3.de/disable-polling: "true"
+    littlered.chuck-chuck-chuck.net/disable-polling: "true"
 spec:
   mode: sentinel
   sentinel:
@@ -146,7 +146,7 @@ spec:
 			
 			By("creating standalone and chaos client simultaneously")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.tanne3.de/v1alpha1
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s

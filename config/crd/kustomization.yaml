@@ -2,7 +2,7 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
-- bases/littlered.tanne3.de_littlereds.yaml
+- bases/littlered.chuck-chuck-chuck.net_littlereds.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
