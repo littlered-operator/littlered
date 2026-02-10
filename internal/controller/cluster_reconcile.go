@@ -202,53 +202,34 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		return ctrl.Result{RequeueAfter: fast}, nil
 	}
 
-	// 2. Forget Ghost Nodes
+	// 2. Forget Ghost Nodes (With Safety Check)
 	if gt.HasGhostNodes() {
-		log.Info("Removing ghost nodes", "count", len(gt.GhostNodes))
-		for _, ghostID := range gt.GhostNodes {
-			log.Info("Forgetting ghost node", "id", ghostID)
-			for _, node := range gt.Nodes {
-				addr := fmt.Sprintf("%s:%d", node.PodIP, littleredv1alpha1.RedisPort)
-				if err := clusterClient.ClusterForget(ctx, addr, ghostID); err != nil {
-					log.Info("Failed to forget node (might already be gone)", "node", addr, "ghost", ghostID, "error", err)
-				}
+		// Safety: Don't forget a ghost if it is the master of a live replica.
+		// We should wait for the replica to be promoted (Step 0) instead.
+		protectedMasters := make(map[string]bool)
+		for _, n := range gt.Nodes {
+			if n.Role == "replica" && n.MasterNodeID != "" && n.MasterNodeID != "-" {
+				protectedMasters[n.MasterNodeID] = true
 			}
 		}
-		return ctrl.Result{RequeueAfter: fast}, nil
-	}
 
-	// 3. Restore Missing Slots (0-Replica Mode Only)
-	isZeroReplicaMode := false
-	if littleRed.Spec.Cluster.ReplicasPerShard != nil && *littleRed.Spec.Cluster.ReplicasPerShard == 0 {
-		isZeroReplicaMode = true
-	}
-
-	if isZeroReplicaMode && gt.HasOrphanedSlots() {
-		if littleRed.Annotations[AnnotationDebugSkipSlotAssignment] != "true" {
-			log.Info("Detected orphaned slots in 0-replica mode, attempting restoration")
-
-			emptyMasters := gt.GetEmptyMasters()
-			if len(emptyMasters) == 0 {
-				log.Info("No empty masters available to take over slots")
-				return r.updateClusterStatus(ctx, littleRed)
+		ghostsToRemove := make([]string, 0)
+		for _, ghostID := range gt.GhostNodes {
+			if protectedMasters[ghostID] {
+				log.Info("Skipping removal of ghost node because it is still a master of a live replica", "ghost", ghostID)
+				continue
 			}
+			ghostsToRemove = append(ghostsToRemove, ghostID)
+		}
 
-			shards := littleRed.Spec.Cluster.Shards
-			slotRanges := redisclient.GenerateSlotRanges(shards)
-
-			for i := 0; i < shards; i++ {
-				podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
-				node, exists := gt.Nodes[podName]
-
-				if exists && len(node.Slots) == 0 {
-					targetRange := slotRanges[i]
-					log.Info("Restoring slots to empty master", "pod", podName, "slots", fmt.Sprintf("%d-%d", targetRange.Start, targetRange.End))
-
+		if len(ghostsToRemove) > 0 {
+			log.Info("Removing ghost nodes", "count", len(ghostsToRemove))
+			for _, ghostID := range ghostsToRemove {
+				log.Info("Forgetting ghost node", "id", ghostID)
+				for _, node := range gt.Nodes {
 					addr := fmt.Sprintf("%s:%d", node.PodIP, littleredv1alpha1.RedisPort)
-					slots, _ := redisclient.ExpandSlotRange(redisclient.FormatSlotRange(targetRange.Start, targetRange.End))
-
-					if err := clusterClient.ClusterAddSlots(ctx, addr, slots...); err != nil {
-						log.Error(err, "Failed to restore slots", "pod", podName)
+					if err := clusterClient.ClusterForget(ctx, addr, ghostID); err != nil {
+						log.Info("Failed to forget node (might already be gone)", "node", addr, "ghost", ghostID, "error", err)
 					}
 				}
 			}
@@ -256,7 +237,131 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		}
 	}
 
+	// 3. Recover Missing Shards (Strict Shard Validation)
+	// We assume we never fragment shards. Verify assignments and restore missing shards.
+	expectedRanges := redisclient.GenerateSlotRanges(shards)
+
+	// Map shard index to the NodeID that holds it
+	shardOwners := make([]string, shards)
+
+	// Validate current assignments
+	for _, node := range gt.Nodes {
+		for _, slotStr := range node.Slots {
+			start, end, err := redisclient.ParseSlotRange(slotStr)
+			if err != nil {
+				log.Error(err, "Failed to parse slot range", "node", node.PodName, "range", slotStr)
+				continue
+			}
+
+			// Check if this range matches exactly one of our expected shards
+			matchedShardIdx := -1
+			for i, r := range expectedRanges {
+				if r.Start == start && r.End == end {
+					matchedShardIdx = i
+					break
+				}
+			}
+
+			if matchedShardIdx == -1 {
+				// Mismatch! Found a slot range that doesn't align with our shard definition.
+				// This implies fragmentation or external manipulation.
+				log.Error(nil, "Cluster slot topology mismatch detected. Found fragmented or non-aligned slot range. Refusing to reconcile to avoid data loss.",
+					"node", node.PodName,
+					"foundRange", fmt.Sprintf("%d-%d", start, end),
+					"expectedShards", shards)
+				return ctrl.Result{RequeueAfter: fast}, nil // Retry later, maybe transient? Or stuck.
+			}
+
+			// Valid range found
+			shardOwners[matchedShardIdx] = node.NodeID
+		}
+	}
+
+	// Check for missing shards
+	var missingShardIndices []int
+	for i, owner := range shardOwners {
+		if owner == "" {
+			missingShardIndices = append(missingShardIndices, i)
+		}
+	}
+
+	if len(missingShardIndices) > 0 {
+		log.Info("Detected missing shards", "count", len(missingShardIndices), "indices", missingShardIndices)
+
+		// Find suitable masters
+		// Strategy:
+		// 1. Try to assign to the "intended" master (pod index == shard index).
+		// 2. If intended master is not available/healthy, assign to ANY healthy master.
+
+		intendedMasters := make(map[int]*NodeState) // shardIdx -> Node
+		var anyHealthyMaster *NodeState
+
+		for i := 0; i < shards; i++ {
+			podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
+			if node, ok := gt.Nodes[podName]; ok && node.Role == "master" {
+				intendedMasters[i] = node
+				anyHealthyMaster = node
+			}
+		}
+
+		// Fallback: search all nodes for any master
+		if anyHealthyMaster == nil {
+			for _, n := range gt.Nodes {
+				if n.Role == "master" {
+					anyHealthyMaster = n
+					break
+				}
+			}
+		}
+
+		if anyHealthyMaster != nil {
+			ops := 0
+			for _, shardIdx := range missingShardIndices {
+				targetNode := intendedMasters[shardIdx]
+
+				// If intended master is missing or already has slots (and we want to balance? No, simplest first),
+				// actually if it's missing the shard, and it's a master, we can give it to them.
+				// But check if intended master is overloaded? For now, stick to simple logic:
+				// If intended master exists, give it to them.
+				// If not, give to any master.
+
+				if targetNode == nil {
+					targetNode = anyHealthyMaster
+				}
+
+				if targetNode != nil {
+					targetRange := expectedRanges[shardIdx]
+					addr := fmt.Sprintf("%s:%d", targetNode.PodIP, littleredv1alpha1.RedisPort)
+
+					log.Info("Assigning missing shard to master",
+						"shardIdx", shardIdx,
+						"range", fmt.Sprintf("%d-%d", targetRange.Start, targetRange.End),
+						"target", targetNode.PodName)
+
+					// We must expand the range to individual slots for the command
+					slots, _ := redisclient.ExpandSlotRange(redisclient.FormatSlotRange(targetRange.Start, targetRange.End))
+					if err := clusterClient.ClusterAddSlots(ctx, addr, slots...); err != nil {
+						log.Error(err, "Failed to assign shard", "shardIdx", shardIdx)
+					} else {
+						ops++
+					}
+				}
+			}
+
+			if ops > 0 {
+				return ctrl.Result{RequeueAfter: fast}, nil
+			}
+		} else {
+			log.Info("No healthy masters available to accept missing shards")
+		}
+	}
+
 	// 4. Replication Repair (Non-Zero Replica Mode)
+	isZeroReplicaMode := false
+	if littleRed.Spec.Cluster.ReplicasPerShard != nil && *littleRed.Spec.Cluster.ReplicasPerShard == 0 {
+		isZeroReplicaMode = true
+	}
+
 	if !isZeroReplicaMode {
 		emptyMasters := gt.GetEmptyMasters()
 		shardsWithReplicas := gt.GetMastersWithReplicas()
@@ -294,7 +399,22 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 	}
 
 	if gt.TotalSlots == 0 {
-		return r.bootstrapCluster(ctx, littleRed)
+		// Safety Guard: Only bootstrap if the cluster is truly empty (no slots AND no replicas).
+		// If we have replicas, it implies a previous state existed, and we shouldn't overwrite it.
+		hasReplicas := false
+		for _, n := range gt.Nodes {
+			if n.Role == "replica" {
+				hasReplicas = true
+				break
+			}
+		}
+
+		if !hasReplicas {
+			return r.bootstrapCluster(ctx, littleRed)
+		}
+
+		log.Info("Cluster has 0 slots but contains replicas. Refusing to bootstrap to avoid data loss.", "replicas_detected", true)
+		// Fall through to update status (will likely show as unhealthy/initializing)
 	}
 
 	return r.updateClusterStatus(ctx, littleRed)
