@@ -177,15 +177,15 @@ ConnectLoop:
 		case <-timeout:
 			return nil, fmt.Errorf("timeout waiting for Redis connectivity: %w", lastErr)
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			lastErr = client.Ping(ctx).Err()
-			cancel()
+			// Create a context for the duration of this check (Ping + Cluster Info)
+			checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			lastErr = client.Ping(checkCtx).Err()
 
 			if lastErr == nil {
 				// For cluster mode, PING is not enough. We must ensure the cluster is healthy.
 				if cfg.ClusterMode {
 					var info string
-					info, lastErr = client.Do(ctx, "CLUSTER", "INFO").Text()
+					info, lastErr = client.Do(checkCtx, "CLUSTER", "INFO").Text()
 					if lastErr == nil {
 						if !containsClusterStateOk(info) {
 							lastErr = fmt.Errorf("cluster not ready (state not ok)")
@@ -194,10 +194,12 @@ ConnectLoop:
 				}
 
 				if lastErr == nil {
+					cancel()
 					fmt.Println("Successfully connected to Redis")
 					break ConnectLoop
 				}
 			}
+			cancel()
 			fmt.Printf("Connection attempt failed: %v (retrying...)\n", lastErr)
 		}
 	}
