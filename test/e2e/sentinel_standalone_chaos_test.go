@@ -47,11 +47,6 @@ var _ = Describe("Sentinel and Standalone Chaos Testing", Ordered, func() {
 	})
 
 	Context("Sentinel Resilience", Ordered, func() {
-		AfterEach(func() {
-			By("cleaning up sentinel cluster")
-			// We can't easily know the crName here if it's dynamic, but the test case handles it
-		})
-
 		It("should maintain availability during rapid double failover", func() {
 			crName := fmt.Sprintf("chaos-sentinel-%d", time.Now().Unix())
 			const testDuration = 120 * time.Second

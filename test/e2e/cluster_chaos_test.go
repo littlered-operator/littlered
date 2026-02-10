@@ -302,6 +302,18 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(metrics.DataCorruptions).To(Equal(int64(0)))
+			// Rolling restart with replicas should maintain availability (data accessible).
+			// We check ReadAvailability to ensure we didn't lose keys (data loss would show as failures).
+			Expect(metrics.ReadAvailability()).To(BeNumerically(">=", 0.95))
+
+			By("verifying final cluster topology (no lost shards)")
+			cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
+				"-n", testNamespace, "-c", "redis", "--",
+				"valkey-cli", "CLUSTER", "INFO")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(ContainSubstring("cluster_state:ok"))
+			Expect(output).To(ContainSubstring("cluster_slots_assigned:16384"))
 		})
 	})
 })

@@ -212,7 +212,6 @@ spec:
 		It("should heal cluster after master pod deletion in 0-replica mode", func() {
 			// In 0-replica mode, deleting a pod means losing data and slots.
 			// The operator should re-assign slots to the new node.
-			
 			victimPod := crName + "-cluster-1"
 			By(fmt.Sprintf("deleting master pod %s", victimPod))
 			cmd := exec.Command("kubectl", "delete", "pod", victimPod,
