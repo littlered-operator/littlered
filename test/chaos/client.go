@@ -316,8 +316,18 @@ func (tc *TestClient) Start() {
 				return
 			case <-ticker.C:
 				n := tc.counter.Add(1)
-				go tc.doWrite(n)
-				go tc.doRead()
+				
+				// Track each operation in the WaitGroup
+				tc.wg.Add(2)
+				go func(val int64) {
+					defer tc.wg.Done()
+					tc.doWrite(val)
+				}(n)
+				
+				go func() {
+					defer tc.wg.Done()
+					tc.doRead()
+				}()
 			}
 		}
 	}()
@@ -328,9 +338,8 @@ func (tc *TestClient) Stop() {
 	tc.stopOnce.Do(func() {
 		close(tc.stopCh)
 	})
+	// Wait for the main loop AND all spawned operations to finish
 	tc.wg.Wait()
-	// Give pending goroutines a moment to complete
-	time.Sleep(tc.operationTimeout * 2)
 }
 
 // Close stops the client and closes the Redis connection
