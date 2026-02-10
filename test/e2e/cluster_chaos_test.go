@@ -312,8 +312,11 @@ spec:
 				"valkey-cli", "CLUSTER", "INFO")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(ContainSubstring("cluster_state:ok"))
-			Expect(output).To(ContainSubstring("cluster_slots_assigned:16384"))
-		})
-	})
-})
+						Expect(output).To(ContainSubstring("cluster_state:ok"))
+						Expect(output).To(ContainSubstring("cluster_slots_assigned:16384"))
+			
+						verifyClusterTopologySync(testNamespace, crName, 6)
+					})
+				})
+			})
+			

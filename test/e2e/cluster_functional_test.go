@@ -168,6 +168,8 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 			nodes := strings.Fields(output)
 			Expect(len(nodes)).To(Equal(6))
+
+			verifyClusterTopologySync(testNamespace, crName, 6)
 		})
 	})
 
@@ -230,6 +232,8 @@ spec:
 				g.Expect(output).To(ContainSubstring("cluster_slots_assigned:16384"))
 				g.Expect(output).To(ContainSubstring("cluster_known_nodes:3"))
 			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+
+			verifyClusterTopologySync(testNamespace, crName, 3)
 		})
 	})
 
@@ -315,6 +319,8 @@ spec:
 			Expect(mastersWithSlots).To(Equal(3))
 			Expect(len(lines)).To(Equal(6))
 			Expect(output).NotTo(ContainSubstring("fail"))
+
+			verifyClusterTopologySync(testNamespace, crName, 6)
 		})
 
 		It("should reassign replica when replica pod is deleted", func() {
