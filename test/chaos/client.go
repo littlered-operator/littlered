@@ -25,6 +25,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -129,6 +130,11 @@ func expectedValue(key int64) string {
 	return hex.EncodeToString(hash[:])
 }
 
+// containsClusterStateOk checks if the CLUSTER INFO output contains "cluster_state:ok"
+func containsClusterStateOk(info string) bool {
+	return strings.Contains(info, "cluster_state:ok")
+}
+
 // NewTestClient creates a new test client
 func NewTestClient(cfg Config) (*TestClient, error) {
 	var client redis.UniversalClient
@@ -176,8 +182,21 @@ ConnectLoop:
 			cancel()
 
 			if lastErr == nil {
-				fmt.Println("Successfully connected to Redis")
-				break ConnectLoop
+				// For cluster mode, PING is not enough. We must ensure the cluster is healthy.
+				if cfg.ClusterMode {
+					var info string
+					info, lastErr = client.Do(ctx, "CLUSTER", "INFO").Text()
+					if lastErr == nil {
+						if !containsClusterStateOk(info) {
+							lastErr = fmt.Errorf("cluster not ready (state not ok)")
+						}
+					}
+				}
+
+				if lastErr == nil {
+					fmt.Println("Successfully connected to Redis")
+					break ConnectLoop
+				}
 			}
 			fmt.Printf("Connection attempt failed: %v (retrying...)\n", lastErr)
 		}
