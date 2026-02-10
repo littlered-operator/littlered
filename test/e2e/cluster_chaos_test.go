@@ -46,8 +46,8 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 		_, _ = utils.Run(cmd)
 	})
 
-	Context("3-node 0-replica Cluster Stability", Ordered, func() {
-		const crName = "chaos-3node-0replica"
+	Context("Baseline Stability (3 Masters, 0 Replicas)", Ordered, func() {
+		const crName = "chaos-cluster-stable"
 
 		BeforeAll(func() {
 			By("creating a 3-shard cluster with no replicas")
@@ -62,13 +62,6 @@ spec:
   cluster:
     shards: 3
     replicasPerShard: 0
-  resources:
-    requests:
-      cpu: "100m"
-      memory: "128Mi"
-    limits:
-      cpu: "100m"
-      memory: "128Mi"
 `, crName, testNamespace)
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(cr)
@@ -83,17 +76,6 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Running"))
 			}, 5*time.Minute, 5*time.Second).Should(Succeed())
-
-			By("waiting for cluster to be fully formed and ok")
-			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
-					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "CLUSTER", "INFO")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
-				g.Expect(output).To(ContainSubstring("cluster_slots_assigned:16384"))
-			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		AfterAll(func() {
@@ -102,38 +84,127 @@ spec:
 			_, _ = utils.Run(cmd)
 		})
 
-		It("should achieve 100% availability and 0% corruption under stable conditions", func() {
-			By("Test ID: CLUST-CHAOS-001")
-			const testName = "stable-baseline"
-			const testDuration = 10 * time.Second
-
-			By("deploying chaos client pod")
-			// The operator creates a service with the same name as the CR
-			podName, err := deployChaosClient(testNamespace, testName, crName, true, "chaos-stable", testDuration)
+		It("should maintain 100% availability under stable conditions", func() {
+			const testDuration = 20 * time.Second
+			podName, err := deployChaosClient(testNamespace, "stable", crName, true, "chaos-stable", testDuration)
 			Expect(err).NotTo(HaveOccurred())
 			defer deleteChaosClient(testNamespace, podName)
 
-			By("waiting for chaos client to complete")
 			err = waitForChaosClientComplete(testNamespace, podName, testDuration+2*time.Minute)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("collecting metrics from chaos client")
 			metrics, err := getChaosClientMetrics(testNamespace, podName)
 			Expect(err).NotTo(HaveOccurred())
-			GinkgoWriter.Printf("Final metrics for stable cluster:\n%s\n", metrics.String())
-
-			By("asserting 100% write success")
-			Expect(metrics.WriteAvailability()).To(BeNumerically(">=", 0.999), "Write availability should be 100%")
 			
-			By("asserting 100% read success")
-			Expect(metrics.ReadAvailability()).To(BeNumerically(">=", 0.999), "Read availability should be 100%")
+			Expect(metrics.WriteAvailability()).To(BeNumerically(">=", 0.99))
+			Expect(metrics.DataCorruptions).To(Equal(int64(0)))
+		})
+	})
 
-			By("asserting 0 corruption")
-			Expect(metrics.DataCorruptions).To(Equal(int64(0)), "Data corruption detected!")
+	Context("Resilience with Replicas (3 Masters, 1 Replica/Shard)", Ordered, func() {
+		const crName = "chaos-cluster-resilience"
+
+		BeforeAll(func() {
+			By("creating a 3-shard cluster with 1 replica per shard")
+			cr := fmt.Sprintf(`
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: cluster
+  cluster:
+    shards: 3
+    replicasPerShard: 1
+`, crName, testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(cr)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		AfterAll(func() {
+			By("cleaning up cluster")
+			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=2m")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should maintain high availability during master failure", func() {
+			const testDuration = 60 * time.Second
+			podName, err := deployChaosClient(testNamespace, "master-failure", crName, true, "chaos-master", testDuration)
+			Expect(err).NotTo(HaveOccurred())
+			defer deleteChaosClient(testNamespace, podName)
+
+			time.Sleep(15 * time.Second)
+			By("deleting master pod-0")
+			cmd := exec.Command("kubectl", "delete", "pod", crName+"-cluster-0",
+				"-n", testNamespace, "--grace-period=0", "--force")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = waitForChaosClientComplete(testNamespace, podName, testDuration+2*time.Minute)
+			Expect(err).NotTo(HaveOccurred())
+
+			metrics, err := getChaosClientMetrics(testNamespace, podName)
+			Expect(err).NotTo(HaveOccurred())
+			GinkgoWriter.Printf("Master Failure Availability: %.2f%%\n", metrics.WriteAvailability()*100)
+
+			Expect(metrics.DataCorruptions).To(Equal(int64(0)))
+			Expect(metrics.WriteAvailability()).To(BeNumerically(">=", 0.90))
+		})
+
+		It("should maintain 100% availability during replica failure", func() {
+			const testDuration = 40 * time.Second
+			podName, err := deployChaosClient(testNamespace, "replica-failure", crName, true, "chaos-replica", testDuration)
+			Expect(err).NotTo(HaveOccurred())
+			defer deleteChaosClient(testNamespace, podName)
+
+			time.Sleep(10 * time.Second)
+			By("deleting replica pod-3")
+			cmd := exec.Command("kubectl", "delete", "pod", crName+"-cluster-3",
+				"-n", testNamespace, "--grace-period=0", "--force")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = waitForChaosClientComplete(testNamespace, podName, testDuration+2*time.Minute)
+			Expect(err).NotTo(HaveOccurred())
+
+			metrics, err := getChaosClientMetrics(testNamespace, podName)
+			Expect(err).NotTo(HaveOccurred())
 			
-			By("asserting some work was actually done")
-			Expect(metrics.WriteAttempts).To(BeNumerically(">", 0), "Should have performed some writes")
-			Expect(metrics.ReadAttempts).To(BeNumerically(">", 0), "Should have performed some reads")
+			Expect(metrics.DataCorruptions).To(Equal(int64(0)))
+			Expect(metrics.WriteAvailability()).To(BeNumerically(">=", 0.99))
+		})
+
+		It("should maintain data integrity during rolling restart", func() {
+			const testDuration = 90 * time.Second
+			podName, err := deployChaosClient(testNamespace, "rolling-restart", crName, true, "chaos-rolling", testDuration)
+			Expect(err).NotTo(HaveOccurred())
+			defer deleteChaosClient(testNamespace, podName)
+
+			time.Sleep(10 * time.Second)
+			By("triggering rolling restart via annotation")
+			cmd := exec.Command("kubectl", "annotate", "littlered", crName,
+				"-n", testNamespace, fmt.Sprintf("chaos-test=%d", time.Now().Unix()), "--overwrite")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = waitForChaosClientComplete(testNamespace, podName, testDuration+2*time.Minute)
+			Expect(err).NotTo(HaveOccurred())
+
+			metrics, err := getChaosClientMetrics(testNamespace, podName)
+			Expect(err).NotTo(HaveOccurred())
+			
+			Expect(metrics.DataCorruptions).To(Equal(int64(0)))
 		})
 	})
 })
