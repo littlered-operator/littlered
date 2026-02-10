@@ -10,7 +10,7 @@ A lightweight Kubernetes operator for deploying Redis/Valkey as an in-memory cac
 - **Prometheus metrics**: Built-in redis_exporter sidecar
 - **Optional ServiceMonitor**: For Prometheus Operator integration
 - **Optional auth & TLS**: Password authentication and TLS encryption
-- **Cache-optimized defaults**: No persistence, allkeys-lru eviction, Guaranteed QoS
+- **Safe-by-default performance**: No persistence (in-memory only), noeviction policy, Guaranteed QoS.
 
 ## Quick Start
 
@@ -102,7 +102,7 @@ spec:
   # Redis configuration
   config:
     maxmemory: ""           # e.g., "900Mi" (auto-calculated from memory limit if empty)
-    maxmemoryPolicy: allkeys-lru
+    maxmemoryPolicy: noeviction
     timeout: 0              # Client idle timeout (0 = disabled)
     tcpKeepalive: 300
     raw: ""                 # Raw redis.conf content (expert mode)

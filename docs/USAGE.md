@@ -437,7 +437,7 @@ With 3 shards, slots are distributed as:
 
 ### Important notes
 
-- **Cache mode**: No persistence. Data may be lost on full cluster restart.
+- **In-memory mode**: No persistence. Data will be lost on full cluster restart. By default, 'noeviction' is used, so data is not forgotten when memory is full (Redis will return errors instead).
 - **No PVCs**: Cluster state stored in CR status, not nodes.conf.
 - **Minimum 3 shards**: Redis Cluster requires at least 3 masters.
 - **Scaling not yet supported**: Adding/removing shards requires manual intervention.
@@ -466,7 +466,7 @@ spec:
 
   config:
     maxmemory: "900Mi"
-    maxmemoryPolicy: allkeys-lru
+    maxmemoryPolicy: noeviction
 ```
 
 ### With authentication
@@ -530,7 +530,7 @@ spec:
 
   config:
     maxmemory: "1800Mi"
-    maxmemoryPolicy: allkeys-lru
+    maxmemoryPolicy: noeviction
 
   auth:
     enabled: true
@@ -583,7 +583,7 @@ spec:
 
   config:
     maxmemory: "1800Mi"
-    maxmemoryPolicy: allkeys-lru
+    maxmemoryPolicy: noeviction
 
   auth:
     enabled: true

@@ -407,7 +407,7 @@ spec:
     clusterNodeTimeout: 10000
   config:
     maxmemory: "256Mi"
-    maxmemoryPolicy: allkeys-lru
+    maxmemoryPolicy: noeviction
 `, crName, testNamespace)
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(cr)
@@ -438,7 +438,7 @@ spec:
 					"valkey-cli", "CONFIG", "GET", "maxmemory-policy")
 				output, err := utils.Run(cmd)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(output).To(ContainSubstring("allkeys-lru"))
+				Expect(output).To(ContainSubstring("noeviction"))
 
 				cmd = exec.Command("kubectl", "exec", podName,
 					"-n", testNamespace, "-c", "redis", "--",

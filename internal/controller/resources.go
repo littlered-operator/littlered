@@ -185,8 +185,8 @@ func buildRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 	sb.WriteString(fmt.Sprintf("port %d\n", littleredv1alpha1.RedisPort))
 	sb.WriteString("dir /data\n")
 
-	// Disable persistence (pure cache)
-	sb.WriteString("\n# Persistence disabled (cache mode)\n")
+	// Disable persistence (in-memory only)
+	sb.WriteString("\n# Persistence disabled (in-memory mode)\n")
 	sb.WriteString("save \"\"\n")
 	sb.WriteString("appendonly no\n")
 
@@ -717,8 +717,8 @@ func buildRedisConfigSentinel(lr *littleredv1alpha1.LittleRed) string {
 	sb.WriteString(fmt.Sprintf("port %d\n", littleredv1alpha1.RedisPort))
 	sb.WriteString("dir /data\n")
 
-	// Disable persistence (pure cache)
-	sb.WriteString("\n# Persistence disabled (cache mode)\n")
+	// Disable persistence (in-memory only)
+	sb.WriteString("\n# Persistence disabled (in-memory mode)\n")
 	sb.WriteString("save \"\"\n")
 	sb.WriteString("appendonly no\n")
 
@@ -1278,8 +1278,8 @@ func buildClusterRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 	sb.WriteString("repl-diskless-sync-delay 5\n")
 	sb.WriteString("repl-diskless-load on-empty-db\n")
 
-	// Disable persistence (pure cache)
-	sb.WriteString("\n# Persistence disabled (cache mode)\n")
+	// Disable persistence (in-memory only)
+	sb.WriteString("\n# Persistence disabled (in-memory mode)\n")
 	sb.WriteString("save \"\"\n")
 	sb.WriteString("appendonly no\n")
 

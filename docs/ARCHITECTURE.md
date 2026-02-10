@@ -76,7 +76,7 @@ spec:
   config:
     # Curated settings (typed, validated)
     maxmemory: "1gb"
-    maxmemoryPolicy: allkeys-lru
+    maxmemoryPolicy: noeviction
     # Raw config passthrough (escape hatch)
     raw: |
       tcp-keepalive 300
@@ -433,7 +433,8 @@ Detection happens during reconciliation by querying Sentinel.
 
 ```
 # LittleRed defaults - optimized for in-memory caching
-# IMPORTANT: Persistence is ACTIVELY DISABLED to ensure pure cache behavior
+# IMPORTANT: Persistence is ACTIVELY DISABLED to ensure pure in-memory behavior.
+# Note: By default, we use 'noeviction', meaning data is never forgotten unless explicitly deleted.
 
 # Networking
 bind 0.0.0.0
@@ -442,7 +443,7 @@ tcp-backlog 511
 tcp-keepalive 300
 
 # Memory
-maxmemory-policy allkeys-lru
+maxmemory-policy noeviction
 
 # Persistence - ACTIVELY DISABLED
 # These settings override any defaults from the Redis/Valkey image
@@ -463,7 +464,7 @@ maxclients 10000
 - No PVCs are needed
 - No disk I/O overhead
 - No background save processes
-- Pod restart = clean slate (cache behavior)
+- Pod restart = clean slate (due to no persistence)
 
 This overrides any persistence defaults that might be baked into Redis/Valkey container images.
 
@@ -481,8 +482,8 @@ This overrides any persistence defaults that might be baked into Redis/Valkey co
 │                          │                                   │
 │                          ▼                                   │
 │  ┌─────────────────────────────────────────────────────┐    │
-│  │ 2. Cache-optimized defaults (override image defaults)│    │
-│  │    - maxmemory-policy allkeys-lru                   │    │
+│  │ 2. Performance-optimized defaults (noeviction, no-persistence)│    │
+│  │    - maxmemory-policy noeviction                   │    │
 │  │    - save ""           ◄── ACTIVELY DISABLE RDB     │    │
 │  │    - appendonly no     ◄── ACTIVELY DISABLE AOF     │    │
 │  │    - rdbcompression no                              │    │
@@ -506,7 +507,7 @@ This overrides any persistence defaults that might be baked into Redis/Valkey co
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Key Point**: Layer 2 actively overrides any persistence defaults from upstream images. This guarantees that out-of-the-box, LittleRed is a pure in-memory cache with no disk dependencies.
+**Key Point**: Layer 2 actively overrides any persistence defaults from upstream images. This guarantees that out-of-the-box, LittleRed is a pure in-memory store with no disk dependencies and no eviction by default.
 
 ---
 

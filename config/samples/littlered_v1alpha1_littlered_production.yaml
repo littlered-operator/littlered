@@ -17,7 +17,7 @@ spec:
 
   config:
     maxmemory: "1800Mi"  # ~90% of memory limit
-    maxmemoryPolicy: allkeys-lru
+    maxmemoryPolicy: noeviction
 
   # Enable authentication
   auth:

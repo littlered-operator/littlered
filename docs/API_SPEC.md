@@ -110,7 +110,7 @@ spec:
   config:
     # Typed, validated fields
     maxmemory: "1Gi"            # Memory limit for Redis
-    maxmemoryPolicy: allkeys-lru # Eviction policy
+    maxmemoryPolicy: noeviction # Eviction policy
     timeout: 0                   # Client timeout (0 = disabled)
     tcpKeepalive: 300           # TCP keepalive interval
 
@@ -124,14 +124,14 @@ spec:
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `config.maxmemory` | `string` | No | (from resources) | Redis maxmemory (e.g., `1Gi`, `512Mi`) |
-| `config.maxmemoryPolicy` | `string` | No | `allkeys-lru` | Eviction policy |
+| `config.maxmemoryPolicy` | `string` | No | `noeviction` | Eviction policy |
 | `config.timeout` | `int` | No | `0` | Client idle timeout (seconds, 0=disabled) |
 | `config.tcpKeepalive` | `int` | No | `300` | TCP keepalive (seconds) |
 | `config.raw` | `string` | No | `""` | Raw redis.conf lines (expert mode) |
 
 **Valid `maxmemoryPolicy` values**:
-- `noeviction` - Return errors when memory limit reached
-- `allkeys-lru` - Evict any key using LRU (recommended for cache)
+- `noeviction` - Return errors when memory limit reached (default)
+- `allkeys-lru` - Evict any key using LRU
 - `allkeys-lfu` - Evict any key using LFU
 - `allkeys-random` - Evict any key randomly
 - `volatile-lru` - Evict keys with TTL using LRU
@@ -141,7 +141,7 @@ spec:
 
 **Persistence Behavior**:
 
-The operator actively disables persistence by default to ensure pure in-memory cache behavior:
+The operator actively disables persistence by default to ensure pure in-memory performance:
 ```
 save ""           # No RDB snapshots
 appendonly no     # No AOF
@@ -150,7 +150,7 @@ appendonly no     # No AOF
 This means:
 - No PersistentVolumeClaims are created
 - No disk I/O for persistence
-- Pod restart = empty cache (by design)
+- Pod restart = clean slate (by design)
 
 If you need persistence, you can override via `spec.config.raw`, but you're responsible for providing appropriate storage. The operator won't create PVCs for you.
 
@@ -584,7 +584,7 @@ spec:
 
   config:
     maxmemory: "900Mi"
-    maxmemoryPolicy: allkeys-lru
+    maxmemoryPolicy: noeviction
     timeout: 0
     tcpKeepalive: 300
     raw: |
@@ -666,7 +666,7 @@ spec:
 
   config:
     maxmemory: "3500Mi"
-    maxmemoryPolicy: allkeys-lru
+    maxmemoryPolicy: noeviction
 
   auth:
     enabled: true
@@ -803,7 +803,7 @@ type ConfigSpec struct {
 
     // MaxmemoryPolicy sets the eviction policy
     // +kubebuilder:validation:Enum=noeviction;allkeys-lru;allkeys-lfu;allkeys-random;volatile-lru;volatile-lfu;volatile-random;volatile-ttl
-    // +kubebuilder:default=allkeys-lru
+    // +kubebuilder:default=noeviction
     MaxmemoryPolicy string `json:"maxmemoryPolicy,omitempty"`
 
     // Timeout is client idle timeout in seconds (0 = disabled)

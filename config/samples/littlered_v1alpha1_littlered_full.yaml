@@ -21,7 +21,7 @@ spec:
 
   config:
     maxmemory: "900Mi"
-    maxmemoryPolicy: allkeys-lru
+    maxmemoryPolicy: noeviction
     timeout: 0
     tcpKeepalive: 300
 

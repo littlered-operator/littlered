@@ -212,7 +212,7 @@ func TestBuildRedisConfig(t *testing.T) {
 				"port 6379",
 				"save \"\"",
 				"appendonly no",
-				"maxmemory-policy allkeys-lru",
+				"maxmemory-policy noeviction",
 			},
 		},
 		{
@@ -257,7 +257,7 @@ func TestBuildRedisConfig(t *testing.T) {
 				"maxmemory-policy volatile-lru",
 			},
 			mustNotHave: []string{
-				"maxmemory-policy allkeys-lru",
+				"maxmemory-policy noeviction",
 			},
 		},
 	}

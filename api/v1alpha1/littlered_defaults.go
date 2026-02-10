@@ -31,7 +31,7 @@ const (
 	DefaultImagePath       = "valkey/valkey"
 	DefaultImageTag        = "8.0"
 	DefaultPullPolicy      = corev1.PullIfNotPresent
-	DefaultMaxmemoryPolicy = "allkeys-lru"
+	DefaultMaxmemoryPolicy = "noeviction"
 	DefaultTimeout         = 0
 	DefaultTCPKeepalive    = 300
 	DefaultServiceType     = corev1.ServiceTypeClusterIP
@@ -312,7 +312,7 @@ func (r *LittleRed) CalculateMaxmemory() string {
 	return fmt.Sprintf("%d", maxmemoryBytes)
 }
 
-// GetEffectiveMaxmemoryPolicy returns the maxmemory policy, defaulting to allkeys-lru
+// GetEffectiveMaxmemoryPolicy returns the maxmemory policy, defaulting to noeviction
 func (r *LittleRed) GetEffectiveMaxmemoryPolicy() string {
 	if r.Spec.Config.MaxmemoryPolicy != "" {
 		return r.Spec.Config.MaxmemoryPolicy

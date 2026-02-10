@@ -10,6 +10,6 @@ spec:
   # - Image: docker.io/valkey/valkey:8.0
   # - Resources: 250m CPU, 256Mi memory (Guaranteed QoS)
   # - Metrics exporter: enabled
-  # - No persistence (pure cache)
+  # - No persistence (in-memory only)
   # - No auth, no TLS
   {}

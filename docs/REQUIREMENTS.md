@@ -106,10 +106,10 @@ spec:
 
 **User-configurable via CRD** (explicit fields, not raw config):
 - `maxmemory`: Memory limit (optional, follows upstream default if not set)
-- `maxmemoryPolicy`: Eviction policy like `allkeys-lru`, `noeviction`, etc. (optional, follows upstream default `noeviction` if not set)
+- `maxmemoryPolicy`: Eviction policy like `noeviction`, `noeviction`, etc. (optional, follows upstream default `noeviction` if not set)
 - Other common Redis settings as needed
 
-**Rationale**: We follow upstream defaults (like `noeviction`) rather than imposing "cache-first" opinions. Users who want caching behavior can explicitly set `maxmemoryPolicy: allkeys-lru`. This makes the operator more general-purpose and honest about its behavior.
+**Rationale**: We follow upstream defaults (like `noeviction`) rather than imposing "cache-first" opinions. This means out-of-the-box, the operator does NOT evict data when memory is full. Users who want caching behavior can explicitly set `maxmemoryPolicy: allkeys-lru`. This makes the operator more general-purpose and honest about its behavior.
 
 ### 4.3 Persistence
 

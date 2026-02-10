@@ -98,7 +98,7 @@ spec:
                     description: Maxmemory sets Redis maxmemory (e.g., "1Gi")
                     type: string
                   maxmemoryPolicy:
-                    default: allkeys-lru
+                    default: noeviction
                     description: MaxmemoryPolicy sets the eviction policy
                     enum:
                     - noeviction

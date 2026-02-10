@@ -148,7 +148,7 @@ type ConfigSpec struct {
 
 	// MaxmemoryPolicy sets the eviction policy
 	// +kubebuilder:validation:Enum=noeviction;allkeys-lru;allkeys-lfu;allkeys-random;volatile-lru;volatile-lfu;volatile-random;volatile-ttl
-	// +kubebuilder:default="allkeys-lru"
+	// +kubebuilder:default="noeviction"
 	// +optional
 	MaxmemoryPolicy string `json:"maxmemoryPolicy,omitempty"`
 

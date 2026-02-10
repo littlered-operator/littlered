@@ -5,7 +5,7 @@
 # Key points:
 # - No PersistentVolumes needed - cluster state stored in CR status
 # - Operator handles recovery on pod restarts
-# - Pure cache mode - data may be lost on full cluster restart
+# - In-memory mode - data is lost on full cluster restart (no persistence)
 #
 # Usage:
 #   kubectl apply -f littlered_v1alpha1_littlered_cluster.yaml
@@ -36,5 +36,5 @@ spec:
       memory: 512Mi
       cpu: 500m
   config:
-    # Eviction policy for cache mode
-    maxmemoryPolicy: allkeys-lru
+    # Eviction policy (defaults to noeviction)
+    maxmemoryPolicy: noeviction
