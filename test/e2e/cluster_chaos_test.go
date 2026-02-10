@@ -21,6 +21,7 @@ package e2e
 
 import (
 	"fmt"
+	"math/rand"
 	"os/exec"
 	"strings"
 	"time"
@@ -386,8 +387,8 @@ spec:
 						continue 
 					}
 					// 50% chance to kill a pod in this shard
-					if time.Now().UnixNano()%2 == 0 {
-						victimIdx := time.Now().UnixNano() % int64(len(group))
+					if rand.Intn(2) == 0 {
+						victimIdx := rand.Intn(len(group))
 						victims = append(victims, group[victimIdx])
 					}
 				}
