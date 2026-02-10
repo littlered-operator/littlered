@@ -125,6 +125,8 @@ spec:
 				g.Expect(logs).To(ContainSubstring("Triggering reconciliation via Sentinel event"))
 				g.Expect(logs).To(ContainSubstring("Master switch detected"))
 			}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			verifySentinelTopologySync(testNamespace, crName, 3, 2)
 		})
 	})
 
@@ -244,6 +246,8 @@ spec:
 				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))),
 					fmt.Sprintf("New master label not yet applied. Current masters found: %q", out))
 			}, 20*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label")
+
+			verifySentinelTopologySync(testNamespace, crName, 3, 2)
 		})
 	})
 

@@ -293,6 +293,8 @@ spec:
 				g.Expect(output).To(ContainSubstring("num-slaves"))
 				g.Expect(output).To(ContainSubstring("quorum"))
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			verifySentinelTopologySync(testNamespace, crName, 3, 2)
 		})
 
 		It("should report master info in status", func() {
@@ -887,6 +889,8 @@ spec:
 				}
 				g.Expect(false).To(BeTrue(), "Could not find num-slaves in sentinel output")
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			verifySentinelTopologySync(testNamespace, crName, 3, 2)
 		})
 	})
 })

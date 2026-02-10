@@ -113,6 +113,59 @@ func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 	By("Topology sync validation passed")
 }
 
+// verifySentinelTopologySync cross-validates the Operator's reported Sentinel Status
+// against the ground truth from the Sentinel nodes.
+func verifySentinelTopologySync(namespace, crName string, expectedSentinels, expectedReplicas int) {
+	By(fmt.Sprintf("verifying that Operator status for %s matches actual Sentinel topology", crName))
+
+	// 1. Get the CR from Kubernetes
+	cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", namespace, "-o", "json")
+	output, err := utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to get LittleRed CR")
+
+	var lr littleredv1alpha1.LittleRed
+	err = json.Unmarshal([]byte(output), &lr)
+	Expect(err).NotTo(HaveOccurred(), "Failed to parse LittleRed JSON")
+
+	// 2. Get ground truth from Sentinel
+	// We try sentinel-0
+	sentinelPod := fmt.Sprintf("%s-sentinel-0", crName)
+	cmd = exec.Command("kubectl", "exec", sentinelPod, "-n", namespace, "-c", "sentinel", "--", "valkey-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
+	sentinelOutput, err := utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to execute SENTINEL master on sentinel pod")
+
+	// Parse Sentinel output (it's a list of key-value pairs)
+	sentinelData := make(map[string]string)
+	lines := strings.Split(strings.TrimSpace(sentinelOutput), "\n")
+	for i := 0; i < len(lines)-1; i += 2 {
+		sentinelData[lines[i]] = lines[i+1]
+	}
+
+	actualMasterIP := sentinelData["ip"]
+	
+	// 3. Perform Assertions
+	Expect(lr.Status.Master).NotTo(BeNil(), "CR Status.Master is nil")
+	Expect(lr.Status.Master.IP).To(Equal(actualMasterIP), "Master IP mismatch in Status")
+	
+	// Map IP back to pod name to verify Status.Master.PodName
+	cmd = exec.Command("kubectl", "get", "pods", "-n", namespace, "-l", "app.kubernetes.io/instance="+crName+",littlered.tanne3.de/mode=sentinel", "-o", "json")
+	podsOutput, _ := utils.Run(cmd)
+	Expect(podsOutput).To(ContainSubstring(actualMasterIP), "Master IP not found in any pod")
+	
+	Expect(lr.Status.Sentinels).NotTo(BeNil(), "CR Status.Sentinels is nil")
+	Expect(int(lr.Status.Sentinels.Total)).To(Equal(expectedSentinels), "Sentinel total count mismatch")
+	
+	Expect(lr.Status.Replicas).NotTo(BeNil(), "CR Status.Replicas is nil")
+	Expect(int(lr.Status.Replicas.Total)).To(Equal(expectedReplicas), "Replica total count mismatch")
+
+	// Also verify that Sentinel agrees on the number of slaves
+	var actualNumSlaves int
+	fmt.Sscanf(sentinelData["num-slaves"], "%d", &actualNumSlaves)
+	Expect(actualNumSlaves).To(Equal(expectedReplicas), "Sentinel reports different number of slaves than expected")
+
+	By("Sentinel topology sync validation passed")
+}
+
 // getShardGroups returns a list of pod names grouped by their shard.
 func getShardGroups(namespace, crName string, totalNodes int) ([][]string, error) {
 	nodeIDToPodName := make(map[string]string)
