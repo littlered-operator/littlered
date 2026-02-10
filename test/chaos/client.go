@@ -155,11 +155,32 @@ func NewTestClient(cfg Config) (*TestClient, error) {
 		})
 	}
 
-	// Test connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+	// Test connection with retries
+	// Early in the cluster lifecycle, DNS or network paths might not be ready,
+	// leading to "operation not permitted" or "no such host" errors.
+	var lastErr error
+	timeout := time.After(2 * time.Minute)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	fmt.Printf("Waiting for Redis to be reachable at %v...\n", cfg.Addrs)
+
+ConnectLoop:
+	for {
+		select {
+		case <-timeout:
+			return nil, fmt.Errorf("timeout waiting for Redis connectivity: %w", lastErr)
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			lastErr = client.Ping(ctx).Err()
+			cancel()
+
+			if lastErr == nil {
+				fmt.Println("Successfully connected to Redis")
+				break ConnectLoop
+			}
+			fmt.Printf("Connection attempt failed: %v (retrying...)\n", lastErr)
+		}
 	}
 
 	writeRate := cfg.WriteRate
