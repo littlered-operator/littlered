@@ -322,7 +322,8 @@ spec:
 	Context("Continuous Multi-Pod Failure Resilience", Ordered, func() {
 		const crName = "chaos-cluster-multipod"
 		var chaosPodName string
-		const testDuration = 15 * time.Minute
+		// 5 iterations usually complete in ~3-4 minutes.
+		const testDuration = 5 * time.Minute
 
 		BeforeAll(func() {
 			By("creating a 3-shard cluster with 1 replica per shard")
