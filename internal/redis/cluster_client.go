@@ -219,6 +219,22 @@ func (c *ClusterClient) ClusterFailover(ctx context.Context, addr string) error 
 	return nil
 }
 
+// ClusterFailoverTakeover initiates a manual failover with TAKEOVER option
+// This is used when the master is not available or quorum is lost
+func (c *ClusterClient) ClusterFailoverTakeover(ctx context.Context, addr string) error {
+	client := c.getClient(addr)
+	defer client.Close()
+
+	// go-redis ClusterFailover doesn't easily support arguments in all versions/wrappers,
+	// so we use Do command directly to be safe and explicit.
+	err := client.Do(ctx, "CLUSTER", "FAILOVER", "TAKEOVER").Err()
+	if err != nil {
+		return fmt.Errorf("failed to initiate failover takeover: %w", err)
+	}
+
+	return nil
+}
+
 // parseClusterNodes parses the output of CLUSTER NODES command
 // Format: <id> <ip:port@cport,hostname> <flags> <master> <ping-sent> <pong-recv> <config-epoch> <link-state> <slot> ...
 func parseClusterNodes(output string) []ClusterNodeInfo {

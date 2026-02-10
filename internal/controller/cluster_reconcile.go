@@ -127,6 +127,50 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 	password := r.getRedisPassword(ctx, littleRed)
 	clusterClient := redisclient.NewClusterClient(password)
 
+	// 0. Quorum Recovery (High Priority)
+	// If we have lost quorum (majority of masters), the cluster cannot heal itself.
+	// We must manually promote replicas whose masters are gone.
+	shards := littleRed.Spec.Cluster.Shards
+	votingMasters := gt.CountMasters()
+
+	// Quorum is lost if available voting masters are <= shards / 2
+	if votingMasters <= shards/2 {
+		log.Info("Quorum loss detected", "votingMasters", votingMasters, "targetShards", shards)
+
+		// Build set of live node IDs for fast lookup
+		liveNodes := make(map[string]bool)
+		for _, n := range gt.Nodes {
+			liveNodes[n.NodeID] = true
+		}
+
+		promotedCount := 0
+		for _, node := range gt.Nodes {
+			if node.Role == "replica" {
+				// Skip if master is known/live or if master ID is invalid
+				if node.MasterNodeID == "" || node.MasterNodeID == "-" || liveNodes[node.MasterNodeID] {
+					continue
+				}
+
+				log.Info("Promoting orphan replica during quorum loss",
+					"pod", node.PodName,
+					"missingMaster", node.MasterNodeID)
+
+				addr := fmt.Sprintf("%s:%d", node.PodIP, littleredv1alpha1.RedisPort)
+				if err := clusterClient.ClusterFailoverTakeover(ctx, addr); err != nil {
+					log.Error(err, "Failed to force takeover", "pod", node.PodName)
+				} else {
+					promotedCount++
+				}
+			}
+		}
+
+		if promotedCount > 0 {
+			log.Info("Promoted replicas to restore quorum", "count", promotedCount)
+			// Wait for cluster state to settle
+			return ctrl.Result{RequeueAfter: fast}, nil
+		}
+	}
+
 	// 1. Heal Partitions (CLUSTER MEET)
 	if gt.HasPartitions() {
 		// If any replica is orphaned (no master or points to a non-existent node),
