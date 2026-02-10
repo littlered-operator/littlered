@@ -316,14 +316,14 @@ func (tc *TestClient) Start() {
 				return
 			case <-ticker.C:
 				n := tc.counter.Add(1)
-				
+
 				// Track each operation in the WaitGroup
 				tc.wg.Add(2)
 				go func(val int64) {
 					defer tc.wg.Done()
 					tc.doWrite(val)
 				}(n)
-				
+
 				go func() {
 					defer tc.wg.Done()
 					tc.doRead()
