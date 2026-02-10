@@ -36,7 +36,7 @@ func getChaosClientImage() string {
 	if img := os.Getenv("CHAOS_CLIENT_IMAGE"); img != "" {
 		return img
 	}
-	return "registry.tanne3.de/littlered-chaos-client:latest"
+	return "ghcr.io/littlered-operator/littlered-chaos-client:latest"
 }
 
 // deployChaosClient deploys a chaos test client pod and returns the pod name

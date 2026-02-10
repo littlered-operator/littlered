@@ -75,15 +75,15 @@ spec:
 # Use a registry mirror (only change registry, keep path)
 spec:
   image:
-    registry: registry.tanne3.de
-    # Result: registry.tanne3.de/valkey/valkey:8.0
+    registry: docker.io
+    # Result: docker.io/valkey/valkey:8.0
 
 # Mirror + Redis
 spec:
   image:
-    registry: registry.tanne3.de
+    registry: docker.io
     path: library/redis
-    # Result: registry.tanne3.de/library/redis:8.0
+    # Result: docker.io/library/redis:8.0
 
 # Different version
 spec:
@@ -268,8 +268,8 @@ spec:
 ```yaml
 spec:
   image:
-    registry: registry.tanne3.de   # Mirror for all images
-  # Exporter automatically uses: registry.tanne3.de/oliver006/redis_exporter:v1.66.0
+    registry: docker.io   # Mirror for all images
+  # Exporter automatically uses: docker.io/oliver006/redis_exporter:v1.66.0
 ```
 
 ### 2.8 Update Strategy
@@ -509,9 +509,9 @@ metadata:
   name: my-cache
 spec:
   image:
-    registry: registry.tanne3.de
-    # Result: registry.tanne3.de/valkey/valkey:8.0
-    # Exporter: registry.tanne3.de/oliver006/redis_exporter:v1.66.0
+    registry: docker.io
+    # Result: docker.io/valkey/valkey:8.0
+    # Exporter: docker.io/oliver006/redis_exporter:v1.66.0
 ```
 
 ### 4.5 Standalone with Auth
@@ -569,7 +569,7 @@ spec:
   mode: standalone
 
   image:
-    registry: registry.tanne3.de   # Company mirror
+    registry: docker.io   # Company mirror
     path: library/redis            # Use Redis instead of Valkey
     tag: "8.0"
     pullPolicy: IfNotPresent
@@ -601,7 +601,7 @@ spec:
 
   metrics:
     enabled: true
-    # Exporter inherits registry: registry.tanne3.de/oliver006/redis_exporter:v1.66.0
+    # Exporter inherits registry: docker.io/oliver006/redis_exporter:v1.66.0
     serviceMonitor:
       enabled: true
       labels:
@@ -653,7 +653,7 @@ spec:
   mode: sentinel
 
   image:
-    registry: registry.tanne3.de
+    registry: docker.io
     # Uses default path (valkey/valkey) and tag (8.0)
 
   resources:

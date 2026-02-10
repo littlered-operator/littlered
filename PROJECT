@@ -3,19 +3,19 @@
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
 cliVersion: 4.11.1
-domain: tanne3.de
+domain: chuck-chuck-chuck.net
 layout:
 - go.kubebuilder.io/v4
 projectName: redis-operator
-repo: github.com/tanne3/littlered-operator
+repo: github.com/littlered-operator/littlered
 resources:
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: tanne3.de
+  domain: chuck-chuck-chuck.net
   group: littlered
   kind: LittleRed
-  path: github.com/tanne3/littlered-operator/api/v1alpha1
+  path: github.com/littlered-operator/littlered/api/v1alpha1
   version: v1alpha1
 version: "3"

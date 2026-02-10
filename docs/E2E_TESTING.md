@@ -15,7 +15,7 @@ E2E (end-to-end) tests verify that the operator works correctly in a real Kubern
 
 - **Kubernetes cluster** with `kubectl` access
 - **Podman** or **Docker** for building images
-- **Container registry** to push images (e.g., `registry.tanne3.de`)
+- **Container registry** to push images
 - **Go 1.24+** for running tests
 - **ArgoCD** configured (for GitOps deployment)
 
@@ -28,19 +28,19 @@ Build the operator container image and push it to your registry.
 cd /path/to/littlered-operator
 
 # Build the image (using podman)
-podman build -t registry.tanne3.de/littlered-operator:0.1.0 .
+podman build -t ghcr.io/littlered-operator/littlered-operator:0.1.0 .
 
 # Or with docker
-docker build -t registry.tanne3.de/littlered-operator:0.1.0 .
+docker build -t ghcr.io/littlered-operator/littlered-operator:0.1.0 .
 
 # Push to your registry
-podman push registry.tanne3.de/littlered-operator:0.1.0
+podman push ghcr.io/littlered-operator/littlered-operator:0.1.0
 
 # Or with docker
-docker push registry.tanne3.de/littlered-operator:0.1.0
+docker push ghcr.io/littlered-operator/littlered-operator:0.1.0
 ```
 
-Replace `registry.tanne3.de` with your own registry.
+Replace `docker.io` with your own registry.
 
 ## Step 2: Deploy the Operator via ArgoCD
 
@@ -49,21 +49,21 @@ Add your Git repository to ArgoCD and create an application that deploys the ope
 ### Add the Repository
 
 ```bash
-argocd repo add https://gitea.tanne3.de/tanne3/littlered.git
+argocd repo add https://github.com/littlered-operator/littlered.git
 ```
 
 ### Create the ArgoCD Application
 
 ```bash
 argocd app create littlered-operator \
-  --repo https://gitea.tanne3.de/tanne3/littlered.git \
+  --repo https://github.com/littlered-operator/littlered.git \
   --path charts/littlered-operator \
   --dest-server https://kubernetes.default.svc \
   --dest-namespace littlered-system \
   --sync-policy automated \
   --auto-prune \
   --self-heal \
-  --helm-set image.repository=registry.tanne3.de/littlered-operator \
+  --helm-set image.repository=ghcr.io/littlered-operator/littlered-operator \
   --helm-set image.tag=0.1.0
 ```
 
@@ -233,8 +233,8 @@ When you make changes to the operator:
 
 1. **Build and push a new image:**
    ```bash
-   podman build -t registry.tanne3.de/littlered-operator:0.1.1 .
-   podman push registry.tanne3.de/littlered-operator:0.1.1
+   podman build -t ghcr.io/littlered-operator/littlered-operator:0.1.1 .
+   podman push ghcr.io/littlered-operator/littlered-operator:0.1.1
    ```
 
 2. **Update the ArgoCD application:**

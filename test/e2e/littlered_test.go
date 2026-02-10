@@ -40,7 +40,6 @@ var _ = Describe("LittleRed", Ordered, func() {
 		_, _ = utils.Run(cmd) // Ignore if exists
 
 		// TODO: Re-enable restricted policy once operator sets seccompProfile on containers
-		// See: https://gitea.tanne3.de/tanne3/littlered/issues/1
 		// By("labeling the namespace to enforce the restricted security policy")
 		// cmd = exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
 		// 	"pod-security.kubernetes.io/enforce=restricted")
