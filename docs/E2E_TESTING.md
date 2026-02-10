@@ -104,37 +104,51 @@ littlered-operator-b7645665-8n9ph   1/1     Running   0          2m
 
 ## Step 3: Run the E2E Tests
 
-Once the operator is deployed, run the e2e tests against it.
+Once the operator is deployed, run the e2e tests against it using the `Makefile` targets. The `Makefile` ensures all required environment variables (like `CHAOS_CLIENT_IMAGE`) are correctly set.
 
 ### Run All Tests
 
+To run the full suite (this will also create/destroy a local Kind cluster if `SKIP_OPERATOR_DEPLOY` is not true):
+
 ```bash
-# Skip operator deployment (use existing ArgoCD deployment)
-SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 30m
+make test-e2e
 ```
 
-The `-v` and `-ginkgo.v` flags provide verbose output so you can see test progress.
+### Run with an Existing Deployment
+
+If the operator is already deployed (e.g., via ArgoCD as described in Step 2), use `SKIP_OPERATOR_DEPLOY=true` to run tests against the existing cluster without attempting to manage a local Kind instance:
+
+```bash
+make test-e2e SKIP_OPERATOR_DEPLOY=true
+```
 
 ### Run Specific Test Suites
 
+Use the `FOCUS` variable to filter tests by name (regex). This is passed to Ginkgo's `-focus` flag.
+
 Run only standalone mode tests:
 ```bash
-SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -ginkgo.focus="Standalone"
+make test-e2e SKIP_OPERATOR_DEPLOY=true FOCUS="Standalone"
 ```
 
 Run only sentinel mode tests:
 ```bash
-SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -ginkgo.focus="Sentinel Mode"
+make test-e2e SKIP_OPERATOR_DEPLOY=true FOCUS="Sentinel Mode"
 ```
 
 Run only failover tests:
 ```bash
-SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -ginkgo.focus="Failover"
+make test-e2e SKIP_OPERATOR_DEPLOY=true FOCUS="Failover"
 ```
 
 Run only cluster mode tests:
 ```bash
-SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -ginkgo.focus="Cluster Mode"
+make test-e2e SKIP_OPERATOR_DEPLOY=true FOCUS="Cluster Mode"
+```
+
+The `make` command also supports passing additional arguments to `go test` via the `ARGS` variable:
+```bash
+make test-e2e SKIP_OPERATOR_DEPLOY=true ARGS="-timeout 45m"
 ```
 
 ## Cluster Mode Testing
