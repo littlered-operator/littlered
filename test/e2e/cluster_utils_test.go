@@ -47,7 +47,6 @@ func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 	Expect(err).NotTo(HaveOccurred(), "Failed to parse LittleRed JSON")
 
 	// 2. Get ground truth from any available pod
-	// We try pod-0 first, then fallback to others if needed
 	var clusterNodesOutput string
 	var success bool
 	for i := 0; i < expectedNodes; i++ {
@@ -62,7 +61,6 @@ func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 	Expect(success).To(BeTrue(), "Failed to execute CLUSTER NODES on any pod")
 
 	// 3. Parse Redis output into a map for easy comparison
-	// Map NodeID -> Role, MasterID, Slots
 	redisNodes := make(map[string]struct {
 		role     string
 		masterID string
@@ -72,7 +70,7 @@ func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 	lines := strings.Split(strings.TrimSpace(clusterNodesOutput), "\n")
 	for _, line := range lines {
 		fields := strings.Fields(line)
-		if len(fields) < 8 {
+		if len(fields) < 4 {
 			continue
 		}
 		id := fields[0]
@@ -100,20 +98,92 @@ func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 	Expect(lr.Status.Cluster).NotTo(BeNil(), "CR Status.Cluster is nil")
 	Expect(len(lr.Status.Cluster.Nodes)).To(Equal(expectedNodes), "Number of nodes in Status doesn't match expected")
 	
-	// Ensure every node reported in Status actually exists in Redis and has matching data
 	for _, nodeStatus := range lr.Status.Cluster.Nodes {
 		actual, exists := redisNodes[nodeStatus.NodeID]
 		Expect(exists).To(BeTrue(), fmt.Sprintf("Status reports NodeID %s (pod %s) but it's missing from CLUSTER NODES", nodeStatus.NodeID, nodeStatus.PodName))
-		
 		Expect(nodeStatus.Role).To(Equal(actual.role), fmt.Sprintf("Role mismatch for node %s", nodeStatus.PodName))
 		
 		if nodeStatus.Role == "replica" {
 			Expect(nodeStatus.MasterNodeID).To(Equal(actual.masterID), fmt.Sprintf("MasterID mismatch for replica %s", nodeStatus.PodName))
 		} else {
-			// Compare slot ranges
 			Expect(nodeStatus.SlotRanges).NotTo(BeEmpty(), fmt.Sprintf("Master %s has no slots in Status", nodeStatus.PodName))
 		}
 	}
 	
 	By("Topology sync validation passed")
+}
+
+// getShardGroups returns a list of pod names grouped by their shard.
+func getShardGroups(namespace, crName string, totalNodes int) ([][]string, error) {
+	nodeIDToPodName := make(map[string]string)
+	
+	for i := 0; i < totalNodes; i++ {
+		podName := fmt.Sprintf("%s-cluster-%d", crName, i)
+		cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "valkey-cli", "CLUSTER", "MYID")
+		output, err := utils.Run(cmd)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get ID for pod %s: %w", podName, err)
+		}
+		nodeIDToPodName[strings.TrimSpace(output)] = podName
+	}
+
+	var clusterNodesOutput string
+	for i := 0; i < totalNodes; i++ {
+		podName := fmt.Sprintf("%s-cluster-%d", crName, i)
+		cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "valkey-cli", "CLUSTER", "NODES")
+		var err error
+		clusterNodesOutput, err = utils.Run(cmd)
+		if err == nil {
+			break
+		}
+	}
+	if clusterNodesOutput == "" {
+		return nil, fmt.Errorf("failed to get CLUSTER NODES from any pod")
+	}
+
+	shardMap := make(map[string][]string)
+	
+	type nodeInfo struct {
+		id       string
+		role     string
+		masterID string
+	}
+	nodes := []nodeInfo{}
+
+	lines := strings.Split(strings.TrimSpace(clusterNodesOutput), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		id := fields[0]
+		flags := fields[2]
+		masterID := fields[3]
+		
+		role := "master"
+		if strings.Contains(flags, "slave") {
+			role = "replica"
+		}
+		nodes = append(nodes, nodeInfo{id: id, role: role, masterID: masterID})
+	}
+
+	for _, n := range nodes {
+		podName, ok := nodeIDToPodName[n.id]
+		if !ok {
+			continue
+		}
+
+		targetShardID := n.id
+		if n.role == "replica" {
+			targetShardID = n.masterID
+		}
+		shardMap[targetShardID] = append(shardMap[targetShardID], podName)
+	}
+
+	result := make([][]string, 0, len(shardMap))
+	for _, group := range shardMap {
+		result = append(result, group)
+	}
+
+	return result, nil
 }

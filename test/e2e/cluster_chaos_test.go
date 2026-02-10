@@ -303,7 +303,6 @@ spec:
 
 			Expect(metrics.DataCorruptions).To(Equal(int64(0)))
 			// Rolling restart with replicas should maintain availability (data accessible).
-			// We check ReadAvailability to ensure we didn't lose keys (data loss would show as failures).
 			Expect(metrics.ReadAvailability()).To(BeNumerically(">=", 0.95))
 
 			By("verifying final cluster topology (no lost shards)")
@@ -312,11 +311,138 @@ spec:
 				"valkey-cli", "CLUSTER", "INFO")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-						Expect(output).To(ContainSubstring("cluster_state:ok"))
-						Expect(output).To(ContainSubstring("cluster_slots_assigned:16384"))
+			Expect(output).To(ContainSubstring("cluster_state:ok"))
+			Expect(output).To(ContainSubstring("cluster_slots_assigned:16384"))
+
+			verifyClusterTopologySync(testNamespace, crName, 6)
+		})
+	})
+
+	Context("Continuous Multi-Pod Failure Resilience", Ordered, func() {
+		const crName = "chaos-cluster-multipod"
+		var chaosPodName string
+		const testDuration = 15 * time.Minute
+
+		BeforeAll(func() {
+			By("creating a 3-shard cluster with 1 replica per shard")
+			cr := fmt.Sprintf(`
+apiVersion: littlered.tanne3.de/v1alpha1
+kind: LittleRed
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: cluster
+  cluster:
+    shards: 3
+    replicasPerShard: 1
+`, crName, testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(cr)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("deploying chaos client pod simultaneously")
+			chaosPodName, err = deployChaosClient(testNamespace, "multipod", crName, true, "chaos-multi", testDuration)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for cluster to be ready and ok")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
+
+				cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
+					"-n", testNamespace, "-c", "redis", "--",
+					"valkey-cli", "CLUSTER", "INFO")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting 10 seconds for baseline traffic")
+			time.Sleep(10 * time.Second)
+		})
+
+		AfterAll(func() {
+			deleteChaosClient(testNamespace, chaosPodName)
+			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=2m")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should survive multiple rounds of random pod deletions without data loss", func() {
+			const iterations = 5
+			for i := 1; i <= iterations; i++ {
+				By(fmt.Sprintf("=== Chaos Round %d/%d ===", i, iterations))
+
+				shardGroups, err := getShardGroups(testNamespace, crName, 6)
+				Expect(err).NotTo(HaveOccurred())
+				
+				victims := make([]string, 0)
+				for _, group := range shardGroups {
+					if len(group) < 2 {
+						continue 
+					}
+					// 50% chance to kill a pod in this shard
+					if time.Now().UnixNano()%2 == 0 {
+						victimIdx := time.Now().UnixNano() % int64(len(group))
+						victims = append(victims, group[victimIdx])
+					}
+				}
+				
+				if len(victims) == 0 {
+					victims = append(victims, shardGroups[0][0])
+				}
+
+				By(fmt.Sprintf("Deleting victims: %v", victims))
+				args := append([]string{"delete", "pod", "-n", testNamespace, "--grace-period=0", "--force"}, victims...)
+				cmd := exec.Command("kubectl", args...)
+				_, err = utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Waiting for cluster to recover")
+				Eventually(func(g Gomega) {
+					cmd := exec.Command("kubectl", "get", "littlered", crName,
+						"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+					output, err := utils.Run(cmd)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(output).To(Equal("Running"))
+
+					var info string
+					for j := 0; j < 6; j++ {
+						podName := fmt.Sprintf("%s-cluster-%d", crName, j)
+						cmd = exec.Command("kubectl", "exec", podName,
+							"-n", testNamespace, "-c", "redis", "--",
+							"valkey-cli", "CLUSTER", "INFO")
+						out, err := utils.Run(cmd)
+						if err == nil {
+							info = out
+							break
+						}
+					}
+					g.Expect(info).To(ContainSubstring("cluster_state:ok"))
+					g.Expect(info).To(ContainSubstring("cluster_slots_assigned:16384"))
+				}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+				verifyClusterTopologySync(testNamespace, crName, 6)
+
+				By("Stabilizing for 5 seconds")
+				time.Sleep(5 * time.Second)
+			}
+
+			err := waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
+			Expect(err).NotTo(HaveOccurred())
+
+			metrics, err := getChaosClientMetrics(testNamespace, chaosPodName)
+			Expect(err).NotTo(HaveOccurred())
 			
-						verifyClusterTopologySync(testNamespace, crName, 6)
-					})
-				})
-			})
-			
+			GinkgoWriter.Printf("Final Multi-Pod Chaos Metrics:\n%s\n", metrics.String())
+
+			Expect(metrics.DataCorruptions).To(Equal(int64(0)))
+			Expect(metrics.WriteAvailability()).To(BeNumerically(">=", 0.95))
+			Expect(metrics.ReadAvailability()).To(BeNumerically(">=", 0.95))
+		})
+	})
+})
