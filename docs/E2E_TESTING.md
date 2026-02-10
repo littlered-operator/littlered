@@ -132,6 +132,36 @@ Run only failover tests:
 SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -ginkgo.focus="Failover"
 ```
 
+Run only cluster mode tests:
+```bash
+SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -ginkgo.focus="Cluster Mode"
+```
+
+## Cluster Mode Testing
+
+Cluster mode testing is organized into functional and chaos-oriented suites to ensure both correct topology management and high availability.
+
+### 1. Functional Testing (`cluster_functional_test.go`)
+Focuses on correct cluster formation, configuration, and self-healing.
+- **Basic Operations**: Cluster creation (3 masters, 3 replicas), data redirection, and status tracking.
+- **0-Replica Mode**: Verifies that the operator can restore slots to new nodes even without replicas.
+- **Functional Recovery**: Validates correct topology (no empty masters, correct replica count) after master or replica pod deletion.
+- **Custom Configuration**: Application of custom Redis settings and node timeouts.
+- **Cleanup**: Ensures all K8s resources are removed when the CR is deleted.
+
+### 2. Chaos Testing (`cluster_chaos_test.go`)
+Validates stability and data integrity under continuous load using a chaos client.
+- **Stability Baseline**: Verifies 100% availability in a stable cluster.
+- **Master/Replica Failure**: Ensures >90% write availability and 0% data corruption during unplanned failovers.
+- **Rolling Restarts**: Verifies that controlled updates (via annotation changes) do not cause data loss or downtime.
+
+### Key Topology Guarantees
+The E2E tests strictly validate the following cluster invariants after any failure:
+1. **No Empty Masters**: Every master node must have slots assigned.
+2. **Correct Replica Count**: Every shard must have the expected number of healthy replicas.
+3. **Ghost Cleanup**: Nodes that no longer exist in K8s must be forgotten by the cluster gossip.
+4. **Data Integrity**: Chaos clients verify that every successful write can be read back, even during failover events.
+
 ## Test Coverage
 
 For a detailed list of implemented test cases, scenarios, and their IDs, please refer to [TEST_CASES.md](TEST_CASES.md).
