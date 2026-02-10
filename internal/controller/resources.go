@@ -108,11 +108,11 @@ func computeConfigHash(data map[string]string) string {
 // commonLabels returns the standard labels applied to all resources
 func commonLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":       "littlered",
-		"app.kubernetes.io/instance":   lr.Name,
-		"app.kubernetes.io/managed-by": "littlered-operator",
-		"app.kubernetes.io/version":    lr.Spec.Image.Tag,
-		"littlered.chuck-chuck-chuck.net/mode":     lr.Spec.Mode,
+		"app.kubernetes.io/name":               "littlered",
+		"app.kubernetes.io/instance":           lr.Name,
+		"app.kubernetes.io/managed-by":         "littlered-operator",
+		"app.kubernetes.io/version":            lr.Spec.Image.Tag,
+		"littlered.chuck-chuck-chuck.net/mode": lr.Spec.Mode,
 	}
 }
 
