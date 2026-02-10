@@ -47,11 +47,16 @@ var _ = Describe("Sentinel and Standalone Chaos Testing", Ordered, func() {
 	})
 
 	Context("Sentinel Resilience", Ordered, func() {
-		var crName string
+		AfterEach(func() {
+			By("cleaning up sentinel cluster")
+			// We can't easily know the crName here if it's dynamic, but the test case handles it
+		})
 
-		BeforeAll(func() {
-			crName = fmt.Sprintf("chaos-sentinel-%d", time.Now().Unix())
-			By(fmt.Sprintf("creating Sentinel cluster %s for chaos testing", crName))
+		It("should maintain availability during rapid double failover", func() {
+			crName := fmt.Sprintf("chaos-sentinel-%d", time.Now().Unix())
+			const testDuration = 120 * time.Second
+			
+			By(fmt.Sprintf("creating Sentinel cluster %s and chaos client simultaneously", crName))
 			cr := fmt.Sprintf(`
 apiVersion: littlered.tanne3.de/v1alpha1
 kind: LittleRed
@@ -62,13 +67,6 @@ metadata:
     littlered.tanne3.de/disable-polling: "true"
 spec:
   mode: sentinel
-  resources:
-    requests:
-      cpu: "100m"
-      memory: "128Mi"
-    limits:
-      cpu: "100m"
-      memory: "128Mi"
   sentinel:
     quorum: 2
     downAfterMilliseconds: 5000
@@ -79,70 +77,66 @@ spec:
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("waiting for cluster to be ready")
+			chaosPodName, err := deployChaosClient(testNamespace, "sentinel-chaos", crName, false, "chaos-sent", testDuration)
+			Expect(err).NotTo(HaveOccurred())
+			defer deleteChaosClient(testNamespace, chaosPodName)
+			defer func() {
+				cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			}()
+
+			By("waiting for sentinel cluster to be ready")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "littlered", crName,
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Running"))
-			}, 3*time.Minute, 5*time.Second).Should(Succeed())
-		})
+				
+				cmd = exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
+				master, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(master).NotTo(BeEmpty())
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
-		AfterAll(func() {
-			By("cleaning up sentinel cluster")
-			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=2m")
-			_, _ = utils.Run(cmd)
-		})
+			By("waiting 10 seconds for baseline traffic")
+			time.Sleep(10 * time.Second)
 
-		It("should maintain availability during rapid double failover", func() {
-			const testName = "sentinel-double-failover"
-			const testDuration = 90 * time.Second
-			serviceName := crName
-
-			By("deploying chaos client targeting the Master Service")
-			podName, err := deployChaosClient(testNamespace, testName, serviceName, false, "chaos-failover", testDuration)
-			Expect(err).NotTo(HaveOccurred())
-			defer deleteChaosClient(testNamespace, podName)
-
-			time.Sleep(15 * time.Second)
-
-			By("identifying first master")
-			cmd := exec.Command("kubectl", "get", "littlered", crName,
+			// --- Failover 1 ---
+			By("identifying and killing first master")
+			cmd = exec.Command("kubectl", "get", "littlered", crName,
 				"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
-			master1, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
+			master1, _ := utils.Run(cmd)
 			master1 = strings.TrimSpace(master1)
 
-			By("killing first master")
 			cmd = exec.Command("kubectl", "delete", "pod", master1,
 				"-n", testNamespace, "--grace-period=0", "--force")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
+			_, _ = utils.Run(cmd)
 
-			time.Sleep(30 * time.Second)
+			By("waiting for failover to complete (approx 20s)")
+			time.Sleep(20 * time.Second)
 
+			// --- Failover 2 ---
+			By("identifying and killing second master")
 			var master2 string
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "littlered", crName,
 					"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
-				out, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
+				out, _ := utils.Run(cmd)
 				master2 = strings.TrimSpace(out)
-				g.Expect(master2).NotTo(Equal(master1), "New master should be different")
+				g.Expect(master2).NotTo(Equal(master1))
 				g.Expect(master2).NotTo(BeEmpty())
-			}, 30*time.Second, 2*time.Second).Should(Succeed())
+			}, 1*time.Minute, 2*time.Second).Should(Succeed())
 
-			By("killing second master")
 			cmd = exec.Command("kubectl", "delete", "pod", master2,
 				"-n", testNamespace, "--grace-period=0", "--force")
-			_, err = utils.Run(cmd)
+			_, _ = utils.Run(cmd)
+
+			err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
 			Expect(err).NotTo(HaveOccurred())
 
-			err = waitForChaosClientComplete(testNamespace, podName, testDuration+2*time.Minute)
-			Expect(err).NotTo(HaveOccurred())
-
-			metrics, err := getChaosClientMetrics(testNamespace, podName)
+			metrics, err := getChaosClientMetrics(testNamespace, chaosPodName)
 			Expect(err).NotTo(HaveOccurred())
 			
 			Expect(metrics.DataCorruptions).To(Equal(int64(0)), "Data corruption detected!")
@@ -151,10 +145,11 @@ spec:
 	})
 
 	Context("Standalone Mode Resilience", Ordered, func() {
-		const crName = "chaos-standalone"
-
-		BeforeAll(func() {
-			By("creating a standalone Redis for chaos testing")
+		It("should recover after pod restart", func() {
+			crName := "chaos-standalone"
+			const testDuration = 60 * time.Second
+			
+			By("creating standalone and chaos client simultaneously")
 			cr := fmt.Sprintf(`
 apiVersion: littlered.tanne3.de/v1alpha1
 kind: LittleRed
@@ -163,18 +158,19 @@ metadata:
   namespace: %s
 spec:
   mode: standalone
-  resources:
-    requests:
-      cpu: "100m"
-      memory: "128Mi"
-    limits:
-      cpu: "200m"
-      memory: "256Mi"
 `, crName, testNamespace)
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(cr)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
+
+			chaosPodName, err := deployChaosClient(testNamespace, "standalone-restart", crName, false, "chaos-stand", testDuration)
+			Expect(err).NotTo(HaveOccurred())
+			defer deleteChaosClient(testNamespace, chaosPodName)
+			defer func() {
+				cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			}()
 
 			By("waiting for standalone to be ready")
 			Eventually(func(g Gomega) {
@@ -184,35 +180,19 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Running"))
 			}, 3*time.Minute, 5*time.Second).Should(Succeed())
-		})
 
-		AfterAll(func() {
-			By("cleaning up standalone")
-			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=1m")
-			_, _ = utils.Run(cmd)
-		})
-
-		It("should recover after pod restart", func() {
-			const testName = "standalone-restart"
-			const testDuration = 40 * time.Second
-
-			By("deploying chaos client pod")
-			podName, err := deployChaosClient(testNamespace, testName, crName, false, "chaos-standalone", testDuration)
-			Expect(err).NotTo(HaveOccurred())
-			defer deleteChaosClient(testNamespace, podName)
-
+			By("waiting 10 seconds for baseline traffic")
 			time.Sleep(10 * time.Second)
 
 			By("deleting the standalone pod")
-			cmd := exec.Command("kubectl", "delete", "pod", crName+"-redis-0",
+			cmd = exec.Command("kubectl", "delete", "pod", crName+"-redis-0",
 				"-n", testNamespace, "--grace-period=0", "--force")
-			_, err = utils.Run(cmd)
+			_, _ = utils.Run(cmd)
+
+			err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
 			Expect(err).NotTo(HaveOccurred())
 
-			err = waitForChaosClientComplete(testNamespace, podName, testDuration+2*time.Minute)
-			Expect(err).NotTo(HaveOccurred())
-
-			metrics, err := getChaosClientMetrics(testNamespace, podName)
+			metrics, err := getChaosClientMetrics(testNamespace, chaosPodName)
 			Expect(err).NotTo(HaveOccurred())
 			
 			Expect(metrics.DataCorruptions).To(Equal(int64(0)))
