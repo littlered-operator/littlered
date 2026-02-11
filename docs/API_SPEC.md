@@ -3,7 +3,7 @@
 > Detailed Custom Resource Definition schema for LittleRed.
 
 **Document Status**: Draft
-**Last Updated**: 2026-01-30
+**Last Updated**: 2026-02-11
 **API Version**: `littlered.chuck-chuck-chuck.net/v1alpha1`
 
 ---
@@ -29,7 +29,7 @@ status:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `mode` | `string` | No | `standalone` | Deployment mode: `standalone` or `sentinel` |
+| `mode` | `string` | No | `standalone` | Deployment mode: `standalone`, `sentinel`, or `cluster` |
 
 ### 2.2 Image Configuration
 
@@ -368,6 +368,50 @@ spec:
 | `sentinel.parallelSyncs` | `int` | No | `1` | Parallel replica syncs |
 | `sentinel.resources` | `ResourceRequirements` | No | See above | Sentinel container resources |
 
+### 2.12 Cluster-Specific Configuration
+
+Only applicable when `mode: cluster`:
+
+```yaml
+spec:
+  cluster:
+    shards: 3                   # Number of master shards (minimum 3)
+    replicasPerShard: 1         # Replicas per master (0 = no replicas)
+    clusterNodeTimeout: 15000   # Node timeout in milliseconds
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `cluster.shards` | `int` | No | `3` | Number of master shards (min: 3) |
+| `cluster.replicasPerShard` | `int` | No | `1` | Replicas per shard (0 = no replicas) |
+| `cluster.clusterNodeTimeout` | `int` | No | `15000` | Node timeout in ms |
+
+**Cluster mode creates**:
+- Total pods: `shards × (1 + replicasPerShard)`
+- Example: 3 shards with 1 replica = 6 pods (3 masters + 3 replicas)
+- 16384 hash slots distributed across masters
+
+**Important notes**:
+- No PersistentVolumes required - cluster topology stored in CR status
+- Data durability through replication, not disk persistence
+- Minimum 3 shards required by Redis Cluster protocol
+
+### 2.13 Requeue Intervals
+
+For tuning large-scale installations to reduce API server pressure:
+
+```yaml
+spec:
+  requeueIntervals:
+    fast: "2s"           # During initialization/recovery
+    steadyState: "30s"   # Periodic health checks when Running
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `requeueIntervals.fast` | `Duration` | No | `2s` | Interval during init/recovery |
+| `requeueIntervals.steadyState` | `Duration` | No | `30s` | Interval when stable |
+
 ---
 
 ## 3. Status Fields
@@ -398,6 +442,20 @@ status:
   sentinels:
     ready: 3
     total: 3
+
+  # Cluster mode only
+  cluster:
+    state: ok                   # ok, fail, or initializing
+    lastBootstrap: "2026-02-03T12:00:00Z"
+    nodes:
+      - podName: my-cache-cluster-0
+        nodeId: abc123def456...
+        role: master
+        slotRanges: "0-5460"
+      - podName: my-cache-cluster-1
+        nodeId: ghi789jkl012...
+        role: replica
+        masterNodeId: abc123def456...
 ```
 
 | Field | Type | Description |
@@ -413,6 +471,9 @@ status:
 | `replicas.total` | `int32` | Total replica count (sentinel mode) |
 | `sentinels.ready` | `int32` | Ready sentinel count (sentinel mode) |
 | `sentinels.total` | `int32` | Total sentinel count (sentinel mode) |
+| `cluster.state` | `string` | Cluster state: ok, fail, initializing (cluster mode) |
+| `cluster.lastBootstrap` | `Time` | Last bootstrap timestamp (cluster mode) |
+| `cluster.nodes` | `[]ClusterNodeState` | Per-node state for recovery (cluster mode) |
 
 ### 3.1 Condition Types
 
@@ -424,6 +485,7 @@ status:
 | `TLSReady` | TLS secrets are valid (if enabled) |
 | `AuthReady` | Auth secrets are valid (if enabled) |
 | `SentinelReady` | Sentinel quorum established (sentinel mode) |
+| `ClusterReady` | Cluster is formed and healthy (cluster mode) |
 
 ### 3.2 Phase Transitions
 
@@ -703,6 +765,66 @@ spec:
             topologyKey: kubernetes.io/hostname
 ```
 
+### 4.10 Minimal Cluster
+
+```yaml
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+kind: LittleRed
+metadata:
+  name: my-cache
+spec:
+  mode: cluster
+```
+
+Deploys: 3 masters + 3 replicas (6 pods total) with default settings.
+
+### 4.11 Cluster with Custom Shards
+
+```yaml
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+kind: LittleRed
+metadata:
+  name: my-cache
+spec:
+  mode: cluster
+  cluster:
+    shards: 6               # 6 masters
+    replicasPerShard: 1     # 6 replicas
+    clusterNodeTimeout: 10000
+
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+
+  config:
+    maxmemory: "1800Mi"
+    maxmemoryPolicy: noeviction
+
+  auth:
+    enabled: true
+    existingSecret: redis-password
+
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: prometheus
+
+  podTemplate:
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/instance: my-cache
+```
+
 ---
 
 ## 5. Labels and Annotations
@@ -716,7 +838,7 @@ labels:
   app.kubernetes.io/component: redis | sentinel | exporter
   app.kubernetes.io/managed-by: littlered-operator
   app.kubernetes.io/version: "8.0"
-  littlered.chuck-chuck-chuck.net/mode: standalone | sentinel
+  littlered.chuck-chuck-chuck.net/mode: standalone | sentinel | cluster
 ```
 
 ### 5.2 Sentinel Mode Labels
@@ -734,8 +856,8 @@ labels:
 ```go
 // LittleRedSpec defines the desired state of LittleRed
 type LittleRedSpec struct {
-    // Mode is the deployment mode: standalone or sentinel
-    // +kubebuilder:validation:Enum=standalone;sentinel
+    // Mode is the deployment mode: standalone, sentinel, or cluster
+    // +kubebuilder:validation:Enum=standalone;sentinel;cluster
     // +kubebuilder:default=standalone
     Mode string `json:"mode,omitempty"`
 
@@ -768,6 +890,12 @@ type LittleRedSpec struct {
 
     // Sentinel defines sentinel-specific settings (sentinel mode only)
     Sentinel *SentinelSpec `json:"sentinel,omitempty"`
+
+    // Cluster defines cluster-specific settings (cluster mode only)
+    Cluster *ClusterSpec `json:"cluster,omitempty"`
+
+    // RequeueIntervals for tuning reconciliation frequency
+    RequeueIntervals *RequeueIntervals `json:"requeueIntervals,omitempty"`
 }
 
 type ImageSpec struct {
@@ -829,11 +957,13 @@ type ConfigSpec struct {
 
 | Rule | Error Condition |
 |------|-----------------|
-| `mode` must be `standalone` or `sentinel` | Invalid mode value |
+| `mode` must be `standalone`, `sentinel`, or `cluster` | Invalid mode value |
 | If `auth.enabled`, must have `existingSecret` | Missing authentication secret |
 | If `tls.enabled`, must have `existingSecret` | Missing TLS certificate |
 | If `tls.clientAuth`, must have `caCertSecret` | Missing CA certificate |
 | `sentinel` config ignored if `mode=standalone` | Warning in status |
+| `cluster.shards` must be >= 3 | Minimum 3 shards required |
+| `cluster.replicasPerShard` must be >= 0 | Non-negative value required |
 | `maxmemory` must parse as quantity | Invalid memory format |
 
 ### 7.2 Status Condition on Validation Failure

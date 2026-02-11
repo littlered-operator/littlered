@@ -3,8 +3,8 @@
 > A Kubernetes operator for Redis and Valkey, focused on high-performance in-memory caching.
 
 **Document Status**: Active
-**Last Updated**: 2026-02-03
-**Version**: 0.2.0
+**Last Updated**: 2026-02-11
+**Version**: 0.3.0
 
 ---
 
@@ -211,19 +211,18 @@ User-selectable via CR:
 | Optional ServiceMonitor | MVP | ✅ |
 | Optional TLS | MVP | ✅ |
 | Optional password auth | Pre-MVP | ✅ |
-| Explicit maxmemory config (CRD field) | Phase 2 | 🔴 TODO |
-| Explicit maxmemory-policy config (CRD field) | Phase 2 | 🔴 TODO |
 | Rolling & recreate upgrades | MVP | ✅ |
 | Full config override | Pre-MVP | ✅ |
+| Explicit maxmemory config (CRD field) | Phase 2 | ✅ |
+| Explicit maxmemory-policy config (CRD field) | Phase 2 | ✅ |
 
 ### 6.2 Out of Scope (Current)
 
 | Item | Notes |
 |------|-------|
 | Persistence (RDB/AOF with PVC) | Future consideration |
-| Cluster slot migration | Future - needed for dynamic scaling |
+| Cluster slot migration (dynamic scaling) | Future - needed for adding/removing shards |
 | Redis < 7.2 | Not required |
-| Redis 8.x | Future consideration |
 | ACL-based auth | Future consideration |
 | Auto-sizing | Not planned |
 | Prometheus alerts | Only if trivial to add |

@@ -6,6 +6,7 @@ A lightweight Kubernetes operator for deploying Redis/Valkey as an in-memory cac
 
 - **Standalone mode**: Single Redis instance for simple caching
 - **Sentinel mode**: 1 master + 2 replicas + 3 sentinels with automatic failover
+- **Cluster mode**: Horizontally scaled Redis Cluster with automatic sharding (16384 hash slots)
 - **Valkey/Redis support**: Uses Valkey 8.0 by default (Redis 7.2+ compatible)
 - **Prometheus metrics**: Built-in redis_exporter sidecar
 - **Optional ServiceMonitor**: For Prometheus Operator integration
@@ -70,6 +71,7 @@ kubectl exec -it my-cache-redis-0 -c redis -- valkey-cli PING
 |------|------|----------|
 | `standalone` | 1 Redis | Development, simple caching |
 | `sentinel` | 3 Redis + 3 Sentinel | Production, high availability |
+| `cluster` | Shards × (1 + replicas) | Production, horizontal scaling with sharding |
 
 ### Spec Reference
 
@@ -79,7 +81,7 @@ kind: LittleRed
 metadata:
   name: my-cache
 spec:
-  # Deployment mode: standalone or sentinel
+  # Deployment mode: standalone, sentinel, or cluster
   mode: standalone
 
   # Container image
@@ -166,6 +168,17 @@ spec:
       limits:
         cpu: "100m"
         memory: "64Mi"
+
+  # Cluster settings (cluster mode only)
+  cluster:
+    shards: 3               # Number of master shards (minimum 3)
+    replicasPerShard: 1     # Replicas per master (0 = no replicas)
+    clusterNodeTimeout: 15000
+
+  # Requeue intervals for tuning large-scale deployments
+  requeueIntervals:
+    fast: "2s"              # Used during initialization/recovery
+    steadyState: "30s"      # Used for periodic health checks when Running
 ```
 
 ### Status
@@ -190,6 +203,15 @@ status:
   sentinels:
     ready: 3
     total: 3
+  # Cluster mode only:
+  cluster:
+    state: ok
+    lastBootstrap: "2026-02-03T12:00:00Z"
+    nodes:
+      - podName: my-cache-cluster-0
+        nodeId: abc123...
+        role: master
+        slotRanges: "0-5460"
 ```
 
 ## Examples
@@ -201,6 +223,7 @@ Sample manifests in [config/samples/](config/samples/):
 - `littlered_v1alpha1_littlered.yaml` - Minimal standalone
 - `littlered_v1alpha1_littlered_full.yaml` - Full standalone configuration
 - `littlered_v1alpha1_littlered_sentinel.yaml` - Sentinel mode
+- `littlered_v1alpha1_littlered_cluster.yaml` - Cluster mode
 - `littlered_v1alpha1_littlered_auth.yaml` - With password authentication
 - `littlered_v1alpha1_littlered_production.yaml` - Production-ready sentinel with auth, ServiceMonitor, and pod spreading
 
@@ -219,6 +242,13 @@ Sample manifests in [config/samples/](config/samples/):
 | `{name}` | 6379, 9121 | Redis master (follows failover) |
 | `{name}-replicas` | 6379, 9121 | All replicas (read replicas) |
 | `{name}-sentinel` | 26379 | Sentinel endpoints |
+
+### Cluster Mode
+
+| Service | Port | Description |
+|---------|------|-------------|
+| `{name}` | 6379, 9121 | Client access (any node) |
+| `{name}-cluster` | 6379, 16379 | Headless for cluster communication |
 
 ## Development
 

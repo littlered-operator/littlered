@@ -2,7 +2,7 @@
 
 > Quick reference for what's in and out of scope.
 
-**Last Updated**: 2026-01-30
+**Last Updated**: 2026-02-11
 
 ---
 
@@ -14,58 +14,65 @@
 | Technical Name | `littlered` |
 | API Group | `littlered.chuck-chuck-chuck.net` |
 | API Version | `v1alpha1` (initial) |
-| Default Image | `docker.io/valkey/valkey:7.4` |
+| Default Image | `docker.io/valkey/valkey:8.0` |
 | Image Format | `{registry}/{path}:{tag}` (each component overridable) |
 
 ---
 
 ## In Scope
 
-### Pre-MVP (Standalone)
+### Pre-MVP (Standalone) ✅
 
-- [ ] Single Redis/Valkey instance (StatefulSet, 1 replica)
-- [ ] Redis 7.2+ / Valkey 7.2+ support
-- [ ] In-memory only (no persistence)
-- [ ] Opinionated defaults (cache-optimized)
-- [ ] Full redis.conf override capability
-- [ ] Optional password authentication
-- [ ] Optional TLS
-- [ ] Prometheus metrics (redis_exporter sidecar)
-- [ ] Configurable resources (CPU/memory)
-- [ ] Guaranteed QoS by default
-- [ ] CR status reporting
+- [x] Single Redis/Valkey instance (StatefulSet, 1 replica)
+- [x] Redis 7.2+ / Valkey 7.2+ support
+- [x] In-memory only (no persistence)
+- [x] Opinionated defaults (cache-optimized)
+- [x] Full redis.conf override capability
+- [x] Optional password authentication
+- [x] Optional TLS
+- [x] Prometheus metrics (redis_exporter sidecar)
+- [x] Configurable resources (CPU/memory)
+- [x] Guaranteed QoS by default
+- [x] CR status reporting
 
-### MVP (Sentinel)
+### MVP (Sentinel) ✅
 
-- [ ] Sentinel mode: 1 master + 2 replicas + 3 sentinels
-- [ ] Automatic failover
-- [ ] Rolling update strategy
-- [ ] Recreate update strategy
-- [ ] Optional ServiceMonitor creation
-- [ ] Master/replica/sentinel services
+- [x] Sentinel mode: 1 master + 2 replicas + 3 sentinels
+- [x] Automatic failover
+- [x] Rolling update strategy
+- [x] Recreate update strategy
+- [x] Optional ServiceMonitor creation
+- [x] Master/replica/sentinel services
+
+### Phase 2 (Cluster) ✅
+
+- [x] Cluster mode: configurable shards with replicas per shard
+- [x] Automatic cluster bootstrapping
+- [x] Operator-managed recovery (topology in CR status)
+- [x] No PersistentVolumes required
+- [x] Data durability through replication
 
 ### Infrastructure
 
-- [ ] Go implementation (kubebuilder)
-- [ ] Kubernetes 1.28+ support
-- [ ] Helm chart distribution
-- [ ] Configurable namespace/cluster scope
-- [ ] Unit tests
-- [ ] Integration tests (envtest)
-- [ ] E2E tests (kind)
+- [x] Go implementation (kubebuilder)
+- [x] Kubernetes 1.28+ support
+- [x] Helm chart distribution
+- [x] Configurable namespace/cluster scope
+- [x] Unit tests
+- [x] Integration tests (envtest)
+- [x] E2E tests (kind)
 
 ---
 
-## Out of Scope (Initial Release)
+## Out of Scope (Current)
 
 ### Explicitly Excluded
 
 | Feature | Reason | Future? |
 |---------|--------|---------|
-| Redis Cluster (sharding) | Complexity, different architecture | Yes, possibly separate operator |
-| Persistence (RDB/AOF) | Not needed for cache use case | Maybe |
+| Persistence (RDB/AOF with PVC) | Not needed for cache use case | Maybe |
 | Redis < 7.2 | Legacy, not required | No |
-| Redis 8.x | Too new, evaluate later | Yes |
+| Cluster slot migration | Needed for dynamic scaling | Yes |
 | ACL-based auth | Complexity, password sufficient | Maybe |
 | Auto-sizing | Sizing is app-driven | No |
 | Prometheus alerts | Low priority | If trivial |
@@ -83,44 +90,53 @@
 
 ## Architecture Constraints
 
-Design decisions that must support future extensibility:
+Design decisions that support extensibility:
 
-1. **Sentinel topology**: Start with fixed 1+2+3, but don't hardcode in a way that prevents configurable counts later
-2. **Redis Cluster**: Keep reconciliation logic modular enough that Cluster support could be added (or extracted to separate operator)
+1. **Sentinel topology**: Fixed 1+2+3, architected for configurable counts in future
+2. **Redis Cluster**: ✅ Implemented with operator-managed topology (no nodes.conf dependency)
 3. **Persistence**:
    - **Default**: Actively disable persistence (`save ""`, `appendonly no`) to guarantee pure in-memory cache behavior
    - **No volumes**: Default deployment requires no PVCs
    - **Expert override**: User can re-enable persistence via `spec.config.raw` if they really want it (their responsibility)
    - **Future**: Operator-managed persistence (with proper PVC handling) could be added as opt-in feature later
+4. **Cluster state storage**: Topology stored in CR status, enabling deployment on any K8s cluster without local storage requirements
 
 ---
 
 ## Success Criteria
 
-### Pre-MVP Complete When
+### Pre-MVP Complete ✅
 
-1. Can deploy standalone Redis via CR
-2. Can deploy standalone Valkey via CR
-3. SET/GET operations work
-4. Prometheus metrics accessible
-5. Pod deletion triggers recreation
-6. All unit and integration tests pass
+1. ✅ Can deploy standalone Redis via CR
+2. ✅ Can deploy standalone Valkey via CR
+3. ✅ SET/GET operations work
+4. ✅ Prometheus metrics accessible
+5. ✅ Pod deletion triggers recreation
+6. ✅ All unit and integration tests pass
 
-### MVP Complete When
+### MVP Complete ✅
 
-1. Sentinel mode deploys all 6 pods
-2. Automatic failover works (kill master → new master elected)
-3. Rolling updates maintain availability
-4. ServiceMonitor created when enabled
-5. E2E tests pass on kind
-6. Helm chart installable
+1. ✅ Sentinel mode deploys all 6 pods
+2. ✅ Automatic failover works (kill master → new master elected)
+3. ✅ Rolling updates maintain availability
+4. ✅ ServiceMonitor created when enabled
+5. ✅ E2E tests pass on kind
+6. ✅ Helm chart installable
+
+### Phase 2 Complete ✅
+
+1. ✅ Cluster mode deploys configurable shards with replicas
+2. ✅ Automatic slot assignment (16384 slots)
+3. ✅ Cluster recovery from node failures
+4. ✅ Topology stored in CR status (no PVC dependency)
+5. ✅ Chaos testing validates resilience
 
 ---
 
 ## Milestones
 
 ```
-Pre-MVP
+Pre-MVP ✅
 ├── Project setup (kubebuilder init)
 ├── CR definition (types.go)
 ├── Standalone controller
@@ -128,7 +144,7 @@ Pre-MVP
 ├── Basic tests
 └── Documentation
 
-MVP
+MVP ✅
 ├── Sentinel controller
 ├── Failover handling
 ├── Update strategies
@@ -136,4 +152,12 @@ MVP
 ├── Helm chart
 ├── E2E tests
 └── Release automation
+
+Phase 2 ✅
+├── Cluster controller
+├── Slot management
+├── Quorum recovery
+├── Partition healing
+├── Ghost node removal
+└── Chaos testing
 ```
