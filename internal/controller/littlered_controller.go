@@ -885,9 +885,8 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRe
 	}
 	if littleRed.Status.Redis.Ready > 0 {
 		littleRed.Status.Replicas.Ready = littleRed.Status.Redis.Ready - 1
-		if littleRed.Status.Replicas.Ready < 0 {
-			littleRed.Status.Replicas.Ready = 0
-		}
+	} else {
+		littleRed.Status.Replicas.Ready = 0
 	}
 	littleRed.Status.Replicas.Total = littleRed.Status.Redis.Total - 1
 

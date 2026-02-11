@@ -145,9 +145,27 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 		}
 
 		actualMasterIP = sentinelData["ip"]
-		var actualNumSlaves int
-		fmt.Sscanf(sentinelData["num-slaves"], "%d", &actualNumSlaves)
-		g.Expect(actualNumSlaves).To(Equal(expectedReplicas), "Sentinel reports different number of slaves than expected")
+		
+		// 1b. Get replicas info to count only healthy ones
+		cmd = exec.Command("kubectl", "exec", sentinelPod, "-n", namespace, "-c", "sentinel", "--", "valkey-cli", "-p", "26379", "SENTINEL", "replicas", "mymaster")
+		replicasOutput, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred(), "Failed to execute SENTINEL replicas on sentinel pod")
+		
+		// Parse replicas output
+		actualNumUpReplicas := 0
+		replicaBlocks := strings.Split(strings.TrimSpace(replicasOutput), "name\n")
+		for _, block := range replicaBlocks {
+			if block == "" {
+				continue
+			}
+			// Each block is a list of KV pairs. We look for 'flags' and ensure it doesn't contain 's_down' or 'o_down'
+			if !strings.Contains(block, "s_down") && !strings.Contains(block, "o_down") && strings.Contains(block, "slave") {
+				actualNumUpReplicas++
+			}
+		}
+
+		g.Expect(actualNumUpReplicas).To(Equal(expectedReplicas), 
+			fmt.Sprintf("Sentinel reports %d up replicas, but expected %d", actualNumUpReplicas, expectedReplicas))
 	}, 1*time.Minute, 5*time.Second).Should(Succeed())
 
 	// 2. Wait for Operator Status to match ground truth
