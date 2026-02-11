@@ -158,7 +158,7 @@ make manifests generate
 
 # 2. Build & deploy
 export IMG=<registry>/<project>:tag
-make docker-build docker-push IMG=$IMG  # Or: kind load docker-image $IMG --name <cluster>
+make img-build img-push IMG=$IMG  # Or: kind load docker-image $IMG --name <cluster>
 make deploy IMG=$IMG
 
 # 3. Test
@@ -264,7 +264,7 @@ kubebuilder edit --plugins=helm/v2-alpha  # One-time, generates dist/chart/
 
 ```bash
 export IMG=<registry>/<project>:<version>
-make docker-build docker-push IMG=$IMG
+make img-build img-push IMG=$IMG
 ```
 
 ## References

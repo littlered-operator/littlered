@@ -33,7 +33,7 @@ metadata:
 spec: {}
 ```
 
-Sentinel mode with automatic failover:
+Sentinel mode:
 
 ```yaml
 apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
@@ -42,6 +42,17 @@ metadata:
   name: my-cache
 spec:
   mode: sentinel
+```
+
+Cluster mode:
+
+```yaml
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+kind: LittleRed
+metadata:
+  name: my-cache
+spec:
+  mode: cluster
 ```
 
 Apply:
@@ -61,6 +72,9 @@ kubectl exec -it my-cache-sentinel-0 -- valkey-cli -p 26379 SENTINEL get-master-
 
 # Sentinel mode - connect to Redis master
 kubectl exec -it my-cache-redis-0 -c redis -- valkey-cli PING
+
+# Cluster mode - be sure to enable cluster mode in the cli using `-c`
+kubectl exec -it my-cache-cluster-cluster-0 -- valkey-cli -c CLUSTER NODES
 ```
 
 ## Configuration
@@ -254,18 +268,15 @@ Sample manifests in [config/samples/](config/samples/):
 
 ### Prerequisites
 
-- Go 1.24+
+- Go 1.24+ (only if you want to build from source)
 - kubectl
 - Access to a Kubernetes cluster
 
-### Run Locally
+### 
 
 ```bash
-# Install CRDs
-make install
-
-# Run controller locally
-make run
+# Install Operator and CRDs
+make deploy
 
 # Apply a sample
 kubectl apply -f config/samples/littlered_v1alpha1_littlered.yaml
@@ -279,17 +290,15 @@ make test
 
 # E2E tests (requires kind)
 make test-e2e
-```
 
-### E2E Test Details
+# Focus on a specific subset of tests
+make test-e2e FOCUS="Cluster Mode Chaos"
+
+# Against existing deployment (don't deploy kind, use existing configured kubernetes)
+make test-e2e SKIP_OPERATOR_DEPLOY=true
+```
 
 See [docs/E2E_TESTING.md](docs/E2E_TESTING.md) for the complete guide on building, deploying, and running e2e tests.
-
-Quick start (against existing deployment):
-
-```bash
-SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 30m
-```
 
 ### Build
 
@@ -297,11 +306,15 @@ SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 30
 # Build binary
 make build
 
-# Build container image
-make docker-build IMG=myregistry/littlered-operator:v0.1.0
+# Build and push both images (`littlered` operator and `littlered-chaos-client` e2e test client)
+make images
 
-# Push image
-make docker-push IMG=myregistry/littlered-operator:v0.1.0
+# Restrict the build to a subset of images
+make images IMAGES=littlered
+
+# Only build, or only push (can be combined with IMAGES argument)
+make build-images
+make push-images
 ```
 
 ## License

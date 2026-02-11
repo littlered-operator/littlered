@@ -101,7 +101,7 @@ var _ = AfterSuite(func() {
 
 func deployWithMake() {
 	By("building the operator image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", operatorImage))
+	cmd := exec.Command("make", "img-build", fmt.Sprintf("IMG=%s", operatorImage))
 	_, err := utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the operator image")
 
