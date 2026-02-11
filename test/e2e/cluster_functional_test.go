@@ -300,25 +300,27 @@ spec:
 			}, 4*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying topology is recovered (6 nodes, 3 masters)")
-			cmd = exec.Command("kubectl", "exec", crName+"-cluster-1",
-				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "CLUSTER", "NODES")
-			output, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			lines := strings.Split(strings.TrimSpace(output), "\n")
-			
-			mastersWithSlots := 0
-			for _, line := range lines {
-				if strings.Contains(line, "master") {
-					fields := strings.Fields(line)
-					if len(fields) > 8 {
-						mastersWithSlots++
+			Eventually(func(g Gomega) {
+				cmd = exec.Command("kubectl", "exec", crName+"-cluster-1",
+					"-n", testNamespace, "-c", "redis", "--",
+					"valkey-cli", "CLUSTER", "NODES")
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				lines := strings.Split(strings.TrimSpace(out), "\n")
+
+				mastersWithSlots := 0
+				for _, line := range lines {
+					if strings.Contains(line, "master") {
+						fields := strings.Fields(line)
+						if len(fields) > 8 {
+							mastersWithSlots++
+						}
 					}
 				}
-			}
-			Expect(mastersWithSlots).To(Equal(3))
-			Expect(len(lines)).To(Equal(6))
-			Expect(output).NotTo(ContainSubstring("fail"))
+				g.Expect(mastersWithSlots).To(Equal(3))
+				g.Expect(len(lines)).To(Equal(6))
+				g.Expect(out).NotTo(ContainSubstring("fail"))
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
 
 			verifyClusterTopologySync(testNamespace, crName, 6)
 		})
@@ -340,6 +342,8 @@ spec:
 				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
 				g.Expect(output).To(ContainSubstring("cluster_known_nodes:6"))
 			}, 4*time.Minute, 5*time.Second).Should(Succeed())
+
+			verifyClusterTopologySync(testNamespace, crName, 6)
 		})
 	})
 

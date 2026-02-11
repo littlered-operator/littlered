@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -37,36 +38,34 @@ import (
 func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 	By(fmt.Sprintf("verifying that Operator status for %s matches actual Redis topology", crName))
 
-	// 1. Get the CR from Kubernetes
-	cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", namespace, "-o", "json")
-	output, err := utils.Run(cmd)
-	Expect(err).NotTo(HaveOccurred(), "Failed to get LittleRed CR")
-
-	var lr littleredv1alpha1.LittleRed
-	err = json.Unmarshal([]byte(output), &lr)
-	Expect(err).NotTo(HaveOccurred(), "Failed to parse LittleRed JSON")
-
-	// 2. Get ground truth from any available pod
+	// 1. Get ground truth from any available pod first
 	var clusterNodesOutput string
-	var success bool
-	for i := 0; i < expectedNodes; i++ {
-		podName := fmt.Sprintf("%s-cluster-%d", crName, i)
-		cmd = exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "valkey-cli", "CLUSTER", "NODES")
-		clusterNodesOutput, err = utils.Run(cmd)
-		if err == nil {
-			success = true
-			break
+	Eventually(func(g Gomega) {
+		var success bool
+		for i := 0; i < expectedNodes; i++ {
+			podName := fmt.Sprintf("%s-cluster-%d", crName, i)
+			cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "valkey-cli", "CLUSTER", "NODES")
+			output, err := utils.Run(cmd)
+			if err == nil {
+				clusterNodesOutput = output
+				success = true
+				break
+			}
 		}
-	}
-	Expect(success).To(BeTrue(), "Failed to execute CLUSTER NODES on any pod")
+		g.Expect(success).To(BeTrue(), "Failed to execute CLUSTER NODES on any pod")
 
-	// 3. Parse Redis output into a map for easy comparison
+		// Ground truth must have expected number of nodes
+		lines := strings.Split(strings.TrimSpace(clusterNodesOutput), "\n")
+		g.Expect(len(lines)).To(Equal(expectedNodes), "Redis ground truth doesn't have expected number of nodes yet")
+	}, 1*time.Minute, 5*time.Second).Should(Succeed())
+
+	// 2. Parse Redis output into a map for easy comparison
 	redisNodes := make(map[string]struct {
 		role     string
 		masterID string
 		slots    string
 	})
-	
+
 	lines := strings.Split(strings.TrimSpace(clusterNodesOutput), "\n")
 	for _, line := range lines {
 		fields := strings.Fields(line)
@@ -76,17 +75,17 @@ func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 		id := fields[0]
 		flags := fields[2]
 		masterID := fields[3]
-		
+
 		role := "master"
 		if strings.Contains(flags, "slave") {
 			role = "replica"
 		}
-		
+
 		slots := ""
 		if len(fields) > 8 {
 			slots = strings.Join(fields[8:], ",")
 		}
-		
+
 		redisNodes[id] = struct {
 			role     string
 			masterID string
@@ -94,78 +93,89 @@ func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 		}{role: role, masterID: masterID, slots: slots}
 	}
 
-	// 4. Perform Assertions
-	Expect(lr.Status.Cluster).NotTo(BeNil(), "CR Status.Cluster is nil")
-	Expect(len(lr.Status.Cluster.Nodes)).To(Equal(expectedNodes), "Number of nodes in Status doesn't match expected")
-	
-	for _, nodeStatus := range lr.Status.Cluster.Nodes {
-		actual, exists := redisNodes[nodeStatus.NodeID]
-		Expect(exists).To(BeTrue(), fmt.Sprintf("Status reports NodeID %s (pod %s) but it's missing from CLUSTER NODES", nodeStatus.NodeID, nodeStatus.PodName))
-		Expect(nodeStatus.Role).To(Equal(actual.role), fmt.Sprintf("Role mismatch for node %s", nodeStatus.PodName))
-		
-		if nodeStatus.Role == "replica" {
-			Expect(nodeStatus.MasterNodeID).To(Equal(actual.masterID), fmt.Sprintf("MasterID mismatch for replica %s", nodeStatus.PodName))
-		} else {
-			Expect(nodeStatus.SlotRanges).NotTo(BeEmpty(), fmt.Sprintf("Master %s has no slots in Status", nodeStatus.PodName))
+	// 3. Wait for Operator Status to match ground truth
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", namespace, "-o", "json")
+		output, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred(), "Failed to get LittleRed CR")
+
+		var lr littleredv1alpha1.LittleRed
+		err = json.Unmarshal([]byte(output), &lr)
+		g.Expect(err).NotTo(HaveOccurred(), "Failed to parse LittleRed JSON")
+
+		g.Expect(lr.Status.Cluster).NotTo(BeNil(), "CR Status.Cluster is nil")
+		g.Expect(len(lr.Status.Cluster.Nodes)).To(Equal(expectedNodes),
+			fmt.Sprintf("Number of nodes in Status (%d) doesn't match expected (%d)", len(lr.Status.Cluster.Nodes), expectedNodes))
+
+		for _, nodeStatus := range lr.Status.Cluster.Nodes {
+			actual, exists := redisNodes[nodeStatus.NodeID]
+			g.Expect(exists).To(BeTrue(), fmt.Sprintf("Status reports NodeID %s (pod %s) but it's missing from CLUSTER NODES", nodeStatus.NodeID, nodeStatus.PodName))
+			g.Expect(nodeStatus.Role).To(Equal(actual.role), fmt.Sprintf("Role mismatch for node %s", nodeStatus.PodName))
+
+			if nodeStatus.Role == "replica" {
+				g.Expect(nodeStatus.MasterNodeID).To(Equal(actual.masterID), fmt.Sprintf("MasterID mismatch for replica %s", nodeStatus.PodName))
+			} else {
+				g.Expect(nodeStatus.SlotRanges).NotTo(BeEmpty(), fmt.Sprintf("Master %s has no slots in Status", nodeStatus.PodName))
+			}
 		}
-	}
-	
+	}, 1*time.Minute, 5*time.Second).Should(Succeed())
+
 	By("Topology sync validation passed")
 }
-
 // verifySentinelTopologySync cross-validates the Operator's reported Sentinel Status
 // against the ground truth from the Sentinel nodes.
 func verifySentinelTopologySync(namespace, crName string, expectedSentinels, expectedReplicas int) {
 	By(fmt.Sprintf("verifying that Operator status for %s matches actual Sentinel topology", crName))
 
-	// 1. Get the CR from Kubernetes
-	cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", namespace, "-o", "json")
-	output, err := utils.Run(cmd)
-	Expect(err).NotTo(HaveOccurred(), "Failed to get LittleRed CR")
+	var actualMasterIP string
+	Eventually(func(g Gomega) {
+		// 1. Get ground truth from Sentinel
+		// We try sentinel-0
+		sentinelPod := fmt.Sprintf("%s-sentinel-0", crName)
+		cmd := exec.Command("kubectl", "exec", sentinelPod, "-n", namespace, "-c", "sentinel", "--", "valkey-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
+		sentinelOutput, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred(), "Failed to execute SENTINEL master on sentinel pod")
 
-	var lr littleredv1alpha1.LittleRed
-	err = json.Unmarshal([]byte(output), &lr)
-	Expect(err).NotTo(HaveOccurred(), "Failed to parse LittleRed JSON")
+		// Parse Sentinel output (it's a list of key-value pairs)
+		sentinelData := make(map[string]string)
+		lines := strings.Split(strings.TrimSpace(sentinelOutput), "\n")
+		for i := 0; i < len(lines)-1; i += 2 {
+			sentinelData[lines[i]] = lines[i+1]
+		}
 
-	// 2. Get ground truth from Sentinel
-	// We try sentinel-0
-	sentinelPod := fmt.Sprintf("%s-sentinel-0", crName)
-	cmd = exec.Command("kubectl", "exec", sentinelPod, "-n", namespace, "-c", "sentinel", "--", "valkey-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
-	sentinelOutput, err := utils.Run(cmd)
-	Expect(err).NotTo(HaveOccurred(), "Failed to execute SENTINEL master on sentinel pod")
+		actualMasterIP = sentinelData["ip"]
+		var actualNumSlaves int
+		fmt.Sscanf(sentinelData["num-slaves"], "%d", &actualNumSlaves)
+		g.Expect(actualNumSlaves).To(Equal(expectedReplicas), "Sentinel reports different number of slaves than expected")
+	}, 1*time.Minute, 5*time.Second).Should(Succeed())
 
-	// Parse Sentinel output (it's a list of key-value pairs)
-	sentinelData := make(map[string]string)
-	lines := strings.Split(strings.TrimSpace(sentinelOutput), "\n")
-	for i := 0; i < len(lines)-1; i += 2 {
-		sentinelData[lines[i]] = lines[i+1]
-	}
+	// 2. Wait for Operator Status to match ground truth
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", namespace, "-o", "json")
+		output, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred(), "Failed to get LittleRed CR")
 
-	actualMasterIP := sentinelData["ip"]
-	
-	// 3. Perform Assertions
-	Expect(lr.Status.Master).NotTo(BeNil(), "CR Status.Master is nil")
-	Expect(lr.Status.Master.IP).To(Equal(actualMasterIP), "Master IP mismatch in Status")
-	
-	// Map IP back to pod name to verify Status.Master.PodName
-	cmd = exec.Command("kubectl", "get", "pods", "-n", namespace, "-l", "app.kubernetes.io/instance="+crName+",littlered.chuck-chuck-chuck.net/mode=sentinel", "-o", "json")
-	podsOutput, _ := utils.Run(cmd)
-	Expect(podsOutput).To(ContainSubstring(actualMasterIP), "Master IP not found in any pod")
-	
-	Expect(lr.Status.Sentinels).NotTo(BeNil(), "CR Status.Sentinels is nil")
-	Expect(int(lr.Status.Sentinels.Total)).To(Equal(expectedSentinels), "Sentinel total count mismatch")
-	
-	Expect(lr.Status.Replicas).NotTo(BeNil(), "CR Status.Replicas is nil")
-	Expect(int(lr.Status.Replicas.Total)).To(Equal(expectedReplicas), "Replica total count mismatch")
+		var lr littleredv1alpha1.LittleRed
+		err = json.Unmarshal([]byte(output), &lr)
+		g.Expect(err).NotTo(HaveOccurred(), "Failed to parse LittleRed JSON")
 
-	// Also verify that Sentinel agrees on the number of slaves
-	var actualNumSlaves int
-	fmt.Sscanf(sentinelData["num-slaves"], "%d", &actualNumSlaves)
-	Expect(actualNumSlaves).To(Equal(expectedReplicas), "Sentinel reports different number of slaves than expected")
+		g.Expect(lr.Status.Master).NotTo(BeNil(), "CR Status.Master is nil")
+		g.Expect(lr.Status.Master.IP).To(Equal(actualMasterIP), "Master IP mismatch in Status")
+
+		g.Expect(lr.Status.Sentinels).NotTo(BeNil(), "CR Status.Sentinels is nil")
+		g.Expect(int(lr.Status.Sentinels.Total)).To(Equal(expectedSentinels), "Sentinel total count mismatch")
+
+		g.Expect(lr.Status.Replicas).NotTo(BeNil(), "CR Status.Replicas is nil")
+		g.Expect(int(lr.Status.Replicas.Total)).To(Equal(expectedReplicas), "Replica total count mismatch")
+
+		// Map IP back to pod name to verify Status.Master.PodName
+		cmd = exec.Command("kubectl", "get", "pods", "-n", namespace, "-l", "app.kubernetes.io/instance="+crName+",littlered.chuck-chuck-chuck.net/mode=sentinel", "-o", "json")
+		podsOutput, _ := utils.Run(cmd)
+		g.Expect(podsOutput).To(ContainSubstring(actualMasterIP), "Master IP not found in any pod")
+	}, 1*time.Minute, 5*time.Second).Should(Succeed())
 
 	By("Sentinel topology sync validation passed")
 }
-
 // getShardGroups returns a list of pod names grouped by their shard.
 func getShardGroups(namespace, crName string, totalNodes int) ([][]string, error) {
 	nodeIDToPodName := make(map[string]string)
