@@ -9,7 +9,8 @@ GIT_TAG := $(shell if [ -n "$$(git describe --tags --exact-match 2>/dev/null)" ]
                fi)
 
 # Image for chaos testing
-CHAOS_CLIENT_IMAGE ?= ghcr.io/littlered-operator/littlered-chaos-client:$(GIT_TAG)
+LITTLERED_REGISTRY ?= ghcr.io/littlered-operator
+CHAOS_CLIENT_IMAGE ?= $(LITTLERED_REGISTRY)/littlered-chaos-client:$(GIT_TAG)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
