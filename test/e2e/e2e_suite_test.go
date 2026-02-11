@@ -44,7 +44,23 @@ var (
 
 	// useHelm deploys operator via Helm instead of make deploy.
 	useHelm = false
+
+	// debugOnFailure skips cleanup on failure.
+	debugOnFailure = false
+
+	// suiteFailed tracks if any test in the suite failed.
+	suiteFailed = false
 )
+
+func suiteOrSpecFailed() bool {
+	failed := suiteFailed || CurrentSpecReport().Failed() || GinkgoT().Failed()
+	if failed {
+		// Using fmt.Fprintf instead of By because we might be in an AfterSuite where By is not allowed
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failure detected (suiteFailed: %v, SpecReport.Failed: %v, GinkgoT.Failed: %v)\n",
+			suiteFailed, CurrentSpecReport().Failed(), GinkgoT().Failed())
+	}
+	return failed
+}
 
 // TestE2E runs the e2e test suite.
 //
@@ -52,9 +68,14 @@ var (
 //   - OPERATOR_IMAGE: Operator image to use (default: ghcr.io/tanne3/littlered-operator:latest)
 //   - SKIP_OPERATOR_DEPLOY: Set to "true" to skip operator deployment
 //   - USE_HELM: Set to "true" to deploy via Helm instead of make deploy
+//   - DEBUG_ON_FAILURE: Set to "true" to skip cleanup on failure
 //   - KIND_CLUSTER: Kind cluster name (default: kind)
 func TestE2E(t *testing.T) {
-	RegisterFailHandler(Fail)
+	RegisterFailHandler(func(message string, callerSkip ...int) {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Fail handler called: %s\n", message)
+		suiteFailed = true
+		Fail(message, callerSkip...)
+	})
 	_, _ = fmt.Fprintf(GinkgoWriter, "Starting LittleRed operator e2e test suite\n")
 	RunSpecs(t, "LittleRed E2E Suite")
 }
@@ -70,10 +91,14 @@ var _ = BeforeSuite(func() {
 	if os.Getenv("USE_HELM") == "true" {
 		useHelm = true
 	}
+	if os.Getenv("DEBUG_ON_FAILURE") == "true" {
+		debugOnFailure = true
+	}
 
 	_, _ = fmt.Fprintf(GinkgoWriter, "Operator image: %s\n", operatorImage)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Skip operator deploy: %v\n", skipOperatorDeploy)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Use Helm: %v\n", useHelm)
+	_, _ = fmt.Fprintf(GinkgoWriter, "Debug on failure: %v\n", debugOnFailure)
 
 	if skipOperatorDeploy {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping operator deployment (SKIP_OPERATOR_DEPLOY=true)\n")
@@ -87,7 +112,18 @@ var _ = BeforeSuite(func() {
 	}
 })
 
+var _ = AfterEach(func() {
+	if CurrentSpecReport().Failed() {
+		suiteFailed = true
+	}
+})
+
 var _ = AfterSuite(func() {
+	if debugOnFailure && suiteOrSpecFailed() {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping operator undeploy due to failure and DEBUG_ON_FAILURE=true\n")
+		return
+	}
+
 	if skipOperatorDeploy {
 		return
 	}

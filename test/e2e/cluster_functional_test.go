@@ -41,6 +41,10 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 	})
 
 	AfterAll(func() {
+		if debugOnFailure && suiteOrSpecFailed() {
+			By("skipping namespace cleanup due to failure and DEBUG_ON_FAILURE=true")
+			return
+		}
 		By("cleaning up test namespace")
 		cmd := exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found", "--timeout=2m")
 		_, _ = utils.Run(cmd)
@@ -86,6 +90,10 @@ spec:
 		})
 
 		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				By("skipping cleanup due to failure and DEBUG_ON_FAILURE=true")
+				return
+			}
 			By("cleaning up cluster CR")
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=1m")
 			_, _ = utils.Run(cmd)
@@ -206,6 +214,10 @@ spec:
 		})
 
 		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				By("skipping cleanup due to failure and DEBUG_ON_FAILURE=true")
+				return
+			}
 			By("cleaning up cluster")
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=1m")
 			_, _ = utils.Run(cmd)
@@ -270,6 +282,10 @@ spec:
 		})
 
 		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				By("skipping cleanup due to failure and DEBUG_ON_FAILURE=true")
+				return
+			}
 			By("cleaning up cluster")
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=1m")
 			_, _ = utils.Run(cmd)
@@ -282,7 +298,7 @@ spec:
 				"valkey-cli", "CLUSTER", "NODES")
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			
+
 			By("deleting master pod-0")
 			cmd = exec.Command("kubectl", "delete", "pod", crName+"-cluster-0",
 				"-n", testNamespace, "--grace-period=0", "--force")
@@ -429,6 +445,10 @@ spec:
 		})
 
 		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				By("skipping cleanup due to failure and DEBUG_ON_FAILURE=true")
+				return
+			}
 			By("cleaning up cluster")
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=1m")
 			_, _ = utils.Run(cmd)
@@ -480,6 +500,10 @@ spec:
 		})
 
 		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				By("skipping cleanup due to failure and DEBUG_ON_FAILURE=true")
+				return
+			}
 			By("cleaning up cluster")
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=1m")
 			_, _ = utils.Run(cmd)

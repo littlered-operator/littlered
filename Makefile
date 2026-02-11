@@ -115,12 +115,18 @@ ifneq ($(FOCUS),)
 E2E_FOCUS = -ginkgo.focus='$(FOCUS)'
 endif
 
+# DEBUG_ON_FAILURE=true ginkgo --fail-fast ./test/e2e/...
+ifeq ($(DEBUG_ON_FAILURE),true)
+FAIL_FAST = --ginkgo.fail-fast
+E2E_VARS += DEBUG_ON_FAILURE=true
+endif
+
 .PHONY: test-e2e
 test-e2e: $(E2E_SETUP_DEP) run-test-e2e $(E2E_CLEANUP_DEP) ## Run the e2e tests.
 
 .PHONY: run-test-e2e
 run-test-e2e: manifests generate fmt vet
-	$(E2E_VARS) CHAOS_CLIENT_IMAGE=$(CHAOS_CLIENT_IMAGE) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 30m $(E2E_FOCUS) $(ARGS)
+	$(E2E_VARS) CHAOS_CLIENT_IMAGE=$(CHAOS_CLIENT_IMAGE) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 30m $(FAIL_FAST) $(E2E_FOCUS) $(ARGS)
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests

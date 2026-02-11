@@ -42,6 +42,10 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 	})
 
 	AfterAll(func() {
+		if debugOnFailure && suiteOrSpecFailed() {
+			By("skipping namespace cleanup due to failure and DEBUG_ON_FAILURE=true")
+			return
+		}
 		By("cleaning up test namespace")
 		cmd := exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found", "--timeout=2m")
 		_, _ = utils.Run(cmd)
@@ -96,6 +100,9 @@ spec:
 		})
 
 		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				return
+			}
 			deleteChaosClient(testNamespace, chaosPodName)
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=2m")
 			_, _ = utils.Run(cmd)
@@ -117,6 +124,9 @@ spec:
 		const crName = "chaos-cluster-resilience"
 
 		AfterEach(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				return
+			}
 			By("cleaning up cluster")
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=2m")
 			_, _ = utils.Run(cmd)
@@ -146,7 +156,12 @@ spec:
 			By("deploying chaos client pod simultaneously")
 			chaosPodName, err := deployChaosClient(testNamespace, "master-fail", crName, true, "chaos-master", testDuration)
 			Expect(err).NotTo(HaveOccurred())
-			defer deleteChaosClient(testNamespace, chaosPodName)
+			defer func() {
+				if debugOnFailure && suiteOrSpecFailed() {
+					return
+				}
+				deleteChaosClient(testNamespace, chaosPodName)
+			}()
 
 			By("waiting for cluster to be ready and ok")
 			Eventually(func(g Gomega) {
@@ -208,7 +223,12 @@ spec:
 			By("deploying chaos client pod simultaneously")
 			chaosPodName, err := deployChaosClient(testNamespace, "replica-fail", crName, true, "chaos-replica", testDuration)
 			Expect(err).NotTo(HaveOccurred())
-			defer deleteChaosClient(testNamespace, chaosPodName)
+			defer func() {
+				if debugOnFailure && suiteOrSpecFailed() {
+					return
+				}
+				deleteChaosClient(testNamespace, chaosPodName)
+			}()
 
 			By("waiting for cluster to be ready and ok")
 			Eventually(func(g Gomega) {
@@ -269,7 +289,12 @@ spec:
 			By("deploying chaos client pod simultaneously")
 			chaosPodName, err := deployChaosClient(testNamespace, "rolling", crName, true, "chaos-rolling", testDuration)
 			Expect(err).NotTo(HaveOccurred())
-			defer deleteChaosClient(testNamespace, chaosPodName)
+			defer func() {
+				if debugOnFailure && suiteOrSpecFailed() {
+					return
+				}
+				deleteChaosClient(testNamespace, chaosPodName)
+			}()
 
 			By("waiting for cluster to be ready and ok")
 			Eventually(func(g Gomega) {
@@ -369,6 +394,9 @@ spec:
 		})
 
 		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				return
+			}
 			deleteChaosClient(testNamespace, chaosPodName)
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=2m")
 			_, _ = utils.Run(cmd)

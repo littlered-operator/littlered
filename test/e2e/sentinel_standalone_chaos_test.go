@@ -41,6 +41,10 @@ var _ = Describe("Sentinel and Standalone Chaos Testing", Ordered, func() {
 	})
 
 	AfterAll(func() {
+		if debugOnFailure && suiteOrSpecFailed() {
+			By("skipping namespace cleanup due to failure and DEBUG_ON_FAILURE=true")
+			return
+		}
 		By("cleaning up test namespace")
 		cmd := exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found", "--timeout=2m")
 		_, _ = utils.Run(cmd)
@@ -74,7 +78,12 @@ spec:
 
 			chaosPodName, err := deployChaosClient(testNamespace, "sentinel-chaos", crName, false, "chaos-sent", testDuration)
 			Expect(err).NotTo(HaveOccurred())
-			defer deleteChaosClient(testNamespace, chaosPodName)
+			defer func() {
+				if debugOnFailure && suiteOrSpecFailed() {
+					return
+				}
+				deleteChaosClient(testNamespace, chaosPodName)
+			}()
 			defer func() {
 				cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
 				_, _ = utils.Run(cmd)
@@ -161,7 +170,12 @@ spec:
 
 			chaosPodName, err := deployChaosClient(testNamespace, "standalone-restart", crName, false, "chaos-stand", testDuration)
 			Expect(err).NotTo(HaveOccurred())
-			defer deleteChaosClient(testNamespace, chaosPodName)
+			defer func() {
+				if debugOnFailure && suiteOrSpecFailed() {
+					return
+				}
+				deleteChaosClient(testNamespace, chaosPodName)
+			}()
 			defer func() {
 				cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
 				_, _ = utils.Run(cmd)

@@ -48,6 +48,10 @@ var _ = Describe("LittleRed", Ordered, func() {
 	})
 
 	AfterAll(func() {
+		if debugOnFailure && suiteOrSpecFailed() {
+			By("skipping namespace cleanup due to failure and DEBUG_ON_FAILURE=true")
+			return
+		}
 		By("cleaning up test namespace")
 		cmd := exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found")
 		_, _ = utils.Run(cmd)
@@ -57,6 +61,9 @@ var _ = Describe("LittleRed", Ordered, func() {
 		const crName = "test-standalone"
 
 		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				return
+			}
 			By("cleaning up standalone CR")
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
 			_, _ = utils.Run(cmd)
@@ -256,6 +263,9 @@ spec:
 		})
 
 		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				return
+			}
 			By("cleaning up sentinel CR")
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
 			_, _ = utils.Run(cmd)
@@ -349,6 +359,9 @@ spec:
 		const crName = "test-rolling-update"
 
 		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				return
+			}
 			By("cleaning up rolling update CR")
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
 			_, _ = utils.Run(cmd)
@@ -564,6 +577,9 @@ spec:
 		const crName = "test-sentinel-rolling"
 
 		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				return
+			}
 			By("cleaning up sentinel rolling update CR")
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=60s")
 			_, _ = utils.Run(cmd)
@@ -723,6 +739,9 @@ spec:
 		const crName = "test-failover"
 
 		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				return
+			}
 			By("cleaning up failover CR")
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=60s")
 			_, _ = utils.Run(cmd)

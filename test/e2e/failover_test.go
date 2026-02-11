@@ -41,6 +41,10 @@ var _ = Describe("Sentinel Advanced Failover", func() {
 	})
 
 	AfterEach(func() {
+		if debugOnFailure && suiteOrSpecFailed() {
+			By("skipping namespace cleanup due to failure and DEBUG_ON_FAILURE=true")
+			return
+		}
 		By("cleaning up test namespace")
 		cmd := exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found")
 		_, _ = utils.Run(cmd)
