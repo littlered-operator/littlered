@@ -209,13 +209,7 @@ spec:
 	Context("Sentinel Mode", Ordered, func() {
 		const crName = "test-sentinel"
 
-		AfterAll(func() {
-			By("cleaning up sentinel CR")
-			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
-			_, _ = utils.Run(cmd)
-		})
-
-		It("should create a sentinel Redis cluster", func() {
+		BeforeAll(func() {
 			By("Test ID: SEN-001 - applying the LittleRed CR with sentinel mode")
 			cr := fmt.Sprintf(`
 apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
@@ -241,9 +235,8 @@ spec:
 			cmd.Stdin = strings.NewReader(cr)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-		})
 
-		It("should create StatefulSet with 3 Redis replicas", func() {
+			By("waiting for the sentinel cluster to be ready")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "statefulset", crName+"-redis",
 					"-n", testNamespace, "-o", "jsonpath={.status.readyReplicas}")
@@ -251,9 +244,24 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("3"))
 			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting for LittleRed status Running")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
-		It("should create all required services", func() {
+		AfterAll(func() {
+			By("cleaning up sentinel CR")
+			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should have all required services", func() {
 			By("Test ID: SEN-002 - checking master service")
 			cmd := exec.Command("kubectl", "get", "service", crName, "-n", testNamespace)
 			_, err := utils.Run(cmd)
@@ -268,16 +276,6 @@ spec:
 			cmd = exec.Command("kubectl", "get", "service", crName+"-sentinel", "-n", testNamespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("should have LittleRed status Running", func() {
-			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "littlered", crName,
-					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Running"))
-			}, 3*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		It("should have sentinel quorum established", func() {
