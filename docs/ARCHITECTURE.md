@@ -742,7 +742,10 @@ littlered/
 │       ├── littlered_webhook.go    # Validation/defaulting webhooks
 │       └── zz_generated.deepcopy.go
 ├── cmd/
-│   └── main.go                     # Entrypoint
+│   ├── littlered/                  # Operator entrypoint
+│   │   ├── main.go                 # Entrypoint
+│   │   └── Dockerfile              # Operator Dockerfile
+│   └── littlered-chaos-client/     # Chaos test client
 ├── config/
 │   ├── crd/                        # Generated CRD YAML
 │   ├── manager/                    # Operator deployment
@@ -770,7 +773,6 @@ littlered/
 │   ├── ARCHITECTURE.md
 │   ├── SCOPE.md
 │   └── TEST_CASES.md
-├── Dockerfile
 ├── Makefile
 ├── go.mod
 └── README.md

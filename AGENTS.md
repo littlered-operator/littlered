@@ -4,7 +4,7 @@
 
 **Single-group layout (default):**
 ```
-cmd/main.go                    Manager entry (registers controllers/webhooks)
+cmd/littlered/main.go          Manager entry (registers controllers/webhooks)
 api/<version>/*_types.go       CRD schemas (+kubebuilder markers)
 api/<version>/zz_generated.*   Auto-generated (DO NOT EDIT)
 internal/controller/*          Reconciliation logic

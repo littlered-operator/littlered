@@ -142,11 +142,11 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	go build -o bin/manager cmd/littlered/main.go
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+	go run ./cmd/littlered/main.go
 
 BUILD_TARGETS = $(addsuffix .build_image,$(IMAGES))
 PUSH_TARGETS  = $(addsuffix .push_image,$(IMAGES))
@@ -166,7 +166,7 @@ push-images: $(PUSH_TARGETS)
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 $(BUILD_TARGETS): %.build_image:
-	$(CONTAINER_TOOL) build -t $(LITTLERED_REGISTRY)/$*:$(GIT_TAG) .
+	$(CONTAINER_TOOL) build -t $(LITTLERED_REGISTRY)/$*:$(GIT_TAG) -f cmd/$*/Dockerfile .
 
 $(PUSH_TARGETS): %.push_image:
 	$(CONTAINER_TOOL) push $(LITTLERED_REGISTRY)/$*:$(GIT_TAG)
@@ -181,7 +181,7 @@ PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 .PHONY: img-buildx
 img-buildx: ## Build and push container image for the manager for cross-platform support
 	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
+	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' cmd/littlered/Dockerfile > Dockerfile.cross
 	- $(CONTAINER_TOOL) buildx create --name littlered-builder
 	$(CONTAINER_TOOL) buildx use littlered-builder
 	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${OPERATOR_IMAGE} -f Dockerfile.cross .
