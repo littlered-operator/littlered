@@ -22,6 +22,7 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os/exec"
 	"strings"
 	"time"
@@ -160,7 +161,16 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 		g.Expect(err).NotTo(HaveOccurred(), "Failed to parse LittleRed JSON")
 
 		g.Expect(lr.Status.Master).NotTo(BeNil(), "CR Status.Master is nil")
-		g.Expect(lr.Status.Master.IP).To(Equal(actualMasterIP), "Master IP mismatch in Status")
+		
+		// Sentinel might report IP or FQDN depending on configuration and resolution
+		// If it's a hostname, we check if it contains the pod name
+		if net.ParseIP(actualMasterIP) == nil {
+			expectedHostnamePrefix := fmt.Sprintf("%s.", lr.Status.Master.PodName)
+			g.Expect(actualMasterIP).To(HavePrefix(expectedHostnamePrefix), 
+				fmt.Sprintf("Master address mismatch: Sentinel reported %s, but Status has pod %s", actualMasterIP, lr.Status.Master.PodName))
+		} else {
+			g.Expect(lr.Status.Master.IP).To(Equal(actualMasterIP), "Master IP mismatch in Status")
+		}
 
 		g.Expect(lr.Status.Sentinels).NotTo(BeNil(), "CR Status.Sentinels is nil")
 		g.Expect(int(lr.Status.Sentinels.Total)).To(Equal(expectedSentinels), "Sentinel total count mismatch")
@@ -169,9 +179,16 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 		g.Expect(int(lr.Status.Replicas.Total)).To(Equal(expectedReplicas), "Replica total count mismatch")
 
 		// Map IP back to pod name to verify Status.Master.PodName
-		cmd = exec.Command("kubectl", "get", "pods", "-n", namespace, "-l", "app.kubernetes.io/instance="+crName+",littlered.chuck-chuck-chuck.net/mode=sentinel", "-o", "json")
+		// We search among redis pods of this instance
+		cmd = exec.Command("kubectl", "get", "pods", "-n", namespace, "-l", "app.kubernetes.io/instance="+crName+",app.kubernetes.io/component=redis", "-o", "json")
 		podsOutput, _ := utils.Run(cmd)
-		g.Expect(podsOutput).To(ContainSubstring(actualMasterIP), "Master IP not found in any pod")
+		
+		// If actualMasterIP is a hostname, extract pod name
+		searchString := actualMasterIP
+		if net.ParseIP(actualMasterIP) == nil && strings.Contains(actualMasterIP, ".") {
+			searchString = strings.Split(actualMasterIP, ".")[0]
+		}
+		g.Expect(podsOutput).To(ContainSubstring(searchString), fmt.Sprintf("Master address/pod %s not found in redis pods", searchString))
 	}, 1*time.Minute, 5*time.Second).Should(Succeed())
 
 	By("Sentinel topology sync validation passed")
