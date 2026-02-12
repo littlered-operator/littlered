@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -44,6 +45,7 @@ import (
 
 const (
 	finalizerName = "littlered.chuck-chuck-chuck.net/finalizer"
+	fieldManager  = "littlered-operator"
 )
 
 // LittleRedReconciler reconciles a LittleRed object
@@ -277,119 +279,22 @@ func (r *LittleRedReconciler) reconcileStandalone(ctx context.Context, littleRed
 
 // reconcileConfigMap ensures the ConfigMap exists with the correct content
 func (r *LittleRedReconciler) reconcileConfigMap(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	log := logf.FromContext(ctx)
-	cm := buildConfigMap(littleRed)
-
-	// Set owner reference
-	if err := controllerutil.SetControllerReference(littleRed, cm, r.Scheme); err != nil {
-		return err
-	}
-
-	// Check if exists
-	existing := &corev1.ConfigMap{}
-	err := r.Get(ctx, types.NamespacedName{Name: cm.Name, Namespace: cm.Namespace}, existing)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("Creating ConfigMap", "name", cm.Name)
-			return r.Create(ctx, cm)
-		}
-		return err
-	}
-
-	// Update if needed
-	if existing.Data["redis.conf"] != cm.Data["redis.conf"] {
-		log.Info("Updating ConfigMap", "name", cm.Name)
-		existing.Data = cm.Data
-		return r.Update(ctx, existing)
-	}
-
-	return nil
+	return r.apply(ctx, littleRed, buildConfigMap(littleRed))
 }
 
 // reconcileStatefulSet ensures the StatefulSet exists with the correct spec
 func (r *LittleRedReconciler) reconcileStatefulSet(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	log := logf.FromContext(ctx)
-	sts := buildStatefulSet(littleRed)
-
-	// Set owner reference
-	if err := controllerutil.SetControllerReference(littleRed, sts, r.Scheme); err != nil {
-		return err
-	}
-
-	// Check if exists
-	existing := &appsv1.StatefulSet{}
-	err := r.Get(ctx, types.NamespacedName{Name: sts.Name, Namespace: sts.Namespace}, existing)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("Creating StatefulSet", "name", sts.Name)
-			return r.Create(ctx, sts)
-		}
-		return err
-	}
-
-	// Update if needed (simple check - could be more sophisticated)
-	log.Info("Updating StatefulSet", "name", sts.Name)
-	existing.Spec = sts.Spec
-	return r.Update(ctx, existing)
+	return r.apply(ctx, littleRed, buildStatefulSet(littleRed))
 }
 
 // reconcileService ensures the Service exists with the correct spec
 func (r *LittleRedReconciler) reconcileService(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	log := logf.FromContext(ctx)
-	svc := buildService(littleRed)
-
-	// Set owner reference
-	if err := controllerutil.SetControllerReference(littleRed, svc, r.Scheme); err != nil {
-		return err
-	}
-
-	// Check if exists
-	existing := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{Name: svc.Name, Namespace: svc.Namespace}, existing)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("Creating Service", "name", svc.Name)
-			return r.Create(ctx, svc)
-		}
-		return err
-	}
-
-	// Update if needed (preserve ClusterIP)
-	svc.Spec.ClusterIP = existing.Spec.ClusterIP
-	svc.Spec.ClusterIPs = existing.Spec.ClusterIPs
-	existing.Spec = svc.Spec
-	existing.Labels = svc.Labels
-	existing.Annotations = svc.Annotations
-	log.Info("Updating Service", "name", svc.Name)
-	return r.Update(ctx, existing)
+	return r.apply(ctx, littleRed, buildService(littleRed))
 }
 
 // reconcileServiceMonitor ensures the ServiceMonitor exists
 func (r *LittleRedReconciler) reconcileServiceMonitor(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	log := logf.FromContext(ctx)
-	sm := buildServiceMonitor(littleRed)
-
-	// Set owner reference
-	if err := controllerutil.SetControllerReference(littleRed, sm, r.Scheme); err != nil {
-		return err
-	}
-
-	// Check if exists
-	existing := sm.DeepCopy()
-	err := r.Get(ctx, types.NamespacedName{Name: sm.Name, Namespace: sm.Namespace}, existing)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("Creating ServiceMonitor", "name", sm.Name)
-			return r.Create(ctx, sm)
-		}
-		return err
-	}
-
-	// Update
-	log.Info("Updating ServiceMonitor", "name", sm.Name)
-	existing.Spec = sm.Spec
-	existing.Labels = sm.Labels
-	return r.Update(ctx, existing)
+	return r.apply(ctx, littleRed, buildServiceMonitor(littleRed))
 }
 
 // updateStatus updates the LittleRed status based on current state
@@ -552,180 +457,37 @@ func (r *LittleRedReconciler) reconcileSentinel(ctx context.Context, littleRed *
 
 // reconcileConfigMapSentinel ensures the Redis ConfigMap exists for sentinel mode
 func (r *LittleRedReconciler) reconcileConfigMapSentinel(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	log := logf.FromContext(ctx)
-	cm := buildConfigMapSentinelMode(littleRed)
-
-	if err := controllerutil.SetControllerReference(littleRed, cm, r.Scheme); err != nil {
-		return err
-	}
-
-	existing := &corev1.ConfigMap{}
-	err := r.Get(ctx, types.NamespacedName{Name: cm.Name, Namespace: cm.Namespace}, existing)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("Creating Redis ConfigMap", "name", cm.Name)
-			return r.Create(ctx, cm)
-		}
-		return err
-	}
-
-	if existing.Data["redis.conf"] != cm.Data["redis.conf"] {
-		log.Info("Updating Redis ConfigMap", "name", cm.Name)
-		existing.Data = cm.Data
-		return r.Update(ctx, existing)
-	}
-
-	return nil
+	return r.apply(ctx, littleRed, buildConfigMapSentinelMode(littleRed))
 }
 
 // reconcileSentinelConfigMap ensures the Sentinel ConfigMap exists
 func (r *LittleRedReconciler) reconcileSentinelConfigMap(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	log := logf.FromContext(ctx)
-	cm := buildSentinelConfigMap(littleRed)
-
-	if err := controllerutil.SetControllerReference(littleRed, cm, r.Scheme); err != nil {
-		return err
-	}
-
-	existing := &corev1.ConfigMap{}
-	err := r.Get(ctx, types.NamespacedName{Name: cm.Name, Namespace: cm.Namespace}, existing)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("Creating Sentinel ConfigMap", "name", cm.Name)
-			return r.Create(ctx, cm)
-		}
-		return err
-	}
-
-	if existing.Data["sentinel.conf"] != cm.Data["sentinel.conf"] {
-		log.Info("Updating Sentinel ConfigMap", "name", cm.Name)
-		existing.Data = cm.Data
-		return r.Update(ctx, existing)
-	}
-
-	return nil
+	return r.apply(ctx, littleRed, buildSentinelConfigMap(littleRed))
 }
 
 // reconcileReplicasService ensures the headless service for Redis pods exists
 func (r *LittleRedReconciler) reconcileReplicasService(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	log := logf.FromContext(ctx)
-	svc := buildReplicasHeadlessService(littleRed)
-
-	if err := controllerutil.SetControllerReference(littleRed, svc, r.Scheme); err != nil {
-		return err
-	}
-
-	existing := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{Name: svc.Name, Namespace: svc.Namespace}, existing)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("Creating replicas headless Service", "name", svc.Name)
-			return r.Create(ctx, svc)
-		}
-		return err
-	}
-
-	return nil
+	return r.apply(ctx, littleRed, buildReplicasHeadlessService(littleRed))
 }
 
 // reconcileSentinelService ensures the headless service for Sentinel pods exists
 func (r *LittleRedReconciler) reconcileSentinelService(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	log := logf.FromContext(ctx)
-	svc := buildSentinelHeadlessService(littleRed)
-
-	if err := controllerutil.SetControllerReference(littleRed, svc, r.Scheme); err != nil {
-		return err
-	}
-
-	existing := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{Name: svc.Name, Namespace: svc.Namespace}, existing)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("Creating Sentinel headless Service", "name", svc.Name)
-			return r.Create(ctx, svc)
-		}
-		return err
-	}
-
-	return nil
+	return r.apply(ctx, littleRed, buildSentinelHeadlessService(littleRed))
 }
 
 // reconcileRedisStatefulSetSentinel ensures the Redis StatefulSet exists for sentinel mode
 func (r *LittleRedReconciler) reconcileRedisStatefulSetSentinel(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	log := logf.FromContext(ctx)
-	sts := buildRedisStatefulSetSentinel(littleRed)
-
-	if err := controllerutil.SetControllerReference(littleRed, sts, r.Scheme); err != nil {
-		return err
-	}
-
-	existing := &appsv1.StatefulSet{}
-	err := r.Get(ctx, types.NamespacedName{Name: sts.Name, Namespace: sts.Namespace}, existing)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("Creating Redis StatefulSet", "name", sts.Name)
-			return r.Create(ctx, sts)
-		}
-		return err
-	}
-
-	log.Info("Updating Redis StatefulSet", "name", sts.Name)
-	mergeUnmanagedPodTemplateAnnotations(sts, existing)
-	existing.Spec = sts.Spec
-	return r.Update(ctx, existing)
+	return r.apply(ctx, littleRed, buildRedisStatefulSetSentinel(littleRed))
 }
 
 // reconcileSentinelStatefulSet ensures the Sentinel StatefulSet exists
 func (r *LittleRedReconciler) reconcileSentinelStatefulSet(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	log := logf.FromContext(ctx)
-	sts := buildSentinelStatefulSet(littleRed)
-
-	if err := controllerutil.SetControllerReference(littleRed, sts, r.Scheme); err != nil {
-		return err
-	}
-
-	existing := &appsv1.StatefulSet{}
-	err := r.Get(ctx, types.NamespacedName{Name: sts.Name, Namespace: sts.Namespace}, existing)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("Creating Sentinel StatefulSet", "name", sts.Name)
-			return r.Create(ctx, sts)
-		}
-		return err
-	}
-
-	log.Info("Updating Sentinel StatefulSet", "name", sts.Name)
-	mergeUnmanagedPodTemplateAnnotations(sts, existing)
-	existing.Spec = sts.Spec
-	return r.Update(ctx, existing)
+	return r.apply(ctx, littleRed, buildSentinelStatefulSet(littleRed))
 }
 
 // reconcileMasterService ensures the master Service exists
 func (r *LittleRedReconciler) reconcileMasterService(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	log := logf.FromContext(ctx)
-	svc := buildMasterService(littleRed)
-
-	if err := controllerutil.SetControllerReference(littleRed, svc, r.Scheme); err != nil {
-		return err
-	}
-
-	existing := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{Name: svc.Name, Namespace: svc.Namespace}, existing)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("Creating master Service", "name", svc.Name)
-			return r.Create(ctx, svc)
-		}
-		return err
-	}
-
-	// Preserve ClusterIP
-	svc.Spec.ClusterIP = existing.Spec.ClusterIP
-	svc.Spec.ClusterIPs = existing.Spec.ClusterIPs
-	existing.Spec = svc.Spec
-	existing.Labels = svc.Labels
-	existing.Annotations = svc.Annotations
-	return r.Update(ctx, existing)
+	return r.apply(ctx, littleRed, buildMasterService(littleRed))
 }
 
 // getMasterPodName queries Sentinel to find the current master pod name.
@@ -1035,55 +797,21 @@ func (r *LittleRedReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// createOrUpdate is a simple helper to create or update an object.
-// For StatefulSets, it preserves pod template annotations not managed by the operator
-// (e.g. kubectl.kubernetes.io/restartedAt from rollout restart).
-func (r *LittleRedReconciler) createOrUpdate(ctx context.Context, obj client.Object) error {
-	key := client.ObjectKeyFromObject(obj)
-	existing := obj.DeepCopyObject().(client.Object)
-
-	if err := r.Get(ctx, key, existing); err != nil {
-		if apierrors.IsNotFound(err) {
-			return r.Create(ctx, obj)
-		}
+// apply uses Server-Side Apply to create or update a resource. It sets the
+// controller reference and resolves the GVK from the scheme before patching.
+// SSA only manages fields the operator explicitly sets, preserving external
+// labels, annotations (e.g. kubectl rollout restart), and server-defaulted
+// fields like ClusterIP.
+func (r *LittleRedReconciler) apply(ctx context.Context, owner *littleredv1alpha1.LittleRed, obj client.Object) error {
+	if err := controllerutil.SetControllerReference(owner, obj, r.Scheme); err != nil {
 		return err
 	}
-
-	// For StatefulSets, preserve pod template annotations we don't manage.
-	// This prevents the operator from reverting kubectl rollout restart.
-	if sts, ok := obj.(*appsv1.StatefulSet); ok {
-		if existingSts, ok := existing.(*appsv1.StatefulSet); ok {
-			mergeUnmanagedPodTemplateAnnotations(sts, existingSts)
-		}
+	gvk, err := apiutil.GVKForObject(obj, r.Scheme)
+	if err != nil {
+		return err
 	}
-
-	obj.SetResourceVersion(existing.GetResourceVersion())
-	return r.Update(ctx, obj)
-}
-
-// mergeUnmanagedPodTemplateAnnotations copies pod template annotations from the
-// existing StatefulSet that aren't managed by the operator. This preserves
-// annotations like kubectl.kubernetes.io/restartedAt from rollout restart.
-func mergeUnmanagedPodTemplateAnnotations(desired, existing *appsv1.StatefulSet) {
-	existingAnnotations := existing.Spec.Template.Annotations
-	if len(existingAnnotations) == 0 {
-		return
-	}
-
-	if desired.Spec.Template.Annotations == nil {
-		desired.Spec.Template.Annotations = make(map[string]string)
-	}
-
-	for k, v := range existingAnnotations {
-		// Skip annotations the operator manages
-		if strings.HasPrefix(k, "littlered.chuck-chuck-chuck.net/") {
-			continue
-		}
-		// Preserve everything else (kubectl annotations, user annotations, etc.)
-		if _, managed := desired.Spec.Template.Annotations[k]; !managed {
-			desired.Spec.Template.Annotations[k] = v
-		}
-	}
+	obj.GetObjectKind().SetGroupVersionKind(gvk)
+	return r.Patch(ctx, obj, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership)
 }
 
 // getRedisPassword retrieves the Redis password from the secret if auth is enabled

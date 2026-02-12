@@ -20,7 +20,6 @@ import (
 	"strings"
 	"testing"
 
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -985,107 +984,5 @@ func TestBuildExporterContainerWithTLS(t *testing.T) {
 	}
 	if !hasRedisAddr {
 		t.Error("Exporter container missing REDIS_ADDR env var")
-	}
-}
-
-func TestMergeUnmanagedPodTemplateAnnotations(t *testing.T) {
-	tests := []struct {
-		name              string
-		desiredAnnotations map[string]string
-		existingAnnotations map[string]string
-		wantAnnotations    map[string]string
-	}{
-		{
-			name:              "preserves restartedAt from rollout restart",
-			desiredAnnotations: map[string]string{AnnotationConfigHash: "abc123"},
-			existingAnnotations: map[string]string{
-				AnnotationConfigHash:                     "abc123",
-				"kubectl.kubernetes.io/restartedAt":      "2026-02-12T20:00:00Z",
-			},
-			wantAnnotations: map[string]string{
-				AnnotationConfigHash:                     "abc123",
-				"kubectl.kubernetes.io/restartedAt":      "2026-02-12T20:00:00Z",
-			},
-		},
-		{
-			name:              "does not overwrite operator-managed annotations",
-			desiredAnnotations: map[string]string{AnnotationConfigHash: "new-hash"},
-			existingAnnotations: map[string]string{
-				AnnotationConfigHash: "old-hash",
-			},
-			wantAnnotations: map[string]string{
-				AnnotationConfigHash: "new-hash",
-			},
-		},
-		{
-			name:              "handles nil existing annotations",
-			desiredAnnotations: map[string]string{AnnotationConfigHash: "abc123"},
-			existingAnnotations: nil,
-			wantAnnotations:    map[string]string{AnnotationConfigHash: "abc123"},
-		},
-		{
-			name:              "preserves user-defined annotations from existing",
-			desiredAnnotations: map[string]string{AnnotationConfigHash: "abc123"},
-			existingAnnotations: map[string]string{
-				AnnotationConfigHash:                "abc123",
-				"my-company.io/custom":              "value",
-				"kubectl.kubernetes.io/restartedAt": "2026-02-12T20:00:00Z",
-			},
-			wantAnnotations: map[string]string{
-				AnnotationConfigHash:                "abc123",
-				"my-company.io/custom":              "value",
-				"kubectl.kubernetes.io/restartedAt": "2026-02-12T20:00:00Z",
-			},
-		},
-		{
-			name: "desired annotations take precedence over unmanaged existing",
-			desiredAnnotations: map[string]string{
-				AnnotationConfigHash: "abc123",
-				"shared-key":         "desired-value",
-			},
-			existingAnnotations: map[string]string{
-				"shared-key": "existing-value",
-			},
-			wantAnnotations: map[string]string{
-				AnnotationConfigHash: "abc123",
-				"shared-key":         "desired-value",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			desired := &appsv1.StatefulSet{
-				Spec: appsv1.StatefulSetSpec{
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Annotations: tt.desiredAnnotations,
-						},
-					},
-				},
-			}
-			existing := &appsv1.StatefulSet{
-				Spec: appsv1.StatefulSetSpec{
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Annotations: tt.existingAnnotations,
-						},
-					},
-				},
-			}
-
-			mergeUnmanagedPodTemplateAnnotations(desired, existing)
-
-			got := desired.Spec.Template.Annotations
-			if len(got) != len(tt.wantAnnotations) {
-				t.Errorf("got %d annotations, want %d\ngot:  %v\nwant: %v", len(got), len(tt.wantAnnotations), got, tt.wantAnnotations)
-				return
-			}
-			for k, wantV := range tt.wantAnnotations {
-				if gotV, ok := got[k]; !ok || gotV != wantV {
-					t.Errorf("annotation %q = %q, want %q", k, gotV, wantV)
-				}
-			}
-		})
 	}
 }

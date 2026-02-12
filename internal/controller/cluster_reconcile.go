@@ -29,7 +29,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	littleredv1alpha1 "github.com/tanne3/littlered-operator/api/v1alpha1"
@@ -886,43 +885,20 @@ func (r *LittleRedReconciler) ensureClusterResources(ctx context.Context, little
 
 // reconcileClusterConfigMap ensures the ConfigMap exists
 func (r *LittleRedReconciler) reconcileClusterConfigMap(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	cm := buildClusterConfigMap(littleRed)
-	if err := controllerutil.SetControllerReference(littleRed, cm, r.Scheme); err != nil {
-		return err
-	}
-	return r.createOrUpdate(ctx, cm)
+	return r.apply(ctx, littleRed, buildClusterConfigMap(littleRed))
 }
 
 // reconcileClusterHeadlessService ensures the headless Service exists
 func (r *LittleRedReconciler) reconcileClusterHeadlessService(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	svc := buildClusterHeadlessService(littleRed)
-	if err := controllerutil.SetControllerReference(littleRed, svc, r.Scheme); err != nil {
-		return err
-	}
-	return r.createOrUpdate(ctx, svc)
+	return r.apply(ctx, littleRed, buildClusterHeadlessService(littleRed))
 }
 
 // reconcileClusterStatefulSet ensures the StatefulSet exists
 func (r *LittleRedReconciler) reconcileClusterStatefulSet(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	sts := buildClusterStatefulSet(littleRed)
-	if err := controllerutil.SetControllerReference(littleRed, sts, r.Scheme); err != nil {
-		return err
-	}
-	return r.createOrUpdate(ctx, sts)
+	return r.apply(ctx, littleRed, buildClusterStatefulSet(littleRed))
 }
 
 // reconcileClusterClientService ensures the client Service exists
-
 func (r *LittleRedReconciler) reconcileClusterClientService(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-
-	svc := buildClusterClientService(littleRed)
-
-	if err := controllerutil.SetControllerReference(littleRed, svc, r.Scheme); err != nil {
-
-		return err
-
-	}
-
-	return r.createOrUpdate(ctx, svc)
-
+	return r.apply(ctx, littleRed, buildClusterClientService(littleRed))
 }
