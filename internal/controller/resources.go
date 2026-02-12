@@ -818,6 +818,14 @@ func buildRedisStatefulSetSentinel(lr *littleredv1alpha1.LittleRed) *appsv1.Stat
 		containers = append(containers, buildExporterContainer(lr))
 	}
 
+	// MinReadySeconds for Sentinel mode: allow time for Sentinel-managed failover
+	// Sentinels need to detect master is down, reach quorum, and promote a replica
+	// Default down-after-milliseconds is 30000ms, plus promotion time
+	minReadySeconds := int32(35)
+	if lr.Spec.UpdateStrategy.MinReadySeconds != nil {
+		minReadySeconds = *lr.Spec.UpdateStrategy.MinReadySeconds
+	}
+
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      statefulSetName(lr),
@@ -825,8 +833,9 @@ func buildRedisStatefulSetSentinel(lr *littleredv1alpha1.LittleRed) *appsv1.Stat
 			Labels:    labels,
 		},
 		Spec: appsv1.StatefulSetSpec{
-			Replicas:    &replicas,
-			ServiceName: replicasServiceName(lr),
+			Replicas:        &replicas,
+			ServiceName:     replicasServiceName(lr),
+			MinReadySeconds: minReadySeconds,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: redisSelectorLabels(lr),
 			},
@@ -1361,6 +1370,22 @@ func buildClusterStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSe
 		containers = append(containers, buildExporterContainer(lr))
 	}
 
+	// MinReadySeconds ensures pods are stable before next pod is restarted during rolling updates.
+	// For cluster mode with replicas, this allows time for automatic failover to complete
+	// before the next master is taken down.
+	// - cluster-node-timeout (default 15000ms) for replica to detect master is down
+	// - A few seconds for election and promotion
+	// - Buffer for operator reconciliation
+	// Total: 30 seconds is a safe default for replica mode
+	minReadySeconds := int32(0)
+	if lr.Spec.UpdateStrategy.MinReadySeconds != nil {
+		// User-specified value takes precedence
+		minReadySeconds = *lr.Spec.UpdateStrategy.MinReadySeconds
+	} else if cluster.ReplicasPerShard != nil && *cluster.ReplicasPerShard > 0 {
+		// Default for replica mode: 30 seconds
+		minReadySeconds = 30
+	}
+
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      clusterStatefulSetName(lr),
@@ -1368,8 +1393,9 @@ func buildClusterStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSe
 			Labels:    labels,
 		},
 		Spec: appsv1.StatefulSetSpec{
-			Replicas:    &replicas,
-			ServiceName: clusterHeadlessServiceName(lr),
+			Replicas:        &replicas,
+			ServiceName:     clusterHeadlessServiceName(lr),
+			MinReadySeconds: minReadySeconds,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: clusterSelectorLabels(lr),
 			},

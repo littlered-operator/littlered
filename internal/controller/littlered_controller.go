@@ -670,6 +670,7 @@ func (r *LittleRedReconciler) reconcileRedisStatefulSetSentinel(ctx context.Cont
 	}
 
 	log.Info("Updating Redis StatefulSet", "name", sts.Name)
+	mergeUnmanagedPodTemplateAnnotations(sts, existing)
 	existing.Spec = sts.Spec
 	return r.Update(ctx, existing)
 }
@@ -694,6 +695,7 @@ func (r *LittleRedReconciler) reconcileSentinelStatefulSet(ctx context.Context, 
 	}
 
 	log.Info("Updating Sentinel StatefulSet", "name", sts.Name)
+	mergeUnmanagedPodTemplateAnnotations(sts, existing)
 	existing.Spec = sts.Spec
 	return r.Update(ctx, existing)
 }
@@ -1034,7 +1036,8 @@ func (r *LittleRedReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // createOrUpdate is a simple helper to create or update an object.
-// Caution: This is a blunt tool and does not handle special cases like Service ClusterIP preservation.
+// For StatefulSets, it preserves pod template annotations not managed by the operator
+// (e.g. kubectl.kubernetes.io/restartedAt from rollout restart).
 func (r *LittleRedReconciler) createOrUpdate(ctx context.Context, obj client.Object) error {
 	key := client.ObjectKeyFromObject(obj)
 	existing := obj.DeepCopyObject().(client.Object)
@@ -1046,8 +1049,41 @@ func (r *LittleRedReconciler) createOrUpdate(ctx context.Context, obj client.Obj
 		return err
 	}
 
+	// For StatefulSets, preserve pod template annotations we don't manage.
+	// This prevents the operator from reverting kubectl rollout restart.
+	if sts, ok := obj.(*appsv1.StatefulSet); ok {
+		if existingSts, ok := existing.(*appsv1.StatefulSet); ok {
+			mergeUnmanagedPodTemplateAnnotations(sts, existingSts)
+		}
+	}
+
 	obj.SetResourceVersion(existing.GetResourceVersion())
 	return r.Update(ctx, obj)
+}
+
+// mergeUnmanagedPodTemplateAnnotations copies pod template annotations from the
+// existing StatefulSet that aren't managed by the operator. This preserves
+// annotations like kubectl.kubernetes.io/restartedAt from rollout restart.
+func mergeUnmanagedPodTemplateAnnotations(desired, existing *appsv1.StatefulSet) {
+	existingAnnotations := existing.Spec.Template.Annotations
+	if len(existingAnnotations) == 0 {
+		return
+	}
+
+	if desired.Spec.Template.Annotations == nil {
+		desired.Spec.Template.Annotations = make(map[string]string)
+	}
+
+	for k, v := range existingAnnotations {
+		// Skip annotations the operator manages
+		if strings.HasPrefix(k, "littlered.chuck-chuck-chuck.net/") {
+			continue
+		}
+		// Preserve everything else (kubectl annotations, user annotations, etc.)
+		if _, managed := desired.Spec.Template.Annotations[k]; !managed {
+			desired.Spec.Template.Annotations[k] = v
+		}
+	}
 }
 
 // getRedisPassword retrieves the Redis password from the secret if auth is enabled

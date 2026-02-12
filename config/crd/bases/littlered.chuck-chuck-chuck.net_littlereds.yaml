@@ -1871,6 +1871,18 @@ spec:
               updateStrategy:
                 description: UpdateStrategy defines how updates are rolled out
                 properties:
+                  minReadySeconds:
+                    description: |-
+                      MinReadySeconds is the minimum number of seconds for which a newly created pod should be ready
+                      without any of its containers crashing before it is considered available.
+                      For cluster mode with replicas, this should be at least 30 seconds to allow automatic failover to complete.
+                      For sentinel mode, this should be at least 35 seconds to allow sentinel-managed failover.
+                      For standalone mode, this can be 0.
+                      If not specified, defaults are applied based on mode and replica count.
+                    format: int32
+                    maximum: 300
+                    minimum: 0
+                    type: integer
                   type:
                     default: RollingUpdate
                     description: 'Type is the update strategy type: RollingUpdate

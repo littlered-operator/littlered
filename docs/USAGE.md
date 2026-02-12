@@ -608,6 +608,142 @@ spec:
 
 ---
 
+## Rolling Restarts and Updates
+
+### Overview
+
+When you update a LittleRed resource (e.g., change image version, resource limits, or configuration), the operator triggers a rolling restart of the StatefulSet. The `minReadySeconds` setting controls how long to wait after each pod becomes ready before restarting the next pod.
+
+### Why minReadySeconds Matters
+
+For Redis deployments with high availability (replicas or sentinel), restarting pods too quickly can cause:
+
+- **Cluster mode**: Multiple masters down simultaneously, losing quorum
+- **Sentinel mode**: Master restarts before sentinel detects failure and promotes a replica
+- **Data unavailability**: Clients can't reach Redis during cascading failures
+
+The `minReadySeconds` setting ensures:
+1. Pod is fully ready and healthy
+2. Failover (if needed) completes successfully
+3. Cluster stabilizes before next pod restarts
+
+### Default Behavior
+
+| Mode | Default minReadySeconds | Reason |
+|------|------------------------|--------|
+| Cluster with replicas | 30s | Allows automatic failover (cluster-node-timeout + promotion + buffer) |
+| Sentinel mode | 35s | Allows sentinel-managed failover (down-after-milliseconds + promotion) |
+| Standalone or 0-replica | 0s | No failover mechanism, immediate restart is safe |
+
+### Performing a Rolling Restart
+
+#### Trigger via kubectl
+
+```bash
+# Restart all pods in the StatefulSet
+kubectl rollout restart statefulset <name>-cluster -n <namespace>
+
+# Example for a cluster named "my-cluster"
+kubectl rollout restart statefulset my-cluster-cluster -n default
+```
+
+#### Trigger via CR Update
+
+Change any field that affects the pod template (image, resources, config):
+
+```bash
+kubectl patch littlered my-cluster -n default --type merge -p '
+spec:
+  resources:
+    requests:
+      memory: "256Mi"
+'
+```
+
+#### Monitor Rollout Status
+
+```bash
+# Watch rollout progress
+kubectl rollout status statefulset my-cluster-cluster -n default
+
+# Check pod restarts
+kubectl get pods -n default -l app.kubernetes.io/instance=my-cluster -w
+```
+
+### Customizing minReadySeconds
+
+If you need faster or slower rolling restarts, you can override the default:
+
+```yaml
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+kind: LittleRed
+metadata:
+  name: my-cluster
+spec:
+  mode: cluster
+  cluster:
+    shards: 3
+    replicasPerShard: 1
+  updateStrategy:
+    type: RollingUpdate
+    minReadySeconds: 45  # Wait 45s between pod restarts
+```
+
+**Use cases for customization:**
+
+- **Faster restarts** (e.g., `minReadySeconds: 15`): For clusters with very short cluster-node-timeout or when you've verified failover completes quickly
+- **Slower restarts** (e.g., `minReadySeconds: 60`): For large clusters with many keys where replication catch-up takes time
+- **Testing** (`minReadySeconds: 0`): For development environments where you want rapid rollouts
+
+**Valid range:** 0-300 seconds
+
+### Example: Safe Production Rolling Restart
+
+```yaml
+apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+kind: LittleRed
+metadata:
+  name: prod-cluster
+spec:
+  mode: cluster
+  cluster:
+    shards: 5
+    replicasPerShard: 2
+    clusterNodeTimeout: 15000  # 15s default
+  updateStrategy:
+    type: RollingUpdate
+    minReadySeconds: 40  # Conservative: 15s + 10s promotion + 15s buffer
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+```
+
+**Rollout timeline for this config:**
+- Pod 0 terminates, new pod 0 starts
+- New pod 0 becomes ready
+- **Wait 40 seconds** (minReadySeconds)
+- Repeat for pod 1, 2, 3, etc.
+- Total time: ~(40s × 10 pods) = 6-7 minutes for full rollout
+
+### Testing Rolling Restarts
+
+You can test rolling restart behavior with the e2e test suite:
+
+```bash
+DEBUG_ON_FAILURE=true make test-e2e-cluster-chaos
+```
+
+The `should maintain data integrity during rolling restart` test verifies:
+- 0 data corruptions
+- ≥95% read availability during rollout
+- All slots remain assigned (cluster_slots_assigned:16384)
+
+---
+
 ## Large-Scale Tuning
 
 For installations with hundreds or thousands of instances, you can tune the reconciliation frequency to reduce pressure on the Kubernetes API server and the Redis nodes.

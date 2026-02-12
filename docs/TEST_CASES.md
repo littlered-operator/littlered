@@ -133,7 +133,7 @@ These tests use the `chaos-client` to inject faults under load.
 |----|-----------|--------|-----------------|
 | CHAOS-001 | Replica Deletion under Load | ✅ | 0 Data Corruption, High availability |
 | CHAOS-002 | Master Deletion under Load | ✅ | 0 Data Corruption, Cluster recovers automatically |
-| CHAOS-003 | Rolling Restart under Load | ✅ | 0 Data Corruption, >70% availability |
+| CHAOS-003 | Rolling Restart under Load | ✅ | 0 Data Corruption, >95% availability. Uses `kubectl rollout restart` with minReadySeconds=30s |
 
 ### 5.2 Sentinel Resilience
 

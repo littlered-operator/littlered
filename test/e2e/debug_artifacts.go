@@ -124,28 +124,53 @@ func collectOperatorLogs(debugDir string) {
 		return
 	}
 
-	// Get logs since test start
-	sinceTime := testStartTime.Format(time.RFC3339)
+	// Calculate duration since test start
+	duration := time.Since(testStartTime)
+	// Round up to nearest minute and add buffer to ensure we get all logs
+	durationStr := fmt.Sprintf("%dm", int(duration.Minutes())+2)
+
+	_, _ = fmt.Fprintf(GinkgoWriter, "Fetching operator logs for pod %s (--since %s)...\n", podName, durationStr)
+
+	// Try with --since duration (more reliable than --since-time)
 	cmd = exec.Command("kubectl", "logs",
 		"-n", operatorNamespace,
 		podName,
 		"-c", "manager",
-		"--since-time", sinceTime,
-		"--timestamps")
+		"--since", durationStr,
+		"--timestamps",
+		"--tail", "10000") // Limit to last 10k lines as safety
 	logs, err := cmd.CombinedOutput()
-	if err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get operator logs: %v\n", err)
-		// Still write partial logs if available
+
+	if err != nil || len(logs) == 0 {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get operator logs with --since, trying without time filter: %v\n", err)
+		// Fallback: get all recent logs (last 1000 lines)
+		cmd = exec.Command("kubectl", "logs",
+			"-n", operatorNamespace,
+			podName,
+			"-c", "manager",
+			"--timestamps",
+			"--tail", "1000")
+		logs, err = cmd.CombinedOutput()
+		if err != nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get operator logs (fallback): %v\n", err)
+		}
 	}
 
 	logFile := filepath.Join(debugDir, "operator-logs.txt")
 	if err := os.WriteFile(logFile, logs, 0644); err != nil {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to write operator logs: %v\n", err)
+	} else {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Wrote %d bytes to %s\n", len(logs), logFile)
 	}
 }
 
 // collectCRStatus collects the YAML representation of the LittleRed CR
 func collectCRStatus(debugDir, namespace, crName string) {
+	if crName == "" {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping CR status collection (no CR name provided)\n")
+		return
+	}
+
 	_, _ = fmt.Fprintf(GinkgoWriter, "Collecting CR status for %s/%s...\n", namespace, crName)
 
 	cmd := exec.Command("kubectl", "get", "littlered", crName,
@@ -153,13 +178,15 @@ func collectCRStatus(debugDir, namespace, crName string) {
 		"-o", "yaml")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get CR status: %v\n", err)
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get CR status: %v (output: %s)\n", err, string(output))
 		return
 	}
 
 	statusFile := filepath.Join(debugDir, fmt.Sprintf("cr-%s.yaml", crName))
 	if err := os.WriteFile(statusFile, output, 0644); err != nil {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to write CR status: %v\n", err)
+	} else {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Wrote %d bytes to %s\n", len(output), statusFile)
 	}
 }
 
@@ -272,54 +299,83 @@ func collectChaosClientLogs(debugDir, namespace, chaosPodName string) {
 
 // collectClusterState collects general cluster state information
 func collectClusterState(debugDir, namespace string) {
-	_, _ = fmt.Fprintf(GinkgoWriter, "Collecting cluster state...\n")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Collecting cluster state for namespace %s...\n", namespace)
 
 	// Get all pods
 	cmd := exec.Command("kubectl", "get", "pods",
 		"-n", namespace,
 		"-o", "wide")
-	output, _ := cmd.CombinedOutput()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Warning: failed to get pods: %v\n", err)
+	}
 	_ = os.WriteFile(filepath.Join(debugDir, "pods.txt"), output, 0644)
 
 	// Get events
 	cmd = exec.Command("kubectl", "get", "events",
 		"-n", namespace,
 		"--sort-by", ".lastTimestamp")
-	output, _ = cmd.CombinedOutput()
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Warning: failed to get events: %v\n", err)
+	}
 	_ = os.WriteFile(filepath.Join(debugDir, "events.txt"), output, 0644)
 
 	// Get all LittleRed CRs
 	cmd = exec.Command("kubectl", "get", "littlered",
 		"-n", namespace,
 		"-o", "yaml")
-	output, _ = cmd.CombinedOutput()
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Warning: failed to get littlered CRs: %v\n", err)
+	}
 	_ = os.WriteFile(filepath.Join(debugDir, "littlered-crs.yaml"), output, 0644)
 
 	// Get StatefulSets
 	cmd = exec.Command("kubectl", "get", "statefulsets",
 		"-n", namespace,
 		"-o", "yaml")
-	output, _ = cmd.CombinedOutput()
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Warning: failed to get statefulsets: %v\n", err)
+	}
 	_ = os.WriteFile(filepath.Join(debugDir, "statefulsets.yaml"), output, 0644)
 
 	// Get Services
 	cmd = exec.Command("kubectl", "get", "services",
 		"-n", namespace,
 		"-o", "yaml")
-	output, _ = cmd.CombinedOutput()
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Warning: failed to get services: %v\n", err)
+	}
 	_ = os.WriteFile(filepath.Join(debugDir, "services.yaml"), output, 0644)
+
+	_, _ = fmt.Fprintf(GinkgoWriter, "Cluster state collection complete\n")
 }
 
 // writeTestMetadata writes test execution metadata
 func writeTestMetadata(debugDir, namespace, crName, chaosPodName string) {
 	spec := CurrentSpecReport()
+
+	// Get failure message and node text
+	failureMsg := spec.FailureMessage()
+	if failureMsg == "" {
+		failureMsg = "(no failure message)"
+	}
+
+	failureLocation := spec.FailureLocation().String()
+	if failureLocation == "" {
+		failureLocation = "(no failure location)"
+	}
+
 	metadata := fmt.Sprintf(`Test Failure Debug Artifacts
 ==============================
 
 Test: %s
 Full Path: %s
 Failed: %v
-Failure: %s
+State: %s
 
 Namespace: %s
 CR Name: %s
@@ -327,12 +383,16 @@ Chaos Pod: %s
 
 Test Start Time: %s
 Collection Time: %s
-Duration: %v
+Test Duration: %v
+Time Since Test Start: %v
 
 Failure Location:
 %s
 
 Failure Message:
+%s
+
+Stack Trace:
 %s
 `,
 		spec.LeafNodeText,
@@ -345,10 +405,14 @@ Failure Message:
 		testStartTime.Format(time.RFC3339),
 		time.Now().Format(time.RFC3339),
 		spec.RunTime,
-		spec.FailureLocation().String(),
-		spec.FailureMessage(),
+		time.Since(testStartTime),
+		failureLocation,
+		failureMsg,
+		spec.Failure.Location.FullStackTrace,
 	)
 
 	metadataFile := filepath.Join(debugDir, "test-metadata.txt")
-	_ = os.WriteFile(metadataFile, []byte(metadata), 0644)
+	if err := os.WriteFile(metadataFile, []byte(metadata), 0644); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to write test metadata: %v\n", err)
+	}
 }

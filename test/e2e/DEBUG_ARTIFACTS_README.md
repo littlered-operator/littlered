@@ -16,7 +16,8 @@ This directory contains:
 
 ### 1. Operator Logs
 - **File**: `operator-logs.txt`
-- **Content**: Operator logs since the test started (filtered by `--since-time`)
+- **Content**: Operator logs since the test started (filtered by `--since` duration)
+- **Fallback**: If time-filtered logs fail, collects last 1000 lines
 - **Use**: Trace operator's decisions and actions during the test
 
 ### 2. CR Status
@@ -120,9 +121,19 @@ Most of the time, this works automatically without any manual labeling.
 
 ### Missing logs
 
-- Operator logs: Check that operator is running and accessible
-- Pod logs: Pods may have been deleted before collection (timing issue)
-- Chaos logs: Chaos pod may have completed and been removed
+**Empty operator logs**:
+- Check GinkgoWriter output for error messages
+- Operator pod might have restarted (check previous logs manually)
+- Time filter might have issues (fallback to `--tail 1000` should work)
+- Verify operator namespace is correct: `kubectl get pods -n littlered-system`
+
+**Missing pod logs**:
+- Pods may have been deleted before collection (timing issue)
+- Check if namespace still exists: `kubectl get ns <namespace>`
+
+**Missing chaos logs**:
+- Chaos pod may have completed and been removed
+- Check pod status: `kubectl get pods -n <namespace> | grep chaos`
 
 ### Permissions
 

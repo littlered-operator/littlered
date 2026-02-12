@@ -278,11 +278,13 @@ spec:
 spec:
   updateStrategy:
     type: RollingUpdate         # Or Recreate
+    minReadySeconds: 30         # Wait time before next pod restart (optional)
 ```
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `updateStrategy.type` | `string` | No | `RollingUpdate` | `RollingUpdate` or `Recreate` |
+| `updateStrategy.minReadySeconds` | `int32` | No | Mode-dependent | Minimum seconds a pod must be ready before the next pod is restarted. **Cluster mode with replicas**: defaults to 30s to allow automatic failover. **Sentinel mode**: defaults to 35s for sentinel-managed failover. **Standalone/0-replica**: defaults to 0s. Range: 0-300. |
 
 ### 2.9 Service Configuration
 

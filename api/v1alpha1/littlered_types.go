@@ -298,6 +298,17 @@ type UpdateStrategySpec struct {
 	// +kubebuilder:default=RollingUpdate
 	// +optional
 	Type string `json:"type,omitempty"`
+
+	// MinReadySeconds is the minimum number of seconds for which a newly created pod should be ready
+	// without any of its containers crashing before it is considered available.
+	// For cluster mode with replicas, this should be at least 30 seconds to allow automatic failover to complete.
+	// For sentinel mode, this should be at least 35 seconds to allow sentinel-managed failover.
+	// For standalone mode, this can be 0.
+	// If not specified, defaults are applied based on mode and replica count.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=300
+	// +optional
+	MinReadySeconds *int32 `json:"minReadySeconds,omitempty"`
 }
 
 // ServiceSpec defines Service configuration

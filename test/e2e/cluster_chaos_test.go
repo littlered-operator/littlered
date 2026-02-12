@@ -315,11 +315,15 @@ spec:
 			By("waiting 10 seconds for baseline traffic")
 			time.Sleep(10 * time.Second)
 
-			By("triggering rolling restart via annotation")
-			cmd = exec.Command("kubectl", "annotate", "littlered", crName,
-				"-n", testNamespace, fmt.Sprintf("chaos-test=%d", time.Now().Unix()), "--overwrite")
+			By("triggering rolling restart via kubectl rollout restart")
+			stsName := crName + "-cluster"
+			cmd = exec.Command("kubectl", "rollout", "restart", "statefulset", stsName,
+				"-n", testNamespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for rollout to start")
+			time.Sleep(5 * time.Second)
 
 			err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
 			Expect(err).NotTo(HaveOccurred())
