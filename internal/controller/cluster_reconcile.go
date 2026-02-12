@@ -288,71 +288,45 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 	if len(missingShardIndices) > 0 {
 		log.Info("Detected missing shards", "count", len(missingShardIndices), "indices", missingShardIndices)
 
-		// Find suitable masters
-		// Strategy:
-		// 1. Try to assign to the "intended" master (pod index == shard index).
-		// 2. If intended master is not available/healthy, assign to ANY healthy master.
-
+		// Find the intended master for each missing shard (strict: pod N owns shard N).
+		// Never assign a shard to a different master — that causes split-ownership
+		// and "Slot already busy" errors. If the intended master isn't available, wait.
 		intendedMasters := make(map[int]*NodeState) // shardIdx -> Node
-		var anyHealthyMaster *NodeState
-
 		for i := 0; i < shards; i++ {
 			podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
 			if node, ok := gt.Nodes[podName]; ok && node.Role == "master" {
 				intendedMasters[i] = node
-				anyHealthyMaster = node
 			}
 		}
 
-		// Fallback: search all nodes for any master
-		if anyHealthyMaster == nil {
-			for _, n := range gt.Nodes {
-				if n.Role == "master" {
-					anyHealthyMaster = n
-					break
-				}
+		ops := 0
+		for _, shardIdx := range missingShardIndices {
+			targetNode := intendedMasters[shardIdx]
+			if targetNode == nil {
+				log.Info("Intended master for shard not available, waiting",
+					"shardIdx", shardIdx,
+					"expectedPod", fmt.Sprintf("%s-cluster-%d", littleRed.Name, shardIdx))
+				continue
+			}
+
+			targetRange := expectedRanges[shardIdx]
+			addr := fmt.Sprintf("%s:%d", targetNode.PodIP, littleredv1alpha1.RedisPort)
+
+			log.Info("Assigning missing shard to master",
+				"shardIdx", shardIdx,
+				"range", fmt.Sprintf("%d-%d", targetRange.Start, targetRange.End),
+				"target", targetNode.PodName)
+
+			slots, _ := redisclient.ExpandSlotRange(redisclient.FormatSlotRange(targetRange.Start, targetRange.End))
+			if err := clusterClient.ClusterAddSlots(ctx, addr, slots...); err != nil {
+				log.Error(err, "Failed to assign shard", "shardIdx", shardIdx)
+			} else {
+				ops++
 			}
 		}
 
-		if anyHealthyMaster != nil {
-			ops := 0
-			for _, shardIdx := range missingShardIndices {
-				targetNode := intendedMasters[shardIdx]
-
-				// If intended master is missing or already has slots (and we want to balance? No, simplest first),
-				// actually if it's missing the shard, and it's a master, we can give it to them.
-				// But check if intended master is overloaded? For now, stick to simple logic:
-				// If intended master exists, give it to them.
-				// If not, give to any master.
-
-				if targetNode == nil {
-					targetNode = anyHealthyMaster
-				}
-
-				if targetNode != nil {
-					targetRange := expectedRanges[shardIdx]
-					addr := fmt.Sprintf("%s:%d", targetNode.PodIP, littleredv1alpha1.RedisPort)
-
-					log.Info("Assigning missing shard to master",
-						"shardIdx", shardIdx,
-						"range", fmt.Sprintf("%d-%d", targetRange.Start, targetRange.End),
-						"target", targetNode.PodName)
-
-					// We must expand the range to individual slots for the command
-					slots, _ := redisclient.ExpandSlotRange(redisclient.FormatSlotRange(targetRange.Start, targetRange.End))
-					if err := clusterClient.ClusterAddSlots(ctx, addr, slots...); err != nil {
-						log.Error(err, "Failed to assign shard", "shardIdx", shardIdx)
-					} else {
-						ops++
-					}
-				}
-			}
-
-			if ops > 0 {
-				return ctrl.Result{RequeueAfter: fast}, nil
-			}
-		} else {
-			log.Info("No healthy masters available to accept missing shards")
+		if ops > 0 {
+			return ctrl.Result{RequeueAfter: fast}, nil
 		}
 	}
 
@@ -633,19 +607,6 @@ func (r *LittleRedReconciler) gatherGroundTruth(ctx context.Context, littleRed *
 
 			if !isFailed {
 				known = append(known, knownNode.NodeID)
-			} else {
-				if _, exists := nodeIDtoPod[knownNode.NodeID]; !exists {
-					found := false
-					for _, ghost := range gt.GhostNodes {
-						if ghost == knownNode.NodeID {
-							found = true
-							break
-						}
-					}
-					if !found {
-						gt.GhostNodes = append(gt.GhostNodes, knownNode.NodeID)
-					}
-				}
 			}
 
 			if knownNode.NodeID == n.NodeID {
@@ -658,6 +619,19 @@ func (r *LittleRedReconciler) gatherGroundTruth(ctx context.Context, littleRed *
 			}
 		}
 		adj[n.NodeID] = known
+	}
+
+	// Detect ghosts: any NodeID in the mesh that has no corresponding K8s pod.
+	// This uses Kubernetes as the source of truth rather than relying on gossip
+	// failure detection, which can lag behind pod deletions by 15s+ (cluster-node-timeout).
+	ghostSet := make(map[string]bool)
+	for nodeID := range gt.AllNodeIDs {
+		if _, hasPod := nodeIDtoPod[nodeID]; !hasPod {
+			ghostSet[nodeID] = true
+		}
+	}
+	for ghostID := range ghostSet {
+		gt.GhostNodes = append(gt.GhostNodes, ghostID)
 	}
 
 	if gt.ClusterState == "" {

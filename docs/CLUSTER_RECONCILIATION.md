@@ -33,7 +33,7 @@ Before any repair action, the operator gathers "ground truth" by querying every 
 - **Cluster state**: Whether any node reports `cluster_state:ok`
 - **Slot coverage**: Total slots assigned across the cluster
 - **Partitions**: Groups of nodes that can see each other (computed via graph traversal)
-- **Ghost nodes**: NodeIDs that appear in cluster topology but have no corresponding K8s pod (marked `fail`/`noaddr`)
+- **Ghost nodes**: NodeIDs that appear in cluster topology but have no corresponding K8s pod (detected via K8s pod list, not gossip flags)
 - **Orphaned replicas**: Replicas whose master NodeID doesn't exist in the live node set
 
 ## Failure Scenarios
@@ -112,6 +112,58 @@ Reconcile #2:
 **Current behavior**: The operator detects orphaned slots (`TotalSlots < 16384`) but cannot recover the data. In 0-replica mode, it can reassign slots to empty masters, but the data is lost.
 
 This scenario requires human intervention or restoration from backup.
+
+### Scenario 4: Master Failure in 0-Replica Mode
+
+**Situation**: A master dies in a cluster with no replicas (`replicasPerShard: 0`). There is no replica to promote — the shard's data is lost and its slots must be reassigned to the replacement pod.
+
+**What happens**:
+
+1. The old master's NodeID becomes a ghost (in the mesh, no K8s pod)
+2. Kubernetes replaces the pod with a new instance (new NodeID, new IP)
+3. The ghost still owns the slots in the cluster's view
+
+**Repair sequence**:
+
+```
+Reconcile #1:
+  - HasGhostNodes() = true (old NodeID has no K8s pod)
+  → CLUSTER FORGET (remove ghost from all live nodes)
+
+Reconcile #2:
+  - HasPartitions() = true (new pod is isolated)
+  - HasOrphanedReplicas() = false (0-replica mode, no replicas)
+  → CLUSTER MEET (heal partition)
+
+Reconcile #3:
+  - Missing shard detected (ghost's slots are now unowned)
+  - Intended master (pod N for shard N) is available
+  → CLUSTER ADDSLOTS (assign slots to intended master)
+
+Reconcile #4:
+  - Cluster healthy
+```
+
+**Key insight**: In 0-replica mode, there is no failover to wait for. The critical step is detecting and FORGETting the ghost *before* attempting to MEET the new pod or assign slots. If the ghost isn't forgotten first, ADDSLOTS fails with "Slot already busy" because the ghost still owns those slots at a higher configEpoch.
+
+**Design decisions for 0-replica mode**:
+
+- **Strict shard mapping**: Shard N is always assigned to pod N. The operator never assigns a shard to a different master as a "fallback." If pod N isn't ready, it waits.
+- **No replication repair**: Step 4 (assigning empty masters as replicas) is skipped entirely when `replicasPerShard == 0`.
+
+## Ghost Detection: Kubernetes as Source of Truth
+
+The operator uses the Kubernetes pod list — not Redis gossip — to determine which nodes are ghosts. Any NodeID present in the Redis cluster mesh that has no corresponding K8s pod is a ghost, regardless of its gossip status.
+
+This is critical because gossip-based failure detection (`FAIL` flag) can lag behind pod deletions by 15 seconds or more (`cluster-node-timeout`). During this window, a "healthy ghost" problem occurs:
+
+1. Pod is deleted — K8s knows it's gone immediately
+2. Redis gossip still considers the old NodeID healthy (no FAIL flag yet)
+3. The ghost still "owns" its slots in the cluster's view
+4. Any attempt to ADDSLOTS for those ranges fails with "Slot already busy"
+5. If a new pod is MEETed into the cluster before the ghost is forgotten, the ghost's higher configEpoch wins slot conflicts, and the new pod can be demoted to a replica of the ghost by Redis's internal conflict resolution
+
+By using K8s as the source of truth, the operator can FORGET ghosts immediately — before gossip catches up, and before the new pod joins the cluster.
 
 ## Why We Wait for Gossip-Based Failover
 
@@ -238,8 +290,9 @@ These can be configured via the LittleRed spec.
 
 | Failure Type | Detection | Recovery Mechanism |
 |--------------|-----------|-------------------|
-| Single master failure | Orphaned replica, ghost node | Wait for gossip failover, then MEET/FORGET/REPLICATE |
+| Single master failure (with replica) | Orphaned replica, ghost node | Wait for gossip failover, then MEET/FORGET/REPLICATE |
+| Master failure (0-replica mode) | Ghost node (K8s truth), missing shard | FORGET ghost, MEET new pod, ADDSLOTS to intended master |
 | Quorum loss (replicas survive) | `votingMasters <= shards/2` | Force takeover (`CLUSTER FAILOVER TAKEOVER`) |
 | Shard loss (no replica) | Orphaned slots, missing shard | Manual intervention required |
 | Network partition | Multiple partition groups | `CLUSTER MEET` after failovers complete |
-| Ghost nodes | NodeID with no K8s pod | `CLUSTER FORGET` after topology stable |
+| Ghost nodes | NodeID with no K8s pod | `CLUSTER FORGET` (K8s-based detection, no gossip dependency) |
