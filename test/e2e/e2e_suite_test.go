@@ -23,7 +23,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -112,11 +114,58 @@ var _ = BeforeSuite(func() {
 	}
 })
 
+var _ = BeforeEach(func() {
+	// Track when each test starts for log filtering
+	testStartTime = time.Now()
+})
+
 var _ = AfterEach(func() {
 	if CurrentSpecReport().Failed() {
 		suiteFailed = true
+
+		// Collect debug artifacts if enabled
+		if debugOnFailure {
+			// Try to extract namespace and CR name from the spec labels
+			// This is best-effort - if we can't find them, we'll just collect what we can
+			namespace, crName, chaosPod := extractTestContext()
+			CollectDebugArtifacts(namespace, crName, chaosPod)
+		}
 	}
 })
+
+// extractTestContext attempts to extract namespace and CR name from the current spec context
+func extractTestContext() (namespace, crName, chaosPod string) {
+	// Check spec labels for context information
+	labels := CurrentSpecReport().Labels()
+	for _, label := range labels {
+		if strings.HasPrefix(label, "namespace:") {
+			namespace = strings.TrimPrefix(label, "namespace:")
+		} else if strings.HasPrefix(label, "cr:") {
+			crName = strings.TrimPrefix(label, "cr:")
+		} else if strings.HasPrefix(label, "chaos:") {
+			chaosPod = strings.TrimPrefix(label, "chaos:")
+		}
+	}
+
+	// If we didn't find namespace in labels, try to infer from the spec path
+	if namespace == "" {
+		fullText := CurrentSpecReport().FullText()
+		if strings.Contains(fullText, "Cluster Mode") {
+			namespace = "littlered-cluster-func-test"
+			if strings.Contains(fullText, "Chaos") {
+				namespace = "littlered-cluster-chaos-test"
+			}
+		} else if strings.Contains(fullText, "Sentinel") || strings.Contains(fullText, "Standalone") {
+			namespace = "littlered-sentinel-chaos-test"
+		} else if strings.Contains(fullText, "Failover") {
+			namespace = "littlered-failover-test"
+		} else {
+			namespace = "littlered-test"
+		}
+	}
+
+	return namespace, crName, chaosPod
+}
 
 var _ = AfterSuite(func() {
 	if debugOnFailure && suiteOrSpecFailed() {

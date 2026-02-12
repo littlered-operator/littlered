@@ -1,0 +1,354 @@
+//go:build e2e
+// +build e2e
+
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package e2e
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+
+	"github.com/tanne3/littlered-operator/test/utils"
+)
+
+var (
+	// testStartTime tracks when the current test started
+	testStartTime time.Time
+)
+
+// CollectDebugArtifacts collects logs and state information for debugging failed tests.
+// It creates a timestamped directory with all relevant information.
+//
+// Parameters:
+//   - testNamespace: The Kubernetes namespace where the test resources exist
+//   - crName: The name of the LittleRed CR being tested
+//   - chaosPodName: Optional chaos client pod name (empty string if not a chaos test)
+func CollectDebugArtifacts(testNamespace, crName, chaosPodName string) {
+	if !debugOnFailure {
+		return
+	}
+
+	// Generate a unique directory name
+	timestamp := time.Now().Format("20060102-150405")
+	specText := CurrentSpecReport().LeafNodeText
+	// Sanitize the spec text for use in a directory name
+	sanitized := sanitizeForFilename(specText)
+	debugDir := fmt.Sprintf("./debug-artifacts-%s-%s", timestamp, sanitized)
+
+	// Create the debug directory
+	if err := os.MkdirAll(debugDir, 0755); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to create debug directory %s: %v\n", debugDir, err)
+		return
+	}
+
+	_, _ = fmt.Fprintf(GinkgoWriter, "\n=== Collecting debug artifacts to %s ===\n", debugDir)
+
+	// Collect operator logs
+	collectOperatorLogs(debugDir)
+
+	// Collect LittleRed CR status
+	if crName != "" {
+		collectCRStatus(debugDir, testNamespace, crName)
+	}
+
+	// Collect pod logs (Redis/Valkey/Sentinel)
+	collectPodLogs(debugDir, testNamespace, crName)
+
+	// Collect chaos client logs if applicable
+	if chaosPodName != "" {
+		collectChaosClientLogs(debugDir, testNamespace, chaosPodName)
+	}
+
+	// Collect general cluster state
+	collectClusterState(debugDir, testNamespace)
+
+	// Write test metadata
+	writeTestMetadata(debugDir, testNamespace, crName, chaosPodName)
+
+	_, _ = fmt.Fprintf(GinkgoWriter, "=== Debug artifacts collected to %s ===\n\n", debugDir)
+}
+
+// sanitizeForFilename removes characters that are problematic in filenames
+func sanitizeForFilename(s string) string {
+	// Replace spaces and special chars with hyphens
+	re := regexp.MustCompile(`[^a-zA-Z0-9]+`)
+	sanitized := re.ReplaceAllString(s, "-")
+	// Trim hyphens from start/end
+	sanitized = strings.Trim(sanitized, "-")
+	// Limit length
+	if len(sanitized) > 80 {
+		sanitized = sanitized[:80]
+	}
+	return sanitized
+}
+
+// collectOperatorLogs collects logs from the operator pod since test start
+func collectOperatorLogs(debugDir string) {
+	_, _ = fmt.Fprintf(GinkgoWriter, "Collecting operator logs...\n")
+
+	// Find operator pod
+	cmd := exec.Command("kubectl", "get", "pods",
+		"-n", operatorNamespace,
+		"-l", "control-plane=controller-manager",
+		"-o", "jsonpath={.items[0].metadata.name}")
+	podName, err := utils.Run(cmd)
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to find operator pod: %v\n", err)
+		return
+	}
+
+	if podName == "" {
+		_, _ = fmt.Fprintf(GinkgoWriter, "No operator pod found\n")
+		return
+	}
+
+	// Get logs since test start
+	sinceTime := testStartTime.Format(time.RFC3339)
+	cmd = exec.Command("kubectl", "logs",
+		"-n", operatorNamespace,
+		podName,
+		"-c", "manager",
+		"--since-time", sinceTime,
+		"--timestamps")
+	logs, err := cmd.CombinedOutput()
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get operator logs: %v\n", err)
+		// Still write partial logs if available
+	}
+
+	logFile := filepath.Join(debugDir, "operator-logs.txt")
+	if err := os.WriteFile(logFile, logs, 0644); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to write operator logs: %v\n", err)
+	}
+}
+
+// collectCRStatus collects the YAML representation of the LittleRed CR
+func collectCRStatus(debugDir, namespace, crName string) {
+	_, _ = fmt.Fprintf(GinkgoWriter, "Collecting CR status for %s/%s...\n", namespace, crName)
+
+	cmd := exec.Command("kubectl", "get", "littlered", crName,
+		"-n", namespace,
+		"-o", "yaml")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get CR status: %v\n", err)
+		return
+	}
+
+	statusFile := filepath.Join(debugDir, fmt.Sprintf("cr-%s.yaml", crName))
+	if err := os.WriteFile(statusFile, output, 0644); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to write CR status: %v\n", err)
+	}
+}
+
+// collectPodLogs collects logs from all pods in the namespace
+func collectPodLogs(debugDir, namespace, crName string) {
+	_, _ = fmt.Fprintf(GinkgoWriter, "Collecting pod logs from namespace %s...\n", namespace)
+
+	// Get all pods in the namespace
+	cmd := exec.Command("kubectl", "get", "pods",
+		"-n", namespace,
+		"-o", "jsonpath={.items[*].metadata.name}")
+	output, err := utils.Run(cmd)
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to list pods: %v\n", err)
+		return
+	}
+
+	podNames := strings.Fields(output)
+	for _, podName := range podNames {
+		// Skip chaos client pods (they're collected separately)
+		if strings.Contains(podName, "chaos-client") {
+			continue
+		}
+
+		collectSinglePodLogs(debugDir, namespace, podName)
+	}
+}
+
+// collectSinglePodLogs collects logs from a single pod (all containers)
+func collectSinglePodLogs(debugDir, namespace, podName string) {
+	// Get container names
+	cmd := exec.Command("kubectl", "get", "pod", podName,
+		"-n", namespace,
+		"-o", "jsonpath={.spec.containers[*].name}")
+	output, err := utils.Run(cmd)
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get containers for pod %s: %v\n", podName, err)
+		return
+	}
+
+	containers := strings.Fields(output)
+	for _, container := range containers {
+		cmd = exec.Command("kubectl", "logs",
+			"-n", namespace,
+			podName,
+			"-c", container,
+			"--tail", "1000",
+			"--timestamps")
+		logs, err := cmd.CombinedOutput()
+		if err != nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get logs for %s/%s: %v\n", podName, container, err)
+			continue
+		}
+
+		logFile := filepath.Join(debugDir, fmt.Sprintf("pod-%s-%s.log", podName, container))
+		if err := os.WriteFile(logFile, logs, 0644); err != nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Failed to write logs for %s/%s: %v\n", podName, container, err)
+		}
+	}
+
+	// Also collect previous logs if pod restarted
+	cmd = exec.Command("kubectl", "logs",
+		"-n", namespace,
+		podName,
+		"--previous",
+		"--tail", "1000",
+		"--timestamps")
+	logs, err := cmd.CombinedOutput()
+	if err == nil && len(logs) > 0 {
+		logFile := filepath.Join(debugDir, fmt.Sprintf("pod-%s-previous.log", podName))
+		_ = os.WriteFile(logFile, logs, 0644)
+	}
+}
+
+// collectChaosClientLogs collects logs and metrics from chaos client pod
+func collectChaosClientLogs(debugDir, namespace, chaosPodName string) {
+	if chaosPodName == "" {
+		return
+	}
+
+	_, _ = fmt.Fprintf(GinkgoWriter, "Collecting chaos client logs for %s...\n", chaosPodName)
+
+	// Get chaos client logs
+	cmd := exec.Command("kubectl", "logs",
+		"-n", namespace,
+		chaosPodName,
+		"--timestamps")
+	logs, err := cmd.CombinedOutput()
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get chaos client logs: %v\n", err)
+	} else {
+		logFile := filepath.Join(debugDir, fmt.Sprintf("chaos-client-%s.log", chaosPodName))
+		if err := os.WriteFile(logFile, logs, 0644); err != nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Failed to write chaos client logs: %v\n", err)
+		}
+	}
+
+	// Try to get metrics JSON if available
+	cmd = exec.Command("kubectl", "exec",
+		"-n", namespace,
+		chaosPodName,
+		"--",
+		"cat", "/tmp/metrics.json")
+	metrics, err := cmd.CombinedOutput()
+	if err == nil && len(metrics) > 0 {
+		metricsFile := filepath.Join(debugDir, fmt.Sprintf("chaos-metrics-%s.json", chaosPodName))
+		_ = os.WriteFile(metricsFile, metrics, 0644)
+	}
+}
+
+// collectClusterState collects general cluster state information
+func collectClusterState(debugDir, namespace string) {
+	_, _ = fmt.Fprintf(GinkgoWriter, "Collecting cluster state...\n")
+
+	// Get all pods
+	cmd := exec.Command("kubectl", "get", "pods",
+		"-n", namespace,
+		"-o", "wide")
+	output, _ := cmd.CombinedOutput()
+	_ = os.WriteFile(filepath.Join(debugDir, "pods.txt"), output, 0644)
+
+	// Get events
+	cmd = exec.Command("kubectl", "get", "events",
+		"-n", namespace,
+		"--sort-by", ".lastTimestamp")
+	output, _ = cmd.CombinedOutput()
+	_ = os.WriteFile(filepath.Join(debugDir, "events.txt"), output, 0644)
+
+	// Get all LittleRed CRs
+	cmd = exec.Command("kubectl", "get", "littlered",
+		"-n", namespace,
+		"-o", "yaml")
+	output, _ = cmd.CombinedOutput()
+	_ = os.WriteFile(filepath.Join(debugDir, "littlered-crs.yaml"), output, 0644)
+
+	// Get StatefulSets
+	cmd = exec.Command("kubectl", "get", "statefulsets",
+		"-n", namespace,
+		"-o", "yaml")
+	output, _ = cmd.CombinedOutput()
+	_ = os.WriteFile(filepath.Join(debugDir, "statefulsets.yaml"), output, 0644)
+
+	// Get Services
+	cmd = exec.Command("kubectl", "get", "services",
+		"-n", namespace,
+		"-o", "yaml")
+	output, _ = cmd.CombinedOutput()
+	_ = os.WriteFile(filepath.Join(debugDir, "services.yaml"), output, 0644)
+}
+
+// writeTestMetadata writes test execution metadata
+func writeTestMetadata(debugDir, namespace, crName, chaosPodName string) {
+	spec := CurrentSpecReport()
+	metadata := fmt.Sprintf(`Test Failure Debug Artifacts
+==============================
+
+Test: %s
+Full Path: %s
+Failed: %v
+Failure: %s
+
+Namespace: %s
+CR Name: %s
+Chaos Pod: %s
+
+Test Start Time: %s
+Collection Time: %s
+Duration: %v
+
+Failure Location:
+%s
+
+Failure Message:
+%s
+`,
+		spec.LeafNodeText,
+		spec.FullText(),
+		spec.Failed(),
+		spec.State.String(),
+		namespace,
+		crName,
+		chaosPodName,
+		testStartTime.Format(time.RFC3339),
+		time.Now().Format(time.RFC3339),
+		spec.RunTime,
+		spec.FailureLocation().String(),
+		spec.FailureMessage(),
+	)
+
+	metadataFile := filepath.Join(debugDir, "test-metadata.txt")
+	_ = os.WriteFile(metadataFile, []byte(metadata), 0644)
+}
