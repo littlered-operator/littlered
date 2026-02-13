@@ -165,14 +165,17 @@ spec:
 			By("waiting 10 seconds for baseline traffic")
 			time.Sleep(10 * time.Second)
 
-			By("deleting master pod-0")
-			cmd = exec.Command("kubectl", "delete", "pod", crName+"-cluster-0",
+			victimPod := crName + "-cluster-0"
+			victimNodeID, _ := getPodNodeID(testNamespace, victimPod)
+
+			By(fmt.Sprintf("deleting master pod %s", victimPod))
+			cmd = exec.Command("kubectl", "delete", "pod", victimPod,
 				"-n", testNamespace, "--grace-period=0", "--force")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Wait for cluster to detect failure via pod-1
-			waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-1", 6)
+			// Wait for cluster to detect failure via pod-1 (expecting ID gone or fail flag)
+			waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-1", 6, []string{victimNodeID})
 
 			err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
 			Expect(err).NotTo(HaveOccurred())
@@ -235,14 +238,17 @@ spec:
 			By("waiting 10 seconds for baseline traffic")
 			time.Sleep(10 * time.Second)
 
-			By("deleting replica pod-3")
-			cmd = exec.Command("kubectl", "delete", "pod", crName+"-cluster-3",
+			victimPod := crName + "-cluster-3"
+			victimNodeID, _ := getPodNodeID(testNamespace, victimPod)
+
+			By(fmt.Sprintf("deleting replica pod %s", victimPod))
+			cmd = exec.Command("kubectl", "delete", "pod", victimPod,
 				"-n", testNamespace, "--grace-period=0", "--force")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Wait for cluster to detect failure via pod-0
-			waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-0", 6)
+			waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-0", 6, []string{victimNodeID})
 
 			err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
 			Expect(err).NotTo(HaveOccurred())
@@ -404,6 +410,7 @@ spec:
 				Expect(err).NotTo(HaveOccurred())
 
 				victims := make([]string, 0)
+				victimNodeIDs := make([]string, 0)
 				for _, group := range shardGroups {
 					if len(group) < 2 {
 						continue
@@ -411,12 +418,22 @@ spec:
 					// 50% chance to kill a pod in this shard
 					if rand.Intn(2) == 0 {
 						victimIdx := rand.Intn(len(group))
-						victims = append(victims, group[victimIdx])
+						vPod := group[victimIdx]
+						victims = append(victims, vPod)
+						vID, _ := getPodNodeID(testNamespace, vPod)
+						if vID != "" {
+							victimNodeIDs = append(victimNodeIDs, vID)
+						}
 					}
 				}
 
 				if len(victims) == 0 {
-					victims = append(victims, shardGroups[0][0])
+					vPod := shardGroups[0][0]
+					victims = append(victims, vPod)
+					vID, _ := getPodNodeID(testNamespace, vPod)
+					if vID != "" {
+						victimNodeIDs = append(victimNodeIDs, vID)
+					}
 				}
 
 				By(fmt.Sprintf("Deleting victims: %v", victims))
@@ -442,7 +459,7 @@ spec:
 					}
 				}
 				if survivor != "" {
-					waitForClusterFailureDetected(testNamespace, crName, survivor, 6)
+					waitForClusterFailureDetected(testNamespace, crName, survivor, 6, victimNodeIDs)
 				}
 
 				By("Waiting for cluster to recover")

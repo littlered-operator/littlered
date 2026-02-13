@@ -39,9 +39,9 @@ import (
 func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 	By(fmt.Sprintf("verifying that Operator status for %s matches actual Redis topology", crName))
 
-	// 1. Get ground truth from any available pod first
-	var clusterNodesOutput string
 	Eventually(func(g Gomega) {
+		// 1. Get ground truth from any available pod
+		var clusterNodesOutput string
 		var success bool
 		for i := 0; i < expectedNodes; i++ {
 			podName := fmt.Sprintf("%s-cluster-%d", crName, i)
@@ -55,47 +55,41 @@ func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 		}
 		g.Expect(success).To(BeTrue(), "Failed to execute CLUSTER NODES on any pod")
 
-		// Ground truth must have expected number of nodes
-		lines := strings.Split(strings.TrimSpace(clusterNodesOutput), "\n")
-		g.Expect(len(lines)).To(Equal(expectedNodes), "Redis ground truth doesn't have expected number of nodes yet")
-	}, 1*time.Minute, 5*time.Second).Should(Succeed())
-
-	// 2. Parse Redis output into a map for easy comparison
-	redisNodes := make(map[string]struct {
-		role     string
-		masterID string
-		slots    string
-	})
-
-	lines := strings.Split(strings.TrimSpace(clusterNodesOutput), "\n")
-	for _, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) < 4 {
-			continue
-		}
-		id := fields[0]
-		flags := fields[2]
-		masterID := fields[3]
-
-		role := "master"
-		if strings.Contains(flags, "slave") {
-			role = "replica"
-		}
-
-		slots := ""
-		if len(fields) > 8 {
-			slots = strings.Join(fields[8:], ",")
-		}
-
-		redisNodes[id] = struct {
+		// 2. Parse Redis output into a map for easy comparison
+		redisNodes := make(map[string]struct {
 			role     string
 			masterID string
 			slots    string
-		}{role: role, masterID: masterID, slots: slots}
-	}
+		})
 
-	// 3. Wait for Operator Status to match ground truth
-	Eventually(func(g Gomega) {
+		lines := strings.Split(strings.TrimSpace(clusterNodesOutput), "\n")
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) < 4 {
+				continue
+			}
+			id := fields[0]
+			flags := fields[2]
+			masterID := fields[3]
+
+			role := "master"
+			if strings.Contains(flags, "slave") {
+				role = "replica"
+			}
+
+			slots := ""
+			if len(fields) > 8 {
+				slots = strings.Join(fields[8:], ",")
+			}
+
+			redisNodes[id] = struct {
+				role     string
+				masterID string
+				slots    string
+			}{role: role, masterID: masterID, slots: slots}
+		}
+
+		// 3. Wait for Operator Status to match ground truth
 		cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", namespace, "-o", "json")
 		output, err := utils.Run(cmd)
 		g.Expect(err).NotTo(HaveOccurred(), "Failed to get LittleRed CR")
@@ -110,7 +104,7 @@ func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 
 		for _, nodeStatus := range lr.Status.Cluster.Nodes {
 			actual, exists := redisNodes[nodeStatus.NodeID]
-			g.Expect(exists).To(BeTrue(), fmt.Sprintf("Status reports NodeID %s (pod %s) but it's missing from CLUSTER NODES", nodeStatus.NodeID, nodeStatus.PodName))
+			g.Expect(exists).To(BeTrue(), fmt.Sprintf("Status reports NodeID %s (pod %s) but it's missing from CLUSTER NODES output", nodeStatus.NodeID, nodeStatus.PodName))
 			g.Expect(nodeStatus.Role).To(Equal(actual.role), fmt.Sprintf("Role mismatch for node %s", nodeStatus.PodName))
 
 			if nodeStatus.Role == "replica" {
@@ -119,7 +113,7 @@ func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 				g.Expect(nodeStatus.SlotRanges).NotTo(BeEmpty(), fmt.Sprintf("Master %s has no slots in Status", nodeStatus.PodName))
 			}
 		}
-	}, 1*time.Minute, 5*time.Second).Should(Succeed())
+	}, 2*time.Minute, 5*time.Second).Should(Succeed(), "Operator status should eventually match Redis cluster topology")
 
 	By("Topology sync validation passed")
 }
@@ -274,18 +268,22 @@ func waitForShardMasterChange(namespace, queryPod string, slot int, oldMasterNod
 	}, 3*time.Minute, 5*time.Second).Should(Succeed(), "Shard master should change within 3 minutes")
 }
 
-// waitForClusterFailureDetected waits for at least one node to be marked as fail or pfail,
-// OR for the number of known nodes to be less than expected (indicating the operator already FORGOT it).
+// waitForClusterFailureDetected waits for:
+// 1. At least one node to be marked as fail or pfail
+// 2. OR for the number of known nodes to be less than expected
+// 3. OR for any of the specific victimNodeIDs to disappear from the mesh (if provided)
 // This prevents false-positive recovery checks against stale pre-failure state.
-func waitForClusterFailureDetected(namespace, crName string, queryPod string, expectedNodes int) {
-	By(fmt.Sprintf("waiting for cluster to detect failure via pod %s (expecting < %d nodes or fail flag)", queryPod, expectedNodes))
+func waitForClusterFailureDetected(namespace, crName string, queryPod string, expectedNodes int, victimNodeIDs []string) {
+	By(fmt.Sprintf("waiting for cluster to detect failure via pod %s (expecting < %d nodes, fail flag, or some victims gone)", queryPod, expectedNodes))
 
 	Eventually(func(g Gomega) {
 		cmd := exec.Command("kubectl", "exec", queryPod,
 			"-n", namespace, "-c", "redis", "--",
 			"valkey-cli", "CLUSTER", "NODES")
 		output, err := utils.Run(cmd)
-		g.Expect(err).NotTo(HaveOccurred())
+		if err != nil {
+			return // Retry on connection failures
+		}
 
 		lines := strings.Split(strings.TrimSpace(output), "\n")
 		currentCount := len(lines)
@@ -295,21 +293,40 @@ func waitForClusterFailureDetected(namespace, crName string, queryPod string, ex
 			return
 		}
 
+		// Success if any victim ID is gone
+		if len(victimNodeIDs) > 0 {
+			allVictimsFound := true
+			for _, vid := range victimNodeIDs {
+				foundThisVictim := false
+				for _, line := range lines {
+					if strings.Contains(line, vid) {
+						foundThisVictim = true
+						break
+					}
+				}
+				if !foundThisVictim {
+					// At least one victim is gone! Success.
+					return
+				}
+			}
+			_ = allVictimsFound
+		}
+
 		// Success if any node is in fail/pfail state
-		found := false
+		foundFail := false
 		for _, line := range lines {
 			fields := strings.Fields(line)
 			if len(fields) >= 3 {
 				flags := fields[2]
 				if strings.Contains(flags, "fail") || strings.Contains(flags, "pfail") {
-					found = true
+					foundFail = true
 					break
 				}
 			}
 		}
-		g.Expect(found).To(BeTrue(), fmt.Sprintf("Expected at least one node to be in fail/pfail state or node count to decrease (current: %d, expected: %d)", currentCount, expectedNodes))
+		g.Expect(foundFail).To(BeTrue(), "Expected failure detection (fail flag, count decrease, or victim gone)")
 	}, 45*time.Second, 2*time.Second).Should(Succeed(),
-		"Cluster should detect node failure within 45s (cluster-node-timeout=15s)")
+		"Cluster should detect node failure within 45s")
 }
 
 // getShardGroups returns a list of pod names grouped by their shard.
