@@ -491,13 +491,8 @@ func (r *LittleRedReconciler) reconcileMasterService(ctx context.Context, little
 }
 
 // getMasterPodName queries Sentinel to find the current master pod name.
-// Returns a fallback pod-0 name if Sentinel query fails.
-func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, podList *corev1.PodList) string {
-	log := logf.FromContext(ctx)
-
-	// Default to pod-0 as initial master
-	fallbackName := fmt.Sprintf("%s-redis-0", littleRed.Name)
-
+// Returns an error if Sentinel query fails.
+func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, podList *corev1.PodList) (string, error) {
 	// Try to get real master from Sentinel
 	sentinelAddr := fmt.Sprintf("%s-sentinel.%s.svc:%d",
 		littleRed.Name, littleRed.Namespace, littleredv1alpha1.SentinelPort)
@@ -520,8 +515,7 @@ func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *l
 	sc := redisclient.NewSentinelClient([]string{sentinelAddr}, password)
 	masterInfo, err := sc.GetMaster(checkCtx)
 	if err != nil {
-		log.Info("Failed to get master from Sentinel (using fallback)", "error", err)
-		return fallbackName
+		return "", fmt.Errorf("failed to get master from Sentinel: %w", err)
 	}
 
 	// masterInfo.IP might be an IP address OR a FQDN (if announce-hostnames is enabled)
@@ -536,12 +530,11 @@ func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *l
 	// Find pod with matching IP or Name
 	for _, pod := range podList.Items {
 		if pod.Status.PodIP == reportedIdentity || pod.Name == reportedPodName {
-			return pod.Name
+			return pod.Name, nil
 		}
 	}
 
-	log.Info("Sentinel reported master identity not found in pod list", "identity", reportedIdentity)
-	return fallbackName
+	return "", fmt.Errorf("sentinel reported master identity %q not found in pod list", reportedIdentity)
 }
 
 // updateMasterLabel updates the role labels on Redis pods based on current master
@@ -562,7 +555,20 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 		return nil // No pods yet
 	}
 
-	masterPodName := r.getMasterPodName(ctx, littleRed, podList)
+	masterPodName, err := r.getMasterPodName(ctx, littleRed, podList)
+	if err != nil {
+		// If we can't get the master from Sentinel, we have two cases:
+		// 1. Initial bootstrap: no master info in status, use pod-0 as a starting point.
+		// 2. Existing cluster: keep current labels to avoid churn during failover.
+		if littleRed.Status.Master != nil && littleRed.Status.Master.PodName != "" {
+			log.Info("Sentinel unreachable or master unknown, skipping label update to avoid churn during failover", "error", err)
+			return nil
+		}
+
+		// Initial bootstrap case
+		masterPodName = fmt.Sprintf("%s-redis-0", littleRed.Name)
+		log.Info("Sentinel unreachable during bootstrap, defaulting to initial master", "pod", masterPodName)
+	}
 
 	// Log master change if detected
 	currentMaster := ""
@@ -667,7 +673,16 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRe
 	}
 	_ = r.List(ctx, podList, listOpts...)
 
-	masterPodName := r.getMasterPodName(ctx, littleRed, podList)
+	masterPodName, err := r.getMasterPodName(ctx, littleRed, podList)
+	if err != nil {
+		// If we can't determine master, keep the current one from status if available
+		if littleRed.Status.Master != nil && littleRed.Status.Master.PodName != "" {
+			masterPodName = littleRed.Status.Master.PodName
+		} else {
+			// Bootstrap fallback
+			masterPodName = fmt.Sprintf("%s-redis-0", littleRed.Name)
+		}
+	}
 	littleRed.Status.Master.PodName = masterPodName
 
 	// Try to get master pod IP

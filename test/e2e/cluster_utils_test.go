@@ -122,10 +122,8 @@ func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 func verifySentinelTopologySync(namespace, crName string, expectedSentinels, expectedReplicas int) {
 	By(fmt.Sprintf("verifying that Operator status for %s matches actual Sentinel topology", crName))
 
-	var actualMasterIP string
 	Eventually(func(g Gomega) {
-		// 1. Get ground truth from Sentinel
-		// We try sentinel-0
+		// 1. Get ground truth from Sentinel (try sentinel-0)
 		sentinelPod := fmt.Sprintf("%s-sentinel-0", crName)
 		cmd := exec.Command("kubectl", "exec", sentinelPod, "-n", namespace, "-c", "sentinel", "--", "valkey-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
 		sentinelOutput, err := utils.Run(cmd)
@@ -138,13 +136,13 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 			sentinelData[lines[i]] = lines[i+1]
 		}
 
-		actualMasterIP = sentinelData["ip"]
-		
+		actualMasterIP := sentinelData["ip"]
+
 		// 1b. Get replicas info to count only healthy ones
 		cmd = exec.Command("kubectl", "exec", sentinelPod, "-n", namespace, "-c", "sentinel", "--", "valkey-cli", "-p", "26379", "SENTINEL", "replicas", "mymaster")
 		replicasOutput, err := utils.Run(cmd)
 		g.Expect(err).NotTo(HaveOccurred(), "Failed to execute SENTINEL replicas on sentinel pod")
-		
+
 		// Parse replicas output
 		actualNumUpReplicas := 0
 		replicaBlocks := strings.Split(strings.TrimSpace(replicasOutput), "name\n")
@@ -158,13 +156,11 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 			}
 		}
 
-		g.Expect(actualNumUpReplicas).To(Equal(expectedReplicas), 
+		g.Expect(actualNumUpReplicas).To(Equal(expectedReplicas),
 			fmt.Sprintf("Sentinel reports %d up replicas, but expected %d", actualNumUpReplicas, expectedReplicas))
-	}, 1*time.Minute, 5*time.Second).Should(Succeed())
 
-	// 2. Wait for Operator Status to match ground truth
-	Eventually(func(g Gomega) {
-		cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", namespace, "-o", "json")
+		// 2. Get Operator Status
+		cmd = exec.Command("kubectl", "get", "littlered", crName, "-n", namespace, "-o", "json")
 		output, err := utils.Run(cmd)
 		g.Expect(err).NotTo(HaveOccurred(), "Failed to get LittleRed CR")
 
@@ -173,12 +169,12 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 		g.Expect(err).NotTo(HaveOccurred(), "Failed to parse LittleRed JSON")
 
 		g.Expect(lr.Status.Master).NotTo(BeNil(), "CR Status.Master is nil")
-		
+
 		// Sentinel might report IP or FQDN depending on configuration and resolution
 		// If it's a hostname, we check if it contains the pod name
 		if net.ParseIP(actualMasterIP) == nil {
 			expectedHostnamePrefix := fmt.Sprintf("%s.", lr.Status.Master.PodName)
-			g.Expect(actualMasterIP).To(HavePrefix(expectedHostnamePrefix), 
+			g.Expect(actualMasterIP).To(HavePrefix(expectedHostnamePrefix),
 				fmt.Sprintf("Master address mismatch: Sentinel reported %s, but Status has pod %s", actualMasterIP, lr.Status.Master.PodName))
 		} else {
 			g.Expect(lr.Status.Master.IP).To(Equal(actualMasterIP), "Master IP mismatch in Status")
@@ -194,14 +190,14 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 		// We search among redis pods of this instance
 		cmd = exec.Command("kubectl", "get", "pods", "-n", namespace, "-l", "app.kubernetes.io/instance="+crName+",app.kubernetes.io/component=redis", "-o", "json")
 		podsOutput, _ := utils.Run(cmd)
-		
+
 		// If actualMasterIP is a hostname, extract pod name
 		searchString := actualMasterIP
 		if net.ParseIP(actualMasterIP) == nil && strings.Contains(actualMasterIP, ".") {
 			searchString = strings.Split(actualMasterIP, ".")[0]
 		}
 		g.Expect(podsOutput).To(ContainSubstring(searchString), fmt.Sprintf("Master address/pod %s not found in redis pods", searchString))
-	}, 1*time.Minute, 5*time.Second).Should(Succeed())
+	}, 2*time.Minute, 5*time.Second).Should(Succeed(), "Operator status should eventually match Sentinel topology")
 
 	By("Sentinel topology sync validation passed")
 }
