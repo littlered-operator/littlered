@@ -139,18 +139,25 @@ spec:
 		})
 
 		It("should recreate pod after deletion", func() {
-			By("Test ID: STAN-013 - deleting the pod")
-			cmd := exec.Command("kubectl", "delete", "pod", crName+"-redis-0",
-				"-n", testNamespace)
-			_, err := utils.Run(cmd)
+			By("Test ID: STAN-013 - recording initial RunID")
+			oldRunID, err := getPodRunID(testNamespace, crName+"-redis-0")
 			Expect(err).NotTo(HaveOccurred())
 
-			By("waiting for pod to be recreated and ready")
+			By("deleting the pod")
+			cmd := exec.Command("kubectl", "delete", "pod", crName+"-redis-0",
+				"-n", testNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for pod to be recreated and ready with a new RunID")
 			Eventually(func(g Gomega) {
+				newRunID, err := getPodRunID(testNamespace, crName+"-redis-0")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(newRunID).NotTo(Equal(oldRunID), "Pod should have a new RunID after recreation")
+				
 				cmd := exec.Command("kubectl", "get", "pod", crName+"-redis-0",
 					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
+				output, _ := utils.Run(cmd)
 				g.Expect(output).To(Equal("Running"))
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
@@ -802,8 +809,9 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				newMaster = strings.TrimSpace(output)
 				g.Expect(newMaster).NotTo(BeEmpty())
-				// New master should be different from original (since original pod was deleted)
-				// Note: The pod might be recreated with same name, so we verify via sentinel
+				// New master should be different from original (since original pod was deleted
+				// and one of the surviving replicas must have been promoted)
+				g.Expect(newMaster).NotTo(Equal(originalMaster), "New master must be a different pod")
 			}, 90*time.Second, 3*time.Second).Should(Succeed())
 			_, _ = fmt.Fprintf(GinkgoWriter, "New master: %s\n", newMaster)
 

@@ -96,6 +96,8 @@ spec:
 				"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
 			master1, _ := utils.Run(cmd)
 			master1 = strings.TrimSpace(master1)
+			
+			oldRunID1, _ := getPodRunID(testNamespace, master1)
 
 			cmd = exec.Command("kubectl", "delete", "pod", master1,
 				"-n", testNamespace, "--grace-period=0", "--force")
@@ -107,18 +109,38 @@ spec:
 			// --- Failover 2 ---
 			By("identifying and killing second master")
 			var master2 string
+			var oldRunID2 string
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "littlered", crName,
 					"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
 				out, _ := utils.Run(cmd)
 				master2 = strings.TrimSpace(out)
-				g.Expect(master2).NotTo(Equal(master1))
+				g.Expect(master2).NotTo(Equal(master1), "Master should have changed")
 				g.Expect(master2).NotTo(BeEmpty())
+				
+				runID, err := getPodRunID(testNamespace, master2)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(runID).NotTo(Equal(oldRunID1), "New master must have a different RunID")
+				oldRunID2 = runID
 			}, 1*time.Minute, 2*time.Second).Should(Succeed())
 
 			cmd = exec.Command("kubectl", "delete", "pod", master2,
 				"-n", testNamespace, "--grace-period=0", "--force")
 			_, _ = utils.Run(cmd)
+			
+			By("verifying third master eventually emerges with different RunID")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
+				out, _ := utils.Run(cmd)
+				master3 := strings.TrimSpace(out)
+				g.Expect(master3).NotTo(Equal(master2), "Master should have changed again")
+				g.Expect(master3).NotTo(BeEmpty())
+				
+				runID, err := getPodRunID(testNamespace, master3)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(runID).NotTo(Equal(oldRunID2), "Third master must have a different RunID")
+			}, 1*time.Minute, 2*time.Second).Should(Succeed())
 
 			err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
 			Expect(err).NotTo(HaveOccurred())
@@ -176,10 +198,20 @@ spec:
 			By("waiting 10 seconds for baseline traffic")
 			time.Sleep(10 * time.Second)
 
+			By("recording initial RunID")
+			oldRunID, _ := getPodRunID(testNamespace, crName+"-redis-0")
+
 			By("deleting the standalone pod")
 			cmd = exec.Command("kubectl", "delete", "pod", crName+"-redis-0",
 				"-n", testNamespace, "--grace-period=0", "--force")
 			_, _ = utils.Run(cmd)
+			
+			By("verifying pod restarts with different RunID")
+			Eventually(func(g Gomega) {
+				newRunID, err := getPodRunID(testNamespace, crName+"-redis-0")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(newRunID).NotTo(Equal(oldRunID), "Pod should have a different RunID after restart")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 			err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
 			Expect(err).NotTo(HaveOccurred())

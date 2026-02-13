@@ -79,20 +79,23 @@ spec:
 
 		It("should update master role label immediately via Sentinel event", func() {
 			startTime := time.Now().Add(-5 * time.Second)
-			By("Step 1: Identify initial master")
+			By("Step 1: Identify initial master and its RunID")
 			cmd := exec.Command("kubectl", "get", "littlered", crName,
 				"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
 			initialMaster, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			initialMaster = strings.TrimSpace(initialMaster)
+			
+			oldRunID, err := getPodRunID(testNamespace, initialMaster)
+			Expect(err).NotTo(HaveOccurred())
 
-			By("Step 2: Kill the Master")
+			By(fmt.Sprintf("Step 2: Kill the Master %s", initialMaster))
 			cmd = exec.Command("kubectl", "delete", "pod", initialMaster,
 				"-n", testNamespace, "--grace-period=0", "--force")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Step 3: Wait for new master label")
+			By("Step 3: Wait for new master label and verify different RunID")
 			start := time.Now()
 			Eventually(func(g Gomega) {
 				// We check the K8s label directly to see how fast the Operator reacted
@@ -101,10 +104,21 @@ spec:
 
 				// Must contain the CR name (belong to this test) and NOT be the old master
 				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
-					return
+					// Found a different pod name, but let's be double sure via RunID
+					newMaster := strings.TrimSpace(out)
+					// Handle multiple pods returned (shouldn't happen with strict labels but possible during transition)
+					for _, p := range strings.Fields(newMaster) {
+						if strings.Contains(p, crName) && p != initialMaster {
+							newRunID, err := getPodRunID(testNamespace, p)
+							if err == nil {
+								g.Expect(newRunID).NotTo(Equal(oldRunID), "New master must have a different RunID")
+								return
+							}
+						}
+					}
 				}
 				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))),
-					fmt.Sprintf("New master label not yet applied. Current masters found: %q", out))
+					fmt.Sprintf("New master label not yet applied or still points to old master. Current masters found: %q", out))
 			}, 45*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label")
 
 			duration := time.Since(start)
@@ -167,21 +181,29 @@ spec:
 
 		It("should eventually update master label via periodic polling", func() {
 			startTime := time.Now().Add(-5 * time.Second)
-			By("Step 1: Identify initial master")
+			By("Step 1: Identify initial master and its RunID")
 			cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
 			initialMaster, _ := utils.Run(cmd)
 			initialMaster = strings.TrimSpace(initialMaster)
+			
+			oldRunID, _ := getPodRunID(testNamespace, initialMaster)
 
-			By("Step 2: Kill the Master")
+			By(fmt.Sprintf("Step 2: Kill the Master %s", initialMaster))
 			exec.Command("kubectl", "delete", "pod", initialMaster, "-n", testNamespace, "--grace-period=0", "--force").Run()
 
-			By("Step 3: Wait for new master label")
+			By("Step 3: Wait for new master label and verify different RunID")
 			start := time.Now()
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
 				out, _ := utils.Run(cmd)
 				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
-					return
+					// Check RunID
+					newMaster := strings.Fields(strings.TrimSpace(out))[0]
+					newRunID, err := getPodRunID(testNamespace, newMaster)
+					if err == nil {
+						g.Expect(newRunID).NotTo(Equal(oldRunID), "New master must have a different RunID")
+						return
+					}
 				}
 				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))),
 					fmt.Sprintf("New master label not yet applied. Current masters found: %q", out))
@@ -239,20 +261,28 @@ spec:
 		})
 
 		It("should recover correctly with both mechanisms active", func() {
-			By("Step 1: Identify initial master")
+			By("Step 1: Identify initial master and its RunID")
 			cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
 			initialMaster, _ := utils.Run(cmd)
 			initialMaster = strings.TrimSpace(initialMaster)
+			
+			oldRunID, _ := getPodRunID(testNamespace, initialMaster)
 
-			By("Step 2: Kill the Master")
+			By(fmt.Sprintf("Step 2: Kill the Master %s", initialMaster))
 			exec.Command("kubectl", "delete", "pod", initialMaster, "-n", testNamespace, "--grace-period=0", "--force").Run()
 
-			By("Step 3: Wait for new master label")
+			By("Step 3: Wait for new master label and verify different RunID")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
 				out, _ := utils.Run(cmd)
 				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
-					return
+					// Check RunID
+					newMaster := strings.Fields(strings.TrimSpace(out))[0]
+					newRunID, err := getPodRunID(testNamespace, newMaster)
+					if err == nil {
+						g.Expect(newRunID).NotTo(Equal(oldRunID), "New master must have a different RunID")
+						return
+					}
 				}
 				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))),
 					fmt.Sprintf("New master label not yet applied. Current masters found: %q", out))
@@ -301,10 +331,12 @@ spec:
 		})
 
 		It("should still perform failover after a sentinel pod is restarted", func() {
-			By("Step 1: Identify initial master and a sentinel pod")
+			By("Step 1: Identify initial master and its RunID")
 			cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
 			initialMaster, _ := utils.Run(cmd)
 			initialMaster = strings.TrimSpace(initialMaster)
+			
+			oldRunID, _ := getPodRunID(testNamespace, initialMaster)
 
 			sentinelPod := fmt.Sprintf("%s-sentinel-0", crName)
 
@@ -322,12 +354,18 @@ spec:
 			By("Step 4: Kill the Redis Master")
 			exec.Command("kubectl", "delete", "pod", initialMaster, "-n", testNamespace, "--grace-period=0", "--force").Run()
 
-			By("Step 5: Verify failover still happens (proving monitor re-subscribed)")
+			By("Step 5: Verify failover still happens and RunID changed")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
 				out, _ := utils.Run(cmd)
 				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
-					return
+					// Check RunID
+					newMaster := strings.Fields(strings.TrimSpace(out))[0]
+					newRunID, err := getPodRunID(testNamespace, newMaster)
+					if err == nil {
+						g.Expect(newRunID).NotTo(Equal(oldRunID), "New master must have a different RunID")
+						return
+					}
 				}
 				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))),
 					fmt.Sprintf("Failover failed after sentinel restart. Current masters: %q", out))

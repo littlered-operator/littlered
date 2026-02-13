@@ -216,6 +216,24 @@ func getPodNodeID(namespace, podName string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// getPodRunID returns the current Redis RunID of a pod.
+// This is useful for Standalone and Sentinel modes where NodeID is not available.
+func getPodRunID(namespace, podName string) (string, error) {
+	cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "valkey-cli", "INFO", "server")
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return "", err
+	}
+	
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "run_id:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "run_id:")), nil
+		}
+	}
+	return "", fmt.Errorf("run_id not found in INFO server output")
+}
+
 // waitForShardMasterChange waits until the master NodeID for a specific shard (identified by a slot)
 // changes from the oldMasterNodeID. This is a robust way to verify failover or healing.
 func waitForShardMasterChange(namespace, queryPod string, slot int, oldMasterNodeID string) {
