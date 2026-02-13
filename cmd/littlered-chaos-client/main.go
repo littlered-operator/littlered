@@ -34,6 +34,7 @@ func main() {
 		addrs            string
 		password         string
 		clusterMode      bool
+		sentinelMaster   string
 		writeRate        time.Duration
 		operationTimeout time.Duration
 		keyPrefix        string
@@ -44,6 +45,7 @@ func main() {
 	flag.StringVar(&addrs, "addrs", "localhost:6379", "Comma-separated Redis addresses")
 	flag.StringVar(&password, "password", "", "Redis password")
 	flag.BoolVar(&clusterMode, "cluster", false, "Enable Redis Cluster mode")
+	flag.StringVar(&sentinelMaster, "sentinel-master", "", "Sentinel master name (enables Sentinel mode)")
 	flag.DurationVar(&writeRate, "write-rate", 100*time.Millisecond, "Interval between writes")
 	flag.DurationVar(&operationTimeout, "timeout", 500*time.Millisecond, "Timeout per operation")
 	flag.StringVar(&keyPrefix, "prefix", "chaos", "Key prefix")
@@ -59,6 +61,9 @@ func main() {
 	fmt.Printf("Chaos Test Client Starting\n")
 	fmt.Printf("  Addresses: %v\n", addrList)
 	fmt.Printf("  Cluster mode: %v\n", clusterMode)
+	if sentinelMaster != "" {
+		fmt.Printf("  Sentinel master: %s\n", sentinelMaster)
+	}
 	fmt.Printf("  Write rate: %v\n", writeRate)
 	fmt.Printf("  Operation timeout: %v\n", operationTimeout)
 	fmt.Printf("  Key prefix: %s\n", keyPrefix)
@@ -73,6 +78,7 @@ func main() {
 		Addrs:            addrList,
 		Password:         password,
 		ClusterMode:      clusterMode,
+		SentinelMaster:   sentinelMaster,
 		WriteRate:        writeRate,
 		OperationTimeout: operationTimeout,
 		KeyPrefix:        keyPrefix,

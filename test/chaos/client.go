@@ -89,7 +89,7 @@ func (m MetricsSnapshot) String() string {
 
 // Config holds test client configuration
 type Config struct {
-	// Addrs is the list of Redis addresses (single for standalone/sentinel, multiple for cluster)
+	// Addrs is the list of Redis addresses (single for standalone, multiple for cluster/sentinel)
 	Addrs []string
 
 	// Password for Redis authentication (optional)
@@ -97,6 +97,9 @@ type Config struct {
 
 	// ClusterMode enables Redis Cluster client
 	ClusterMode bool
+
+	// SentinelMaster name (if provided, enables Sentinel mode)
+	SentinelMaster string
 
 	// WriteRate is the interval between write attempts (default 100ms = 10/sec)
 	WriteRate time.Duration
@@ -146,6 +149,15 @@ func NewTestClient(cfg Config) (*TestClient, error) {
 			ReadTimeout:  cfg.OperationTimeout,
 			WriteTimeout: cfg.OperationTimeout,
 			DialTimeout:  cfg.OperationTimeout,
+		})
+	} else if cfg.SentinelMaster != "" {
+		client = redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:    cfg.SentinelMaster,
+			SentinelAddrs: cfg.Addrs,
+			Password:      cfg.Password,
+			ReadTimeout:   cfg.OperationTimeout,
+			WriteTimeout:  cfg.OperationTimeout,
+			DialTimeout:   cfg.OperationTimeout,
 		})
 	} else {
 		addr := "localhost:6379"

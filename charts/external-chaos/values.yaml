@@ -1,0 +1,46 @@
+# Image configuration for the chaos client
+image:
+  repository: ghcr.io/tanne3/littlered-chaos-client
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Target Redis/Valkey configuration
+target:
+  # Hostname or IP of the Redis instance (or sentinels)
+  host: "redis-service"
+  # Port (typically 6379 for standalone/cluster, 26379 for sentinel)
+  port: 6379
+  # Mode: standalone, sentinel, or cluster
+  mode: standalone
+  # For sentinel mode, the master name (e.g. "mymaster")
+  sentinelMaster: ""
+  # Optional password authentication
+  password: ""
+  # Existing secret name containing 'password' key
+  existingSecret: ""
+
+# Chaos test parameters
+chaos:
+  # Key prefix for test data
+  prefix: "chaos"
+  # Test duration (e.g. 5m, 1h, 0 for infinite)
+  duration: "1m"
+  # Interval between write attempts (e.g. 100ms for 10 ops/sec)
+  writeRate: "100ms"
+  # Timeout per operation
+  timeout: "500ms"
+  # Interval between status log outputs
+  statusInterval: "10s"
+
+# Resource limits for the chaos client pod
+resources:
+  limits:
+    cpu: 200m
+    memory: 128Mi
+  requests:
+    cpu: 100m
+    memory: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

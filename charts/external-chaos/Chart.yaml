@@ -1,0 +1,6 @@
+apiVersion: v2
+name: external-chaos
+description: A Helm chart to run littlered-chaos-client against an external Redis/Valkey instance
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

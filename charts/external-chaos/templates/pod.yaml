@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "external-chaos.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "external-chaos.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  restartPolicy: Never
+  containers:
+    - name: chaos-client
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      args:
+        - "-addrs={{ .Values.target.host }}:{{ .Values.target.port }}"
+        {{- if eq .Values.target.mode "cluster" }}
+        - "-cluster"
+        {{- end }}
+        {{- if and (eq .Values.target.mode "sentinel") .Values.target.sentinelMaster }}
+        - "-sentinel-master={{ .Values.target.sentinelMaster }}"
+        {{- end }}
+        - "-prefix={{ .Values.chaos.prefix }}"
+        - "-duration={{ .Values.chaos.duration }}"
+        - "-write-rate={{ .Values.chaos.writeRate }}"
+        - "-timeout={{ .Values.chaos.timeout }}"
+        - "-status-interval={{ .Values.chaos.statusInterval }}"
+        {{- if .Values.target.password }}
+        - "-password={{ .Values.target.password }}"
+        {{- else if .Values.target.existingSecret }}
+        - "-password=$(REDIS_PASSWORD)"
+        {{- end }}
+      {{- if .Values.target.existingSecret }}
+      env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.target.existingSecret }}
+              key: password
+      {{- end }}
+      resources:
+        {{- toYaml .Values.resources | nindent 8 }}
+  {{- with .Values.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.affinity }}
+  affinity:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
