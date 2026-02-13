@@ -211,6 +211,45 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 
 	By("Sentinel topology sync validation passed")
 }
+
+// waitForClusterFailureDetected waits for at least one node to be marked as fail or pfail,
+// OR for the number of known nodes to be less than expected (indicating the operator already FORGOT it).
+// This prevents false-positive recovery checks against stale pre-failure state.
+func waitForClusterFailureDetected(namespace, crName string, queryPod string, expectedNodes int) {
+	By(fmt.Sprintf("waiting for cluster to detect failure via pod %s (expecting < %d nodes or fail flag)", queryPod, expectedNodes))
+
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "exec", queryPod,
+			"-n", namespace, "-c", "redis", "--",
+			"valkey-cli", "CLUSTER", "NODES")
+		output, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		lines := strings.Split(strings.TrimSpace(output), "\n")
+		currentCount := len(lines)
+
+		// Success if count decreased (Operator already healed)
+		if currentCount < expectedNodes {
+			return
+		}
+
+		// Success if any node is in fail/pfail state
+		found := false
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) >= 3 {
+				flags := fields[2]
+				if strings.Contains(flags, "fail") || strings.Contains(flags, "pfail") {
+					found = true
+					break
+				}
+			}
+		}
+		g.Expect(found).To(BeTrue(), fmt.Sprintf("Expected at least one node to be in fail/pfail state or node count to decrease (current: %d, expected: %d)", currentCount, expectedNodes))
+	}, 45*time.Second, 2*time.Second).Should(Succeed(),
+		"Cluster should detect node failure within 45s (cluster-node-timeout=15s)")
+}
+
 // getShardGroups returns a list of pod names grouped by their shard.
 func getShardGroups(namespace, crName string, totalNodes int) ([][]string, error) {
 	nodeIDToPodName := make(map[string]string)

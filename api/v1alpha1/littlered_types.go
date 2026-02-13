@@ -408,6 +408,14 @@ type ClusterSpec struct {
 	// +kubebuilder:default=15000
 	// +optional
 	ClusterNodeTimeout int `json:"clusterNodeTimeout,omitempty"`
+
+	// FailoverGracePeriod is additional time (in seconds) beyond cluster-node-timeout
+	// to wait for natural gossip-based failover before the operator force-promotes
+	// a stuck orphaned replica. Default: 15 seconds.
+	// Total timeout = clusterNodeTimeout + failoverGracePeriod.
+	// +kubebuilder:default=15
+	// +optional
+	FailoverGracePeriod int `json:"failoverGracePeriod,omitempty"`
 }
 
 // LittleRedPhase represents the current phase of the LittleRed resource
@@ -527,6 +535,22 @@ type ClusterStatusInfo struct {
 
 	// LastBootstrap timestamp
 	LastBootstrap *metav1.Time `json:"lastBootstrap,omitempty"`
+
+	// OrphanedReplicas tracks replicas whose master is gone, for timeout-based force-promotion
+	// +optional
+	OrphanedReplicas []OrphanedReplicaInfo `json:"orphanedReplicas,omitempty"`
+}
+
+// OrphanedReplicaInfo tracks an orphaned replica for timeout-based recovery
+type OrphanedReplicaInfo struct {
+	// PodName of the orphaned replica
+	PodName string `json:"podName"`
+	// NodeID of the orphaned replica
+	NodeID string `json:"nodeId"`
+	// MasterNodeID that this replica is orphaned from
+	MasterNodeID string `json:"masterNodeId"`
+	// DetectedAt is when this orphan was first detected
+	DetectedAt metav1.Time `json:"detectedAt"`
 }
 
 // ClusterNodeState tracks a cluster node's identity (replaces nodes.conf)

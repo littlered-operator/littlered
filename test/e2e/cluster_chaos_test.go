@@ -171,6 +171,9 @@ spec:
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
+			// Wait for cluster to detect failure via pod-1
+			waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-1", 6)
+
 			err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -237,6 +240,9 @@ spec:
 				"-n", testNamespace, "--grace-period=0", "--force")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
+
+			// Wait for cluster to detect failure via pod-0
+			waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-0", 6)
 
 			err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
 			Expect(err).NotTo(HaveOccurred())
@@ -418,6 +424,26 @@ spec:
 				cmd := exec.Command("kubectl", args...)
 				_, err = utils.Run(cmd)
 				Expect(err).NotTo(HaveOccurred())
+
+				// Wait for cluster to detect failure via any survivor
+				survivor := ""
+				allPods := []string{
+					crName + "-cluster-0", crName + "-cluster-1", crName + "-cluster-2",
+					crName + "-cluster-3", crName + "-cluster-4", crName + "-cluster-5",
+				}
+				victimMap := make(map[string]bool)
+				for _, v := range victims {
+					victimMap[v] = true
+				}
+				for _, p := range allPods {
+					if !victimMap[p] {
+						survivor = p
+						break
+					}
+				}
+				if survivor != "" {
+					waitForClusterFailureDetected(testNamespace, crName, survivor, 6)
+				}
 
 				By("Waiting for cluster to recover")
 				Eventually(func(g Gomega) {

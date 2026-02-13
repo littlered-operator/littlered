@@ -172,13 +172,99 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 
 	// 1. Heal Partitions (CLUSTER MEET)
 	if gt.HasPartitions() {
-		// If any replica is orphaned (no master or points to a non-existent node),
-		// wait for failover to complete before issuing CLUSTER MEET.
-		// Premature MEET breaks failover quorum because the new node can't vote
-		// for replica promotion (it doesn't know the master-replica relationship).
-		if gt.HasOrphanedReplicas() {
-			log.Info("Waiting for failover to complete before healing partition",
-				"reason", "orphaned replica detected")
+		// Check for orphaned replicas whose master is a ghost.
+		// Allow natural failover for a grace period, then force-promote if stuck.
+		gracePeriod := 15 // default
+		if littleRed.Spec.Cluster != nil && littleRed.Spec.Cluster.FailoverGracePeriod > 0 {
+			gracePeriod = littleRed.Spec.Cluster.FailoverGracePeriod
+		}
+		orphanTimeout := time.Duration(littleRed.Spec.Cluster.ClusterNodeTimeout)*time.Millisecond +
+			time.Duration(gracePeriod)*time.Second
+
+		// Build lookup sets
+		liveNodes := make(map[string]bool)
+		for _, n := range gt.Nodes {
+			liveNodes[n.NodeID] = true
+		}
+		ghostSet := make(map[string]bool)
+		for _, g := range gt.GhostNodes {
+			ghostSet[g] = true
+		}
+
+		// Reconcile orphan tracking: detect new orphans, check timeouts on existing ones
+		now := metav1.Now()
+		existingOrphans := make(map[string]*littleredv1alpha1.OrphanedReplicaInfo)
+		if littleRed.Status.Cluster != nil {
+			for i := range littleRed.Status.Cluster.OrphanedReplicas {
+				o := &littleRed.Status.Cluster.OrphanedReplicas[i]
+				existingOrphans[o.PodName] = o
+			}
+		}
+
+		var currentOrphans []littleredv1alpha1.OrphanedReplicaInfo
+		hasBlockingOrphans := false
+		promotedCount := 0
+
+		for _, node := range gt.Nodes {
+			if node.Role != "replica" {
+				continue
+			}
+			if node.MasterNodeID == "" || node.MasterNodeID == "-" || liveNodes[node.MasterNodeID] {
+				continue
+			}
+			if !ghostSet[node.MasterNodeID] {
+				continue // Master unknown — might be in transition
+			}
+
+			// This is an orphaned replica whose master is a ghost
+			orphanInfo, tracked := existingOrphans[node.PodName]
+			if !tracked {
+				// New orphan — start tracking
+				orphanInfo = &littleredv1alpha1.OrphanedReplicaInfo{
+					PodName:      node.PodName,
+					NodeID:       node.NodeID,
+					MasterNodeID: node.MasterNodeID,
+					DetectedAt:   now,
+				}
+			}
+
+			age := now.Time.Sub(orphanInfo.DetectedAt.Time)
+			if age >= orphanTimeout {
+				// Timeout exceeded — force-promote
+				log.Info("Force-promoting stuck orphan replica",
+					"pod", node.PodName, "orphanAge", age, "timeout", orphanTimeout)
+				addr := fmt.Sprintf("%s:%d", node.PodIP, littleredv1alpha1.RedisPort)
+				if err := clusterClient.ClusterFailoverTakeover(ctx, addr); err != nil {
+					log.Error(err, "Failed to force takeover", "pod", node.PodName)
+				} else {
+					promotedCount++
+				}
+			} else {
+				// Still within grace period — track and wait
+				log.Info("Waiting for natural failover",
+					"pod", node.PodName, "orphanAge", age, "timeout", orphanTimeout)
+				currentOrphans = append(currentOrphans, *orphanInfo)
+				hasBlockingOrphans = true
+			}
+		}
+
+		// Persist orphan tracking (removes resolved orphans, adds new ones)
+		if littleRed.Status.Cluster == nil {
+			littleRed.Status.Cluster = &littleredv1alpha1.ClusterStatusInfo{}
+		}
+
+		// Only update if changes occurred to avoid unnecessary status updates
+		if len(littleRed.Status.Cluster.OrphanedReplicas) != len(currentOrphans) || promotedCount > 0 {
+			littleRed.Status.Cluster.OrphanedReplicas = currentOrphans
+			if err := r.Status().Update(ctx, littleRed); err != nil {
+				if !apierrors.IsConflict(err) {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{Requeue: true}, nil
+			}
+		}
+
+		if promotedCount > 0 || hasBlockingOrphans {
 			return ctrl.Result{RequeueAfter: fast}, nil
 		}
 
@@ -438,30 +524,6 @@ func (gt *GroundTruth) HasGhostNodes() bool {
 
 func (gt *GroundTruth) HasOrphanedSlots() bool {
 	return gt.TotalSlots < 16384
-}
-
-// HasOrphanedReplicas returns true if any replica has no master or points to a
-// node that doesn't exist in our live nodes. This indicates failover is in progress.
-func (gt *GroundTruth) HasOrphanedReplicas() bool {
-	// Build set of live node IDs
-	liveNodeIDs := make(map[string]bool)
-	for _, n := range gt.Nodes {
-		liveNodeIDs[n.NodeID] = true
-	}
-
-	for _, node := range gt.Nodes {
-		if node.Role == "replica" {
-			// Replica with no master assigned (in failover transition)
-			if node.MasterNodeID == "-" || node.MasterNodeID == "" {
-				return true
-			}
-			// Replica pointing to a non-existent master (ghost)
-			if !liveNodeIDs[node.MasterNodeID] {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (gt *GroundTruth) CountMasters() int {

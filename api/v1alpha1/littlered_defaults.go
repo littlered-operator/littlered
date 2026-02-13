@@ -55,11 +55,12 @@ const (
 	DefaultSteadyStateRequeueInterval = 30 * time.Second
 
 	// Cluster defaults
-	DefaultClusterShards      = 3
-	DefaultReplicasPerShard   = 1
+	DefaultClusterShards = 3
+	DefaultReplicasPerShard = 1
 	DefaultClusterNodeTimeout = 15000
-	ClusterBusPortOffset      = 10000
-	ClusterBusPort            = RedisPort + ClusterBusPortOffset // 16379
+	DefaultFailoverGracePeriod = 15
+	ClusterBusPortOffset = 10000
+	ClusterBusPort = RedisPort + ClusterBusPortOffset // 16379
 )
 
 // SetDefaults applies default values to the LittleRed spec
@@ -197,6 +198,9 @@ func (c *ClusterSpec) SetDefaults() {
 	}
 	if c.ClusterNodeTimeout == 0 {
 		c.ClusterNodeTimeout = DefaultClusterNodeTimeout
+	}
+	if c.FailoverGracePeriod == 0 {
+		c.FailoverGracePeriod = DefaultFailoverGracePeriod
 	}
 }
 

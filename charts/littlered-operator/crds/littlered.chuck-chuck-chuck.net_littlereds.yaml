@@ -79,6 +79,14 @@ spec:
                     default: 15000
                     description: ClusterNodeTimeout in milliseconds
                     type: integer
+                  failoverGracePeriod:
+                    default: 15
+                    description: |-
+                      FailoverGracePeriod is additional time (in seconds) beyond cluster-node-timeout
+                      to wait for natural gossip-based failover before the operator force-promotes
+                      a stuck orphaned replica. Default: 15 seconds.
+                      Total timeout = clusterNodeTimeout + failoverGracePeriod.
+                    type: integer
                   replicasPerShard:
                     default: 1
                     description: ReplicasPerShard is the number of replicas per master
@@ -1930,6 +1938,34 @@ spec:
                       - nodeId
                       - podName
                       - role
+                      type: object
+                    type: array
+                  orphanedReplicas:
+                    description: OrphanedReplicas tracks replicas whose master is
+                      gone, for timeout-based force-promotion
+                    items:
+                      description: OrphanedReplicaInfo tracks an orphaned replica
+                        for timeout-based recovery
+                      properties:
+                        detectedAt:
+                          description: DetectedAt is when this orphan was first detected
+                          format: date-time
+                          type: string
+                        masterNodeId:
+                          description: MasterNodeID that this replica is orphaned
+                            from
+                          type: string
+                        nodeId:
+                          description: NodeID of the orphaned replica
+                          type: string
+                        podName:
+                          description: PodName of the orphaned replica
+                          type: string
+                      required:
+                      - detectedAt
+                      - masterNodeId
+                      - nodeId
+                      - podName
                       type: object
                     type: array
                   state:

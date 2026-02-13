@@ -216,6 +216,9 @@ spec:
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
+			// Wait for cluster to detect failure via a remaining pod (expected count was 3)
+			waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-0", 3)
+
 			By("waiting for pod to return and cluster to stabilize")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
@@ -288,6 +291,9 @@ spec:
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
+			// Wait for cluster to detect failure via a remaining pod (pod-1)
+			waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-1", 6)
+
 			By("waiting for cluster to become ok again")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-1",
@@ -330,6 +336,9 @@ spec:
 				"-n", testNamespace, "--grace-period=0", "--force")
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
+
+			// Wait for cluster to detect failure via a remaining pod (pod-0)
+			waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-0", 6)
 
 			By("waiting for cluster to stabilize")
 			Eventually(func(g Gomega) {
