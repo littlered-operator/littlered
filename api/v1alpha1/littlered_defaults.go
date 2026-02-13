@@ -55,12 +55,12 @@ const (
 	DefaultSteadyStateRequeueInterval = 30 * time.Second
 
 	// Cluster defaults
-	DefaultClusterShards = 3
-	DefaultReplicasPerShard = 1
-	DefaultClusterNodeTimeout = 15000
+	DefaultClusterShards       = 3
+	DefaultReplicasPerShard    = 1
+	DefaultClusterNodeTimeout  = 15000
 	DefaultFailoverGracePeriod = 15
-	ClusterBusPortOffset = 10000
-	ClusterBusPort = RedisPort + ClusterBusPortOffset // 16379
+	ClusterBusPortOffset       = 10000
+	ClusterBusPort             = RedisPort + ClusterBusPortOffset // 16379
 )
 
 // SetDefaults applies default values to the LittleRed spec
