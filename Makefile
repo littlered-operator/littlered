@@ -215,6 +215,11 @@ deploy: manifests
 undeploy:
 	helm uninstall -n littlered-system littlered
 
+.PHONY: redeploy-all
+redeploy-all: undeploy ## Full reset: uninstall helm chart, delete CRDs, and deploy fresh.
+	-kubectl delete crd littlereds.littlered.chuck-chuck-chuck.net --ignore-not-found
+	$(MAKE) deploy
+
 .PHONY: pipeline
 pipeline: images deploy
 
