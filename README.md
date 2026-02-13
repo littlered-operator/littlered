@@ -1,10 +1,10 @@
 # LittleRed
 
-A lightweight Kubernetes operator for deploying Redis/Valkey as an in-memory cache.
+A lightweight Kubernetes operator for deploying Redis/Valkey as a pure in-memory store.
 
 ## Features
 
-- **Standalone mode**: Single Redis instance for simple caching
+- **Standalone mode**: Single Redis instance for simple in-memory storage
 - **Sentinel mode**: 1 master + 2 replicas + 3 sentinels with automatic failover
 - **Cluster mode**: Horizontally scaled Redis Cluster with automatic sharding (16384 hash slots)
 - **Valkey/Redis support**: Uses Valkey 8.0 by default (Redis 7.2+ compatible)

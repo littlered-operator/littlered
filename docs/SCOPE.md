@@ -26,7 +26,7 @@
 - [x] Single Redis/Valkey instance (StatefulSet, 1 replica)
 - [x] Redis 7.2+ / Valkey 7.2+ support
 - [x] In-memory only (no persistence)
-- [x] Opinionated defaults (cache-optimized)
+- [x] Opinionated defaults (performance-optimized)
 - [x] Full redis.conf override capability
 - [x] Optional password authentication
 - [x] Optional TLS
@@ -70,7 +70,7 @@
 
 | Feature | Reason | Future? |
 |---------|--------|---------|
-| Persistence (RDB/AOF with PVC) | Not needed for cache use case | Maybe |
+| Persistence (RDB/AOF with PVC) | Not needed for pure in-memory use case | Maybe |
 | Redis < 7.2 | Legacy, not required | No |
 | Cluster slot migration | Needed for dynamic scaling | Yes |
 | ACL-based auth | Complexity, password sufficient | Maybe |
@@ -95,7 +95,7 @@ Design decisions that support extensibility:
 1. **Sentinel topology**: Fixed 1+2+3, architected for configurable counts in future
 2. **Redis Cluster**: ✅ Implemented with operator-managed topology (no nodes.conf dependency)
 3. **Persistence**:
-   - **Default**: Actively disable persistence (`save ""`, `appendonly no`) to guarantee pure in-memory cache behavior
+   - **Default**: Actively disable persistence (`save ""`, `appendonly no`) to guarantee pure in-memory behavior
    - **No volumes**: Default deployment requires no PVCs
    - **Expert override**: User can re-enable persistence via `spec.config.raw` if they really want it (their responsibility)
    - **Future**: Operator-managed persistence (with proper PVC handling) could be added as opt-in feature later

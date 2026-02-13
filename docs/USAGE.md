@@ -1,6 +1,6 @@
 # Using LittleRed
 
-This guide shows how to deploy and use Redis caches with the LittleRed operator.
+This guide shows how to deploy and use Redis instances with the LittleRed operator.
 
 ## Prerequisites
 

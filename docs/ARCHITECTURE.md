@@ -569,7 +569,7 @@ Detection happens during reconciliation by querying Sentinel.
 ### 6.1 Default redis.conf
 
 ```
-# LittleRed defaults - optimized for in-memory caching
+# LittleRed defaults - optimized for pure in-memory storage
 # IMPORTANT: Persistence is ACTIVELY DISABLED to ensure pure in-memory behavior.
 # Note: By default, we use 'noeviction', meaning data is never forgotten unless explicitly deleted.
 

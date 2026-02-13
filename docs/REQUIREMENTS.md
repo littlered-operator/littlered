@@ -252,7 +252,7 @@ While out of initial scope, architecture should not preclude:
 |------|----------|-----------|
 | 2026-01-30 | Go as implementation language | Best K8s operator ecosystem support |
 | 2026-01-30 | K8s 1.28+ only | Can use latest APIs, reduce compat burden |
-| 2026-01-30 | No persistence | Target use case requires pure cache |
+| 2026-01-30 | No persistence | Target use case requires pure in-memory storage |
 | 2026-01-30 | Single CR with mode selector | Simpler UX than multiple CRs |
 | 2026-01-30 | LittleRed name | Redis/Valkey agnostic, memorable |
 | 2026-01-30 | Fixed 1+2+3 Sentinel topology initially | Simplest, architect for flexibility |
@@ -262,7 +262,7 @@ While out of initial scope, architecture should not preclude:
 | 2026-01-30 | API group: `littlered.chuck-chuck-chuck.net` | User-owned domain |
 | 2026-01-30 | No admission webhooks (initially) | Operational complexity, validate in controller |
 | 2026-01-30 | Watch Secrets for rotation | Auto-reconcile on password/cert changes |
-| 2026-01-30 | Actively disable persistence by default | Override image defaults with `save ""`, `appendonly no` to guarantee pure in-memory cache |
+| 2026-01-30 | Actively disable persistence by default | Override image defaults with `save ""`, `appendonly no` to guarantee pure in-memory behavior |
 | 2026-01-30 | Default to Valkey (not Redis) | Personal preference, easily overridable |
 | 2026-01-30 | Image composed from registry/path:tag | Easy registry mirror support without copy-pasting image names |
 | 2026-01-30 | Fully qualified image refs by default | Unqualified images deprecated in modern runtimes (CRI-O, containerd) |
