@@ -210,16 +210,21 @@ spec:
 			// In 0-replica mode, deleting a pod means losing data and slots.
 			// The operator should re-assign slots to the new node.
 			victimPod := crName + "-cluster-1"
+			
+			By(fmt.Sprintf("recording initial NodeID of victim pod %s", victimPod))
+			oldNodeID, err := getPodNodeID(testNamespace, victimPod)
+			Expect(err).NotTo(HaveOccurred())
+
 			By(fmt.Sprintf("deleting master pod %s", victimPod))
 			cmd := exec.Command("kubectl", "delete", "pod", victimPod,
 				"-n", testNamespace, "--grace-period=0", "--force")
-			_, err := utils.Run(cmd)
+			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Wait for cluster to detect failure via a remaining pod (expected count was 3)
-			waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-0", 3)
+			// Wait for shard master to change (slot 8000 is in the middle of shard 1)
+			waitForShardMasterChange(testNamespace, crName+"-cluster-0", 8000, oldNodeID)
 
-			By("waiting for pod to return and cluster to stabilize")
+			By("waiting for cluster to stabilize")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 					"-n", testNamespace, "-c", "redis", "--",
@@ -278,21 +283,19 @@ spec:
 		})
 
 		It("should promote replica when master pod is deleted", func() {
-			By("identifying initial masters")
-			cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
-				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "CLUSTER", "NODES")
-			_, err := utils.Run(cmd)
+			By("identifying initial master for shard 0")
+			victimPod := crName + "-cluster-0"
+			oldNodeID, err := getPodNodeID(testNamespace, victimPod)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("deleting master pod-0")
-			cmd = exec.Command("kubectl", "delete", "pod", crName+"-cluster-0",
+			By(fmt.Sprintf("deleting master pod %s", victimPod))
+			cmd := exec.Command("kubectl", "delete", "pod", victimPod,
 				"-n", testNamespace, "--grace-period=0", "--force")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Wait for cluster to detect failure via a remaining pod (pod-1)
-			waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-1", 6)
+			// Wait for shard master to change (slot 0 is in shard 0)
+			waitForShardMasterChange(testNamespace, crName+"-cluster-1", 0, oldNodeID)
 
 			By("waiting for cluster to become ok again")
 			Eventually(func(g Gomega) {
@@ -331,14 +334,23 @@ spec:
 		})
 
 		It("should reassign replica when replica pod is deleted", func() {
-			By("deleting replica pod-3")
-			cmd := exec.Command("kubectl", "delete", "pod", crName+"-cluster-3",
-				"-n", testNamespace, "--grace-period=0", "--force")
-			_, err := utils.Run(cmd)
+			victimPod := crName + "-cluster-3"
+			By(fmt.Sprintf("recording initial NodeID of replica pod %s", victimPod))
+			oldNodeID, err := getPodNodeID(testNamespace, victimPod)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Wait for cluster to detect failure via a remaining pod (pod-0)
-			waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-0", 6)
+			By(fmt.Sprintf("deleting replica pod %s", victimPod))
+			cmd := exec.Command("kubectl", "delete", "pod", victimPod,
+				"-n", testNamespace, "--grace-period=0", "--force")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for new replica to join with a different NodeID")
+			Eventually(func(g Gomega) {
+				newNodeID, err := getPodNodeID(testNamespace, victimPod)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get new NodeID for replica")
+				g.Expect(newNodeID).NotTo(Equal(oldNodeID), "Replica NodeID has not changed yet")
+			}, 3*time.Minute, 10*time.Second).Should(Succeed())
 
 			By("waiting for cluster to stabilize")
 			Eventually(func(g Gomega) {

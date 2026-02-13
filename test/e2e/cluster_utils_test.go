@@ -212,6 +212,68 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 	By("Sentinel topology sync validation passed")
 }
 
+// getPodNodeID returns the current Redis Cluster NodeID of a pod.
+func getPodNodeID(namespace, podName string) (string, error) {
+	cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "valkey-cli", "CLUSTER", "MYID")
+	out, err := utils.Run(cmd)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// waitForShardMasterChange waits until the master NodeID for a specific shard (identified by a slot)
+// changes from the oldMasterNodeID. This is a robust way to verify failover or healing.
+func waitForShardMasterChange(namespace, queryPod string, slot int, oldMasterNodeID string) {
+	By(fmt.Sprintf("waiting for shard master for slot %d to change from %s", slot, oldMasterNodeID))
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "exec", queryPod,
+			"-n", namespace, "-c", "redis", "--",
+			"valkey-cli", "CLUSTER", "NODES")
+		output, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred(), "Failed to get CLUSTER NODES")
+
+		var currentMasterID string
+		lines := strings.Split(strings.TrimSpace(output), "\n")
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) < 8 {
+				continue
+			}
+
+			// Field 2 is flags, must contain "master" and not "fail"
+			flags := fields[2]
+			if !strings.Contains(flags, "master") || strings.Contains(flags, "fail") {
+				continue
+			}
+
+			// Fields from 8 onwards are slot ranges
+			for j := 8; j < len(fields); j++ {
+				slotPart := fields[j]
+				// Handle range (e.g. "0-5460") or single slot (e.g. "123")
+				var start, end int
+				if strings.Contains(slotPart, "-") {
+					fmt.Sscanf(slotPart, "%d-%d", &start, &end)
+				} else {
+					fmt.Sscanf(slotPart, "%d", &start)
+					end = start
+				}
+
+				if slot >= start && slot <= end {
+					currentMasterID = fields[0]
+					break
+				}
+			}
+			if currentMasterID != "" {
+				break
+			}
+		}
+
+		g.Expect(currentMasterID).NotTo(BeEmpty(), fmt.Sprintf("Slot %d is currently unassigned (shard master missing)", slot))
+		g.Expect(currentMasterID).NotTo(Equal(oldMasterNodeID), "Shard master has not changed yet")
+	}, 3*time.Minute, 5*time.Second).Should(Succeed(), "Shard master should change within 3 minutes")
+}
+
 // waitForClusterFailureDetected waits for at least one node to be marked as fail or pfail,
 // OR for the number of known nodes to be less than expected (indicating the operator already FORGOT it).
 // This prevents false-positive recovery checks against stale pre-failure state.
