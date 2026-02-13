@@ -39,7 +39,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 		BeforeAll(func() {
 			By("creating a Redis Cluster with 3 shards and 1 replica per shard")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -170,7 +170,7 @@ spec:
 		BeforeAll(func() {
 			By("creating a 3-shard cluster with no replicas")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -210,7 +210,7 @@ spec:
 			// In 0-replica mode, deleting a pod means losing data and slots.
 			// The operator should re-assign slots to the new node.
 			victimPod := crName + "-cluster-1"
-			
+
 			By(fmt.Sprintf("recording initial NodeID of victim pod %s", victimPod))
 			oldNodeID, err := getPodNodeID(testNamespace, victimPod)
 			Expect(err).NotTo(HaveOccurred())
@@ -246,7 +246,7 @@ spec:
 		BeforeAll(func() {
 			By("creating a 3-shard cluster with 1 replica per shard")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -373,7 +373,7 @@ spec:
 		It("should clean up all resources when CR is deleted", func() {
 			By("creating cluster for cleanup")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -418,7 +418,7 @@ spec:
 		BeforeAll(func() {
 			By("creating cluster with custom configuration")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -484,13 +484,13 @@ spec:
 		BeforeAll(func() {
 			By("Creating an empty cluster with debug-skip-slot-assignment annotation")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
   namespace: %s
   annotations:
-    littlered.chuck-chuck-chuck.net/debug-skip-slot-assignment: "true"
+    chuck-chuck-chuck.net/debug-skip-slot-assignment: "true"
 spec:
   mode: cluster
   cluster:

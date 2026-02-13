@@ -48,13 +48,13 @@ var _ = Describe("Sentinel Advanced Failover", func() {
 			crName = fmt.Sprintf("event-driven-%d", time.Now().Unix())
 			By(fmt.Sprintf("deploying cluster %s with polling disabled", crName))
 			cr := fmt.Sprintf(`
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
   namespace: %s
   annotations:
-    littlered.chuck-chuck-chuck.net/disable-polling: "true"
+    chuck-chuck-chuck.net/disable-polling: "true"
 spec:
   mode: sentinel
   sentinel:
@@ -85,7 +85,7 @@ spec:
 			initialMaster, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			initialMaster = strings.TrimSpace(initialMaster)
-			
+
 			oldRunID, err := getPodRunID(testNamespace, initialMaster)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -99,7 +99,7 @@ spec:
 			start := time.Now()
 			Eventually(func(g Gomega) {
 				// We check the K8s label directly to see how fast the Operator reacted
-				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
+				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
 				out, _ := utils.Run(cmd)
 
 				// Must contain the CR name (belong to this test) and NOT be the old master
@@ -154,13 +154,13 @@ spec:
 			crName = fmt.Sprintf("polling-only-%d", time.Now().Unix())
 			By(fmt.Sprintf("deploying cluster %s with events disabled", crName))
 			cr := fmt.Sprintf(`
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
   namespace: %s
   annotations:
-    littlered.chuck-chuck-chuck.net/disable-event-monitoring: "true"
+    chuck-chuck-chuck.net/disable-event-monitoring: "true"
 spec:
   mode: sentinel
   sentinel:
@@ -185,7 +185,7 @@ spec:
 			cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
 			initialMaster, _ := utils.Run(cmd)
 			initialMaster = strings.TrimSpace(initialMaster)
-			
+
 			oldRunID, _ := getPodRunID(testNamespace, initialMaster)
 
 			By(fmt.Sprintf("Step 2: Kill the Master %s", initialMaster))
@@ -194,7 +194,7 @@ spec:
 			By("Step 3: Wait for new master label and verify different RunID")
 			start := time.Now()
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
+				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
 				out, _ := utils.Run(cmd)
 				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
 					// Check RunID
@@ -237,7 +237,7 @@ spec:
 			crName = fmt.Sprintf("hybrid-%d", time.Now().Unix())
 			By(fmt.Sprintf("deploying cluster %s with standard settings", crName))
 			cr := fmt.Sprintf(`
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -265,7 +265,7 @@ spec:
 			cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
 			initialMaster, _ := utils.Run(cmd)
 			initialMaster = strings.TrimSpace(initialMaster)
-			
+
 			oldRunID, _ := getPodRunID(testNamespace, initialMaster)
 
 			By(fmt.Sprintf("Step 2: Kill the Master %s", initialMaster))
@@ -273,7 +273,7 @@ spec:
 
 			By("Step 3: Wait for new master label and verify different RunID")
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
+				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
 				out, _ := utils.Run(cmd)
 				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
 					// Check RunID
@@ -307,7 +307,7 @@ spec:
 			crName = fmt.Sprintf("sentinel-death-%d", time.Now().Unix())
 			By(fmt.Sprintf("deploying cluster %s for sentinel death testing", crName))
 			cr := fmt.Sprintf(`
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -335,7 +335,7 @@ spec:
 			cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
 			initialMaster, _ := utils.Run(cmd)
 			initialMaster = strings.TrimSpace(initialMaster)
-			
+
 			oldRunID, _ := getPodRunID(testNamespace, initialMaster)
 
 			sentinelPod := fmt.Sprintf("%s-sentinel-0", crName)
@@ -356,7 +356,7 @@ spec:
 
 			By("Step 5: Verify failover still happens and RunID changed")
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "littlered.chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
+				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
 				out, _ := utils.Run(cmd)
 				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
 					// Check RunID

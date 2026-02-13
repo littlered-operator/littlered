@@ -36,7 +36,7 @@ kubectl get pods -n littlered-system
 # littlered-operator-xxxxxxxxx-xxxxx   1/1     Running   0          30s
 
 # Check CRD is installed
-kubectl get crd littlereds.littlered.chuck-chuck-chuck.net
+kubectl get crd littlereds.chuck-chuck-chuck.net
 ```
 
 #### Custom configuration
@@ -82,7 +82,7 @@ helm upgrade littlered ./charts/littlered-operator -n littlered-system
 Helm does not automatically update CRDs on `helm upgrade`. If the LittleRed CRD schema has changed (e.g., new fields like `spec.cluster`), you must apply the CRD manually:
 
 ```bash
-kubectl apply -f charts/littlered-operator/crds/littlered.chuck-chuck-chuck.net_littlereds.yaml
+kubectl apply -f charts/littlered-operator/crds/chuck-chuck-chuck.net_littlereds.yaml
 ```
 
 #### Uninstall
@@ -91,7 +91,7 @@ kubectl apply -f charts/littlered-operator/crds/littlered.chuck-chuck-chuck.net_
 helm uninstall littlered -n littlered-system
 
 # CRDs are not deleted automatically. To remove them:
-kubectl delete crd littlereds.littlered.chuck-chuck-chuck.net
+kubectl delete crd littlereds.chuck-chuck-chuck.net
 ```
 
 ### Option 2: Kustomize
@@ -109,7 +109,7 @@ kubectl apply -k config/default
 
 ```bash
 kubectl get pods -n redis-operator-system
-kubectl get crd littlereds.littlered.chuck-chuck-chuck.net
+kubectl get crd littlereds.chuck-chuck-chuck.net
 ```
 
 #### Uninstall
@@ -159,7 +159,7 @@ A single Redis instance for development or simple caching.
 
 ```yaml
 # standalone.yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -221,7 +221,7 @@ High-availability setup with automatic failover: 3 Redis pods (1 master + 2 repl
 
 ```yaml
 # sentinel.yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -317,7 +317,7 @@ Horizontally scaled setup with automatic sharding across multiple master nodes. 
 
 ```yaml
 # cluster.yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -449,7 +449,7 @@ With 3 shards, slots are distributed as:
 ### With resources and memory policy
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -477,7 +477,7 @@ kubectl create secret generic redis-password --from-literal=password=mysecretpas
 ```
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -496,7 +496,7 @@ kubectl exec -it my-cache-redis-0 -c redis -- valkey-cli -a mysecretpassword PIN
 ### With ServiceMonitor (Prometheus)
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -513,7 +513,7 @@ spec:
 ### Production sentinel setup
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: prod-cache
@@ -561,7 +561,7 @@ spec:
 ### Production cluster setup
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: prod-cluster
@@ -675,7 +675,7 @@ kubectl get pods -n default -l app.kubernetes.io/instance=my-cluster -w
 If you need faster or slower rolling restarts, you can override the default:
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cluster
@@ -700,7 +700,7 @@ spec:
 ### Example: Safe Production Rolling Restart
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: prod-cluster
@@ -756,7 +756,7 @@ For installations with hundreds or thousands of instances, you can tune the reco
 **Example:**
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: tuned-cache

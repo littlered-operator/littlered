@@ -15,7 +15,7 @@
 #   kubectl exec my-cache-cluster-cluster-0 -- redis-cli CLUSTER INFO
 #   kubectl exec my-cache-cluster-cluster-0 -- redis-cli CLUSTER NODES
 #
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache-cluster

@@ -4,14 +4,14 @@
 
 **Document Status**: Draft
 **Last Updated**: 2026-02-11
-**API Version**: `littlered.chuck-chuck-chuck.net/v1alpha1`
+**API Version**: `chuck-chuck-chuck.net/v1alpha1`
 
 ---
 
 ## 1. Resource Overview
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -523,7 +523,7 @@ status:
 ### 4.1 Minimal Standalone
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -535,7 +535,7 @@ Uses all defaults: standalone mode, `docker.io/valkey/valkey:8.0`, no auth, no T
 ### 4.2 Standalone with Custom Resources
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -554,7 +554,7 @@ spec:
 ### 4.3 Standalone with Redis (instead of Valkey)
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -567,7 +567,7 @@ spec:
 ### 4.4 Registry Mirror
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -581,7 +581,7 @@ spec:
 ### 4.5 Standalone with Auth
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -602,7 +602,7 @@ stringData:
 ### 4.6 Standalone with TLS
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -624,7 +624,7 @@ data:
 ### 4.7 Full Standalone
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -695,7 +695,7 @@ spec:
 ### 4.8 Minimal Sentinel
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -708,7 +708,7 @@ Deploys: 1 master + 2 replicas + 3 sentinels with defaults (`docker.io/valkey/va
 ### 4.9 Sentinel with Production Settings
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -770,7 +770,7 @@ spec:
 ### 4.10 Minimal Cluster
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -783,7 +783,7 @@ Deploys: 3 masters + 3 replicas (6 pods total) with default settings.
 ### 4.11 Cluster with Custom Shards
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -840,7 +840,7 @@ labels:
   app.kubernetes.io/component: redis | sentinel | exporter
   app.kubernetes.io/managed-by: littlered-operator
   app.kubernetes.io/version: "8.0"
-  littlered.chuck-chuck-chuck.net/mode: standalone | sentinel | cluster
+  chuck-chuck-chuck.net/mode: standalone | sentinel | cluster
 ```
 
 ### 5.2 Sentinel Mode Labels
@@ -848,7 +848,7 @@ labels:
 ```yaml
 # On Redis pods (dynamic, updated on failover)
 labels:
-  littlered.chuck-chuck-chuck.net/role: master | replica
+  chuck-chuck-chuck.net/role: master | replica
 ```
 
 ---

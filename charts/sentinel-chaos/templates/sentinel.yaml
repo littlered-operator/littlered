@@ -1,9 +1,9 @@
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: {{ .Values.sentinel.name }}
   annotations:
-    littlered.chuck-chuck-chuck.net/disable-polling: {{ .Values.sentinel.disablePolling | quote }}
+    chuck-chuck-chuck.net/disable-polling: {{ .Values.sentinel.disablePolling | quote }}
 spec:
   mode: sentinel
   sentinel:

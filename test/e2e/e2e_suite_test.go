@@ -259,7 +259,7 @@ func undeployWithHelm() {
 	_, _ = utils.Run(cmd)
 
 	By("deleting CRDs")
-	cmd = exec.Command("kubectl", "delete", "crd", "littlereds.littlered.chuck-chuck-chuck.net", "--ignore-not-found")
+	cmd = exec.Command("kubectl", "delete", "crd", "littlereds.chuck-chuck-chuck.net", "--ignore-not-found")
 	_, _ = utils.Run(cmd)
 }
 

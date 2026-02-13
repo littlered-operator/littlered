@@ -217,7 +217,7 @@ undeploy:
 
 .PHONY: redeploy-all
 redeploy-all: undeploy ## Full reset: uninstall helm chart, delete CRDs, and deploy fresh.
-	-kubectl delete crd littlereds.littlered.chuck-chuck-chuck.net --ignore-not-found
+	-kubectl delete crd littlereds.chuck-chuck-chuck.net --ignore-not-found
 	$(MAKE) deploy
 
 .PHONY: pipeline

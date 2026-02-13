@@ -12,7 +12,7 @@
 |-----------|-------|
 | Product Name | LittleRed |
 | Technical Name | `littlered` |
-| API Group | `littlered.chuck-chuck-chuck.net` |
+| API Group | `chuck-chuck-chuck.net` |
 | API Version | `v1alpha1` (initial) |
 | Default Image | `docker.io/valkey/valkey:8.0` |
 | Image Format | `{registry}/{path}:{tag}` (each component overridable) |

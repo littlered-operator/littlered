@@ -284,7 +284,7 @@ These can be configured via the LittleRed spec.
 
 ### Debug Annotations
 
-- `littlered.chuck-chuck-chuck.net/debug-skip-slot-assignment`: Skip slot assignment during bootstrap (for testing)
+- `chuck-chuck-chuck.net/debug-skip-slot-assignment`: Skip slot assignment during bootstrap (for testing)
 
 ## Summary
 

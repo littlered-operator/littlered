@@ -26,7 +26,7 @@ helm install littlered charts/littlered-operator -n littlered-system --create-na
 Minimal standalone cache:
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -36,7 +36,7 @@ spec: {}
 Sentinel mode:
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -47,7 +47,7 @@ spec:
 Cluster mode:
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -90,7 +90,7 @@ kubectl exec -it my-cache-cluster-cluster-0 -- valkey-cli -c CLUSTER NODES
 ### Spec Reference
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache

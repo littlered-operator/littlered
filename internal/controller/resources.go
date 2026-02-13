@@ -34,10 +34,10 @@ import (
 
 // Annotation keys for config hash
 const (
-	AnnotationConfigHash              = "littlered.chuck-chuck-chuck.net/config-hash"
-	AnnotationDisablePolling          = "littlered.chuck-chuck-chuck.net/disable-polling"
-	AnnotationDisableEventMonitoring  = "littlered.chuck-chuck-chuck.net/disable-event-monitoring"
-	AnnotationDebugSkipSlotAssignment = "littlered.chuck-chuck-chuck.net/debug-skip-slot-assignment"
+	AnnotationConfigHash              = "chuck-chuck-chuck.net/config-hash"
+	AnnotationDisablePolling          = "chuck-chuck-chuck.net/disable-polling"
+	AnnotationDisableEventMonitoring  = "chuck-chuck-chuck.net/disable-event-monitoring"
+	AnnotationDebugSkipSlotAssignment = "chuck-chuck-chuck.net/debug-skip-slot-assignment"
 )
 
 // Resource name helpers
@@ -83,7 +83,7 @@ func serviceMonitorName(lr *littleredv1alpha1.LittleRed) string {
 
 // Label keys
 const (
-	LabelRole   = "littlered.chuck-chuck-chuck.net/role"
+	LabelRole   = "chuck-chuck-chuck.net/role"
 	RoleMaster  = "master"
 	RoleReplica = "replica"
 )
@@ -112,7 +112,7 @@ func commonLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 		"app.kubernetes.io/instance":           lr.Name,
 		"app.kubernetes.io/managed-by":         "littlered-operator",
 		"app.kubernetes.io/version":            lr.Spec.Image.Tag,
-		"littlered.chuck-chuck-chuck.net/mode": lr.Spec.Mode,
+		"chuck-chuck-chuck.net/mode": lr.Spec.Mode,
 	}
 }
 

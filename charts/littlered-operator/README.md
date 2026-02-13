@@ -24,7 +24,7 @@ helm uninstall littlered -n littlered-system
 Note: CRDs are not deleted automatically. To remove them:
 
 ```bash
-kubectl delete crd littlereds.littlered.chuck-chuck-chuck.net
+kubectl delete crd littlereds.chuck-chuck-chuck.net
 ```
 
 ## Configuration
@@ -109,7 +109,7 @@ helm install littlered ./charts/littlered-operator \
 Once the operator is running, create LittleRed resources:
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache

@@ -37,16 +37,16 @@ var _ = Describe("Sentinel and Standalone Chaos Testing", Ordered, func() {
 		It("should maintain availability during rapid double failover", func() {
 			crName := fmt.Sprintf("chaos-sentinel-%d", time.Now().Unix())
 			const testDuration = 120 * time.Second
-			
+
 			By(fmt.Sprintf("creating Sentinel cluster %s and chaos client simultaneously", crName))
 			cr := fmt.Sprintf(`
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
   namespace: %s
   annotations:
-    littlered.chuck-chuck-chuck.net/disable-polling: "true"
+    chuck-chuck-chuck.net/disable-polling: "true"
 spec:
   mode: sentinel
   sentinel:
@@ -79,7 +79,7 @@ spec:
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Running"))
-				
+
 				cmd = exec.Command("kubectl", "get", "littlered", crName,
 					"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
 				master, err := utils.Run(cmd)
@@ -96,7 +96,7 @@ spec:
 				"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
 			master1, _ := utils.Run(cmd)
 			master1 = strings.TrimSpace(master1)
-			
+
 			oldRunID1, _ := getPodRunID(testNamespace, master1)
 
 			cmd = exec.Command("kubectl", "delete", "pod", master1,
@@ -117,7 +117,7 @@ spec:
 				master2 = strings.TrimSpace(out)
 				g.Expect(master2).NotTo(Equal(master1), "Master should have changed")
 				g.Expect(master2).NotTo(BeEmpty())
-				
+
 				runID, err := getPodRunID(testNamespace, master2)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(runID).NotTo(Equal(oldRunID1), "New master must have a different RunID")
@@ -127,7 +127,7 @@ spec:
 			cmd = exec.Command("kubectl", "delete", "pod", master2,
 				"-n", testNamespace, "--grace-period=0", "--force")
 			_, _ = utils.Run(cmd)
-			
+
 			By("verifying third master eventually emerges with different RunID")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "littlered", crName,
@@ -136,7 +136,7 @@ spec:
 				master3 := strings.TrimSpace(out)
 				g.Expect(master3).NotTo(Equal(master2), "Master should have changed again")
 				g.Expect(master3).NotTo(BeEmpty())
-				
+
 				runID, err := getPodRunID(testNamespace, master3)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(runID).NotTo(Equal(oldRunID2), "Third master must have a different RunID")
@@ -147,7 +147,7 @@ spec:
 
 			metrics, err := getChaosClientMetrics(testNamespace, chaosPodName)
 			Expect(err).NotTo(HaveOccurred())
-			
+
 			Expect(metrics.DataCorruptions).To(Equal(int64(0)), "Data corruption detected!")
 			Expect(metrics.WriteAvailability()).To(BeNumerically(">", 0.40))
 		})
@@ -157,10 +157,10 @@ spec:
 		It("should recover after pod restart", func() {
 			crName := "chaos-standalone"
 			const testDuration = 60 * time.Second
-			
+
 			By("creating standalone and chaos client simultaneously")
 			cr := fmt.Sprintf(`
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -205,7 +205,7 @@ spec:
 			cmd = exec.Command("kubectl", "delete", "pod", crName+"-redis-0",
 				"-n", testNamespace, "--grace-period=0", "--force")
 			_, _ = utils.Run(cmd)
-			
+
 			By("verifying pod restarts with different RunID")
 			Eventually(func(g Gomega) {
 				newRunID, err := getPodRunID(testNamespace, crName+"-redis-0")
@@ -218,7 +218,7 @@ spec:
 
 			metrics, err := getChaosClientMetrics(testNamespace, chaosPodName)
 			Expect(err).NotTo(HaveOccurred())
-			
+
 			Expect(metrics.DataCorruptions).To(Equal(int64(0)))
 		})
 	})

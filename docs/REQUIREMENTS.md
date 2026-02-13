@@ -80,7 +80,7 @@ Redis Cluster for horizontal scaling and sharding.
 Single CR with mode selector:
 
 ```yaml
-apiVersion: littlered.chuck-chuck-chuck.net/v1alpha1
+apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-cache
@@ -241,7 +241,7 @@ While out of initial scope, architecture should not preclude:
 
 1. ~~**Metrics export**: Sidecar (redis_exporter) vs. native Redis metrics (7.0+)?~~ **RESOLVED**: redis_exporter sidecar
 2. ~~**Operator distribution**: Helm chart? OLM? Kustomize?~~ **RESOLVED**: Helm chart
-3. ~~**CR API group**: `littlered.io`? Something else?~~ **RESOLVED**: `littlered.chuck-chuck-chuck.net`
+3. ~~**CR API group**: `littlered.io`? Something else?~~ **RESOLVED**: `chuck-chuck-chuck.net`
 4. ~~**Namespace scope**: Namespace-scoped or cluster-scoped operator?~~ **RESOLVED**: Configurable (can run either way)
 
 ---
@@ -259,7 +259,7 @@ While out of initial scope, architecture should not preclude:
 | 2026-01-30 | redis_exporter sidecar for metrics | Industry standard, Grafana dashboard compat |
 | 2026-01-30 | Helm chart for distribution | Most common, familiar to users |
 | 2026-01-30 | Configurable namespace/cluster scope | Flexibility for different deployment models |
-| 2026-01-30 | API group: `littlered.chuck-chuck-chuck.net` | User-owned domain |
+| 2026-01-30 | API group: `chuck-chuck-chuck.net` | User-owned domain |
 | 2026-01-30 | No admission webhooks (initially) | Operational complexity, validate in controller |
 | 2026-01-30 | Watch Secrets for rotation | Auto-reconcile on password/cert changes |
 | 2026-01-30 | Actively disable persistence by default | Override image defaults with `save ""`, `appendonly no` to guarantee pure in-memory behavior |

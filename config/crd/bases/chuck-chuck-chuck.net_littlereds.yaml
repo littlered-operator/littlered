@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.0
-  name: littlereds.littlered.chuck-chuck-chuck.net
+  name: littlereds.chuck-chuck-chuck.net
 spec:
-  group: littlered.chuck-chuck-chuck.net
+  group: chuck-chuck-chuck.net
   names:
     kind: LittleRed
     listKind: LittleRedList

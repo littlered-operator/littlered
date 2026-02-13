@@ -14,7 +14,7 @@ resources:
     namespaced: true
   controller: true
   domain: chuck-chuck-chuck.net
-  group: littlered
+  group: ""
   kind: LittleRed
   path: github.com/littlered-operator/littlered/api/v1alpha1
   version: v1alpha1
