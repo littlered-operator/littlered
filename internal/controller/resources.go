@@ -26,6 +26,7 @@ import (
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
@@ -81,6 +82,10 @@ func serviceMonitorName(lr *littleredv1alpha1.LittleRed) string {
 	return lr.Name
 }
 
+func podServiceAccountName(lr *littleredv1alpha1.LittleRed) string {
+	return fmt.Sprintf("%s-pod", lr.Name)
+}
+
 // Label keys
 const (
 	LabelRole   = "chuck-chuck-chuck.net/role"
@@ -108,11 +113,11 @@ func computeConfigHash(data map[string]string) string {
 // commonLabels returns the standard labels applied to all resources
 func commonLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":               "littlered",
-		"app.kubernetes.io/instance":           lr.Name,
-		"app.kubernetes.io/managed-by":         "littlered-operator",
-		"app.kubernetes.io/version":            lr.Spec.Image.Tag,
-		"chuck-chuck-chuck.net/mode": lr.Spec.Mode,
+		"app.kubernetes.io/name":       "littlered",
+		"app.kubernetes.io/instance":   lr.Name,
+		"app.kubernetes.io/managed-by": "littlered-operator",
+		"app.kubernetes.io/version":    lr.Spec.Image.Tag,
+		"chuck-chuck-chuck.net/mode":   lr.Spec.Mode,
 	}
 }
 
@@ -845,6 +850,7 @@ func buildRedisStatefulSetSentinel(lr *littleredv1alpha1.LittleRed) *appsv1.Stat
 					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
+					ServiceAccountName:        podServiceAccountName(lr),
 					SecurityContext:           lr.Spec.PodTemplate.SecurityContext,
 					Containers:                containers,
 					Volumes:                   buildVolumes(lr),
@@ -867,36 +873,76 @@ func buildRedisStatefulSetSentinel(lr *littleredv1alpha1.LittleRed) *appsv1.Stat
 }
 
 // buildRedisContainerSentinel creates the Redis container for sentinel mode
+// buildRedisContainerSentinel creates the Redis container for sentinel mode
 func buildRedisContainerSentinel(lr *littleredv1alpha1.LittleRed) corev1.Container {
-	// Script to configure replication based on pod index
-	// Pod-0 starts as master, others start as replicas
-	// We copy the config to /data so it's writable for CONFIG REWRITE
+	// Script to configure replication based on pod index and Sentinel state.
+	// We copy the config to /data so it's writable for CONFIG REWRITE.
 	startupScript := `#!/bin/sh
 set -e
+
+# Helper to log with timestamp
+log() {
+  echo "$(date '+%%Y-%%m-%%d %%H:%%M:%%S') [Startup] $1"
+}
 
 cp /etc/redis/redis.conf /data/redis.conf
 
 HOSTNAME=$(hostname)
 INDEX=${HOSTNAME##*-}
 MASTER_HOST="%s-redis-0.%s.%s.svc.cluster.local"
+SENTINEL_ADDR="%s-sentinel.%s.svc:26379"
 
-if [ "$INDEX" = "0" ]; then
-  echo "Starting as initial master"
-  exec redis-server /data/redis.conf %s
-else
-  echo "Starting as replica of $MASTER_HOST"
-  exec redis-server /data/redis.conf --replicaof $MASTER_HOST %d %s
+log "Starting Redis node $HOSTNAME (Index: $INDEX)"
+
+# 1. Try to find existing master via Sentinel
+log "Querying Sentinel at $SENTINEL_ADDR for master..."
+# Use a short timeout for redis-cli
+CURRENT_MASTER_IP=$(redis-cli -h %s-sentinel.%s.svc -p 26379 %s sentinel get-master-addr-by-name mymaster | head -n 1 || true)
+
+if [ -n "$CURRENT_MASTER_IP" ]; then
+  log "Sentinel reported master at $CURRENT_MASTER_IP. Joining as replica."
+  exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_IP %d %s
 fi
+
+log "Sentinel has no master info."
+
+# 2. Check if Bootstrap is allowed via K8s API
+log "Checking if bootstrap is required via K8s API..."
+TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+API_URL="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}/apis/chuck-chuck-chuck.net/v1alpha1/namespaces/${LITTLERED_NAMESPACE}/littlereds/${LITTLERED_NAME}/status"
+
+# We use wget if curl is not available (valkey image might vary)
+BOOTSTRAP_REQUIRED=$(wget -qO- --header="Authorization: Bearer $TOKEN" --ca-certificate=$CACERT "$API_URL" | grep -o '"bootstrapRequired":[[:space:]]*true' | grep -o 'true' || echo "false")
+
+if [ "$BOOTSTRAP_REQUIRED" = "true" ]; then
+  if [ "$INDEX" = "0" ]; then
+    log "Bootstrap permitted and I am redis-0. Starting as initial master."
+    exec redis-server /data/redis.conf %s
+  else
+    log "Bootstrap permitted but I am redis-$INDEX. Waiting for redis-0 to become master..."
+    exec redis-server /data/redis.conf --replicaof $MASTER_HOST %d %s
+  fi
+fi
+
+log "ERROR: Bootstrap not required and no master found in Sentinel. Refusing to start as master to avoid data loss."
+log "System state: Sentinel=Empty, BootstrapRequired=false. Manual intervention required."
+exit 1
 `
 	authArgs := ""
+	sentinelAuthArgs := ""
 	if lr.Spec.Auth.Enabled {
 		authArgs = "--requirepass $(REDIS_PASSWORD) --masterauth $(REDIS_PASSWORD)"
+		sentinelAuthArgs = "-a $(REDIS_PASSWORD)"
 	}
 
 	script := fmt.Sprintf(startupScript,
-		lr.Name, replicasServiceName(lr), lr.Namespace,
-		authArgs,
-		littleredv1alpha1.RedisPort, authArgs)
+		lr.Name, replicasServiceName(lr), lr.Namespace, // MASTER_HOST
+		lr.Name, lr.Namespace, // SENTINEL_ADDR
+		lr.Name, lr.Namespace, sentinelAuthArgs, // redis-cli query
+		littleredv1alpha1.RedisPort, authArgs, // exec replicaof
+		authArgs,                              // exec master
+		littleredv1alpha1.RedisPort, authArgs) // exec replicaof (waiting)
 
 	container := corev1.Container{
 		Name:            "redis",
@@ -920,6 +966,24 @@ fi
 			{
 				Name:      "data",
 				MountPath: "/data",
+			},
+		},
+		Env: []corev1.EnvVar{
+			{
+				Name: "LITTLERED_NAME",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.labels['app.kubernetes.io/instance']",
+					},
+				},
+			},
+			{
+				Name: "LITTLERED_NAMESPACE",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "metadata.namespace",
+					},
+				},
 			},
 		},
 		LivenessProbe:  buildLivenessProbe(lr),
@@ -1698,6 +1762,65 @@ func buildClusterClientService(lr *littleredv1alpha1.LittleRed) *corev1.Service 
 			Type:     lr.Spec.Service.Type,
 			Selector: clusterSelectorLabels(lr),
 			Ports:    ports,
+		},
+	}
+}
+
+// buildPodServiceAccount creates the ServiceAccount for Redis pods
+func buildPodServiceAccount(lr *littleredv1alpha1.LittleRed) *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podServiceAccountName(lr),
+			Namespace: lr.Namespace,
+			Labels:    commonLabels(lr),
+		},
+	}
+}
+
+// buildPodRole creates the Role for Redis pods to read LittleRed status
+func buildPodRole(lr *littleredv1alpha1.LittleRed) *rbacv1.Role {
+	return &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podServiceAccountName(lr),
+			Namespace: lr.Namespace,
+			Labels:    commonLabels(lr),
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups:     []string{"chuck-chuck-chuck.net"},
+				Resources:     []string{"littlereds"},
+				ResourceNames: []string{lr.Name},
+				Verbs:         []string{"get"},
+			},
+			{
+				APIGroups:     []string{"chuck-chuck-chuck.net"},
+				Resources:     []string{"littlereds/status"},
+				ResourceNames: []string{lr.Name},
+				Verbs:         []string{"get"},
+			},
+		},
+	}
+}
+
+// buildPodRoleBinding creates the RoleBinding for Redis pods
+func buildPodRoleBinding(lr *littleredv1alpha1.LittleRed) *rbacv1.RoleBinding {
+	return &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podServiceAccountName(lr),
+			Namespace: lr.Namespace,
+			Labels:    commonLabels(lr),
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      podServiceAccountName(lr),
+				Namespace: lr.Namespace,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     podServiceAccountName(lr),
 		},
 	}
 }

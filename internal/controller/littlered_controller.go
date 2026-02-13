@@ -61,6 +61,8 @@ type LittleRedReconciler struct {
 
 // +kubebuilder:rbac:groups=chuck-chuck-chuck.net,resources=littlereds,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chuck-chuck-chuck.net,resources=littlereds/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chuck-chuck-chuck.net,resources=littlereds/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -118,6 +120,13 @@ func (r *LittleRedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Reconcile based on mode
 	if littleRed.Spec.Mode != "sentinel" {
 		r.stopSentinelMonitor(req.NamespacedName)
+	}
+
+	// Initialize BootstrapRequired for Sentinel mode
+	if littleRed.Spec.Mode == "sentinel" && littleRed.Status.Phase == "" && !littleRed.Status.BootstrapRequired {
+		littleRed.Status.BootstrapRequired = true
+		// Phase is empty, so it's a new resource. We don't update here,
+		// it will be updated in the mode-specific reconciler or status update.
 	}
 
 	switch littleRed.Spec.Mode {
@@ -402,6 +411,12 @@ func (r *LittleRedReconciler) reconcileSentinel(ctx context.Context, littleRed *
 	// Reconcile Sentinel ConfigMap
 	if err := r.reconcileSentinelConfigMap(ctx, littleRed); err != nil {
 		log.Error(err, "Failed to reconcile Sentinel ConfigMap")
+		return ctrl.Result{}, err
+	}
+
+	// Reconcile Pod RBAC
+	if err := r.reconcilePodRBAC(ctx, littleRed); err != nil {
+		log.Error(err, "Failed to reconcile Pod RBAC")
 		return ctrl.Result{}, err
 	}
 
@@ -700,6 +715,9 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRe
 
 	if allReady {
 		littleRed.Status.Phase = littleredv1alpha1.PhaseRunning
+		// If we reach Running phase, initial bootstrap is definitely complete
+		littleRed.Status.BootstrapRequired = false
+
 		meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
 			Type:               littleredv1alpha1.ConditionReady,
 			Status:             metav1.ConditionTrue,
@@ -860,4 +878,15 @@ func (r *LittleRedReconciler) validateClusterSpec(littleRed *littleredv1alpha1.L
 	}
 
 	return nil
+}
+
+// reconcilePodRBAC ensures the ServiceAccount, Role and RoleBinding for pods exist
+func (r *LittleRedReconciler) reconcilePodRBAC(ctx context.Context, lr *littleredv1alpha1.LittleRed) error {
+	if err := r.apply(ctx, lr, buildPodServiceAccount(lr)); err != nil {
+		return err
+	}
+	if err := r.apply(ctx, lr, buildPodRole(lr)); err != nil {
+		return err
+	}
+	return r.apply(ctx, lr, buildPodRoleBinding(lr))
 }

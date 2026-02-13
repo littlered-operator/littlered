@@ -1904,6 +1904,11 @@ spec:
           status:
             description: LittleRedStatus defines the observed state of LittleRed
             properties:
+              bootstrapRequired:
+                description: |-
+                  BootstrapRequired indicates that the cluster needs initial master election.
+                  This is set to true on creation and cleared after successful bootstrap.
+                type: boolean
               cluster:
                 description: Cluster contains cluster state (cluster mode only)
                 properties:

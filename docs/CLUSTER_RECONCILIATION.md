@@ -1,6 +1,6 @@
 # Cluster Reconciliation
 
-This document describes the reconciliation mechanisms used by the LittleRed operator to maintain Redis Cluster health, handle node failures, and recover from various failure scenarios.
+This document describes the reconciliation mechanisms used by the LittleRed operator to maintain Redis Cluster health. For Sentinel mode data loss protection, see the **Safe Bootstrap** section in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Overview
 

@@ -30,7 +30,11 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 - **Decision**: Resources (CPU/Memory) `limits` always equal `requests` by default.
 - **Rationale**: Prevents "OOM Killer" surprises and CPU throttling, ensuring Redis has stable performance.
 
-### 2.4 Minimal Interference (Enablement over Intervention)
+### 2.4 Kubernetes as "Source of Truth"
+- **Decision**: For Cluster mode, the operator uses the Kubernetes Pod list to detect "ghost" nodes.
+- **Rationale**: Redis gossip can lag (up to 15s+). Knowing a Pod is gone via the K8s API allows immediate `CLUSTER FORGET` and faster healing.
+
+### 2.5 Minimal Interference (Enablement over Intervention)
 - **Philosophy**: Trust and enable Redis's internal mechanisms (Gossip, Sentinel) to handle their own state transitions. Don't "work against" them or attempt to "accelerate" their built-in timers (like `cluster-node-timeout`) unless absolutely necessary.
 - **When to Intervene**:
     1. **Loss of Quorum**: When Redis cannot self-heal because it lacks a majority (e.g., `CLUSTER FAILOVER TAKEOVER`).
@@ -38,9 +42,10 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
     3. **External Knowledge**: When the operator knows something Redis doesn't (e.g., "The Pod for this NodeID is deleted from K8s, it's never coming back").
 - **Key Goal**: Support the internal workings of Sentinel and Gossip, only "helping" when a permanent stall or cluster-wide failure is detected.
 
-### 2.3 Kubernetes as "Source of Truth"
-- **Decision**: For Cluster mode, the operator uses the Kubernetes Pod list to detect "ghost" nodes.
-- **Rationale**: Redis gossip can lag (up to 15s+). Knowing a Pod is gone via the K8s API allows immediate `CLUSTER FORGET` and faster healing.
+### 2.6 Safe Bootstrap (Sentinel Mode)
+- **Decision**: Uses `status.bootstrapRequired` and K8s API checks in pod startup scripts.
+- **Rationale**: Prevents empty restarted masters from wiping data on live replicas via full sync.
+- **Instruction**: Pods must have a ServiceAccount and read access to their own LittleRed status.
 
 ---
 
@@ -97,6 +102,7 @@ test/e2e/                   # End-to-end tests (requires Kind)
 3. **Auto-Generated Files**: Do not manually edit files marked `DO NOT EDIT` (e.g., `zz_generated.*`, `config/crd/bases/*`). Run `make manifests generate` instead.
 4. **Owner References**: Use `SetControllerReference` so K8s garbage collects child resources when the `LittleRed` CR is deleted.
 5. **Testing**: Add unit tests in `internal/controller/` and E2E tests in `test/e2e/` for any new feature or bug fix.
+6. **Documentation Maintenance**: After any non-trivial change to the data model (API/Status), operator logic, or architectural decisions, you **MUST** update all relevant documentation files (e.g., `docs/API_SPEC.md`, `docs/ARCHITECTURE.md`, `LLM_STARTUP.md`, etc.).
 
 ---
 

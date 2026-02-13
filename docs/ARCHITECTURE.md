@@ -142,6 +142,7 @@ spec:
 
 status:
   phase: Pending | Initializing | Running | Failed
+  bootstrapRequired: true    # Sentinel mode only
   conditions:
     - type: Ready
       status: "True" | "False" | "Unknown"
@@ -263,6 +264,21 @@ status:
 - ConfigMap: `{name}-config` (redis.conf)
 - ConfigMap: `{name}-sentinel-config` (sentinel.conf)
 
+### 3.2.1 Safe Bootstrap (Sentinel Mode)
+
+To prevent data loss in pure in-memory mode, LittleRed implements a "Safe Bootstrap" mechanism for Sentinel mode:
+
+1.  **Operator Intent**: On CR creation, the operator sets `status.bootstrapRequired: true`.
+2.  **Pod Identity**: Each Redis pod is assigned a `ServiceAccount` and can read its parent's CR status via the K8s API.
+3.  **Startup Logic**:
+    *   Pod queries existing Sentinels. If a master is found, it **always** joins as a replica.
+    *   If no master is found, it checks `status.bootstrapRequired`.
+    *   If `true` and the pod is `redis-0`, it starts as master.
+    *   If `false` and no master is found in Sentinel, the pod **fails to start** (refuses to assume mastership).
+4.  **Completion**: Once the operator detects a healthy master and connected replicas, it clears the `bootstrapRequired` flag.
+
+This ensures that a restarted master pod never reclaims mastership if it is empty and replicas with data exist.
+
 ### 3.3 Cluster Mode
 
 ```
@@ -381,6 +397,11 @@ status:
                 │ Reconcile ConfigMaps  │
                 │ - redis.conf          │
                 │ - sentinel.conf       │
+                └───────────┬───────────┘
+                            │
+                            ▼
+                ┌───────────────────────┐
+                │ Reconcile Pod RBAC    │◄─── SA, Role, Binding
                 └───────────┬───────────┘
                             │
                             ▼

@@ -462,6 +462,11 @@ type LittleRedStatus struct {
 	// +optional
 	Status string `json:"status,omitempty"`
 
+	// BootstrapRequired indicates that the cluster needs initial master election.
+	// This is set to true on creation and cleared after successful bootstrap.
+	// +optional
+	BootstrapRequired bool `json:"bootstrapRequired,omitempty"`
+
 	// ObservedGeneration is the last observed generation
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`

@@ -435,6 +435,7 @@ status:
     total: 1                    # Total Redis pods
 
   # Sentinel mode only
+  bootstrapRequired: true       # True on creation, cleared after first master elected
   master:
     podName: my-cache-redis-0   # Current master pod
     ip: 10.0.0.5                # Current master IP
@@ -463,6 +464,7 @@ status:
 | Field | Type | Description |
 |-------|------|-------------|
 | `phase` | `string` | `Pending`, `Initializing`, `Running`, `Failed`, `Terminating` |
+| `bootstrapRequired` | `bool` | True on creation, cleared after first master is elected (sentinel mode) |
 | `observedGeneration` | `int64` | Last processed `.metadata.generation` |
 | `conditions` | `[]Condition` | Detailed status conditions |
 | `redis.ready` | `int32` | Ready Redis pod count |
