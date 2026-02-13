@@ -33,23 +33,6 @@ import (
 )
 
 var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
-	const testNamespace = "littlered-cluster-chaos-test"
-
-	BeforeAll(func() {
-		By("creating test namespace")
-		cmd := exec.Command("kubectl", "create", "ns", testNamespace)
-		_, _ = utils.Run(cmd)
-	})
-
-	AfterAll(func() {
-		if debugOnFailure && suiteOrSpecFailed() {
-			By("skipping namespace cleanup due to failure and DEBUG_ON_FAILURE=true")
-			return
-		}
-		By("cleaning up test namespace")
-		cmd := exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found", "--timeout=2m")
-		_, _ = utils.Run(cmd)
-	})
 
 	Context("Baseline Stability (3 Masters, 0 Replicas)", Ordered, func() {
 		const crName = "chaos-cluster-stable"

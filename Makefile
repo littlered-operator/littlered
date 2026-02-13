@@ -121,6 +121,12 @@ FAIL_FAST = --ginkgo.fail-fast
 E2E_VARS += DEBUG_ON_FAILURE=true
 endif
 
+# TEST_NAMESPACE allows overriding the namespace for e2e test resources (default: "default").
+# Example: make test-e2e TEST_NAMESPACE=littlered-test
+ifneq ($(TEST_NAMESPACE),)
+E2E_VARS += TEST_NAMESPACE=$(TEST_NAMESPACE)
+endif
+
 .PHONY: test-e2e
 test-e2e: $(E2E_SETUP_DEP) run-test-e2e $(E2E_CLEANUP_DEP) ## Run the e2e tests.
 

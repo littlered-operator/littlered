@@ -32,26 +32,17 @@ import (
 )
 
 var _ = Describe("Sentinel Advanced Failover", func() {
-	const testNamespace = "littlered-failover-test"
-
-	BeforeEach(func() {
-		By("creating test namespace")
-		cmd := exec.Command("kubectl", "create", "ns", testNamespace)
-		_, _ = utils.Run(cmd)
-	})
-
-	AfterEach(func() {
-		if debugOnFailure && suiteOrSpecFailed() {
-			By("skipping namespace cleanup due to failure and DEBUG_ON_FAILURE=true")
-			return
-		}
-		By("cleaning up test namespace")
-		cmd := exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-	})
 
 	Context("Event-Driven Label Updates", Ordered, func() {
 		var crName string
+
+		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				return
+			}
+			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
 
 		BeforeAll(func() {
 			crName = fmt.Sprintf("event-driven-%d", time.Now().Unix())
@@ -137,6 +128,14 @@ spec:
 	Context("Polling-Only Recovery", Ordered, func() {
 		var crName string
 
+		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				return
+			}
+			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
 		BeforeAll(func() {
 			crName = fmt.Sprintf("polling-only-%d", time.Now().Unix())
 			By(fmt.Sprintf("deploying cluster %s with events disabled", crName))
@@ -204,6 +203,14 @@ spec:
 	Context("Hybrid (Production) Mode", Ordered, func() {
 		var crName string
 
+		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				return
+			}
+			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
 		BeforeAll(func() {
 			crName = fmt.Sprintf("hybrid-%d", time.Now().Unix())
 			By(fmt.Sprintf("deploying cluster %s with standard settings", crName))
@@ -257,6 +264,14 @@ spec:
 
 	Context("Sentinel Pod Resilience", Ordered, func() {
 		var crName string
+
+		AfterAll(func() {
+			if debugOnFailure && suiteOrSpecFailed() {
+				return
+			}
+			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
 
 		BeforeAll(func() {
 			crName = fmt.Sprintf("sentinel-death-%d", time.Now().Unix())

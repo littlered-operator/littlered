@@ -32,23 +32,6 @@ import (
 )
 
 var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
-	const testNamespace = "littlered-cluster-func-test"
-
-	BeforeAll(func() {
-		By("creating test namespace")
-		cmd := exec.Command("kubectl", "create", "ns", testNamespace)
-		_, _ = utils.Run(cmd) // Ignore if exists
-	})
-
-	AfterAll(func() {
-		if debugOnFailure && suiteOrSpecFailed() {
-			By("skipping namespace cleanup due to failure and DEBUG_ON_FAILURE=true")
-			return
-		}
-		By("cleaning up test namespace")
-		cmd := exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found", "--timeout=2m")
-		_, _ = utils.Run(cmd)
-	})
 
 	Context("Basic Operations (3 Masters, 1 Replica/Shard)", Ordered, func() {
 		const crName = "func-cluster-basic"

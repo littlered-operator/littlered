@@ -104,12 +104,8 @@ var _ = AfterEach(func() {
 
 ### Context Detection
 
-The system attempts to extract namespace, CR name, and chaos pod name from:
-
-1. Spec labels (if set manually)
-2. Spec path heuristics (e.g., "Cluster Mode Chaos" → `littlered-cluster-chaos-test`)
-
-Most of the time, this works automatically without any manual labeling.
+All tests share a single namespace (default: `default`, override with `TEST_NAMESPACE`).
+CR name and chaos pod name are extracted from spec labels if set.
 
 ## Troubleshooting
 

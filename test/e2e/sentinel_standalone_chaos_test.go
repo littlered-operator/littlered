@@ -32,23 +32,6 @@ import (
 )
 
 var _ = Describe("Sentinel and Standalone Chaos Testing", Ordered, func() {
-	const testNamespace = "littlered-chaos-sentinel-standalone"
-
-	BeforeAll(func() {
-		By("creating test namespace")
-		cmd := exec.Command("kubectl", "create", "ns", testNamespace)
-		_, _ = utils.Run(cmd)
-	})
-
-	AfterAll(func() {
-		if debugOnFailure && suiteOrSpecFailed() {
-			By("skipping namespace cleanup due to failure and DEBUG_ON_FAILURE=true")
-			return
-		}
-		By("cleaning up test namespace")
-		cmd := exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found", "--timeout=2m")
-		_, _ = utils.Run(cmd)
-	})
 
 	Context("Sentinel Resilience", Ordered, func() {
 		It("should maintain availability during rapid double failover", func() {

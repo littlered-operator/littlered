@@ -32,30 +32,6 @@ import (
 )
 
 var _ = Describe("LittleRed", Ordered, func() {
-	const testNamespace = "littlered-e2e-test"
-
-	BeforeAll(func() {
-		By("creating test namespace")
-		cmd := exec.Command("kubectl", "create", "ns", testNamespace)
-		_, _ = utils.Run(cmd) // Ignore if exists
-
-		// TODO: Re-enable restricted policy once operator sets seccompProfile on containers
-		// By("labeling the namespace to enforce the restricted security policy")
-		// cmd = exec.Command("kubectl", "label", "--overwrite", "ns", testNamespace,
-		// 	"pod-security.kubernetes.io/enforce=restricted")
-		// _, err := utils.Run(cmd)
-		// Expect(err).NotTo(HaveOccurred())
-	})
-
-	AfterAll(func() {
-		if debugOnFailure && suiteOrSpecFailed() {
-			By("skipping namespace cleanup due to failure and DEBUG_ON_FAILURE=true")
-			return
-		}
-		By("cleaning up test namespace")
-		cmd := exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-	})
 
 	Context("Standalone Mode", Ordered, func() {
 		const crName = "test-standalone"

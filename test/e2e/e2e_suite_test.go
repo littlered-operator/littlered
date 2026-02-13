@@ -41,6 +41,10 @@ var (
 	// operatorNamespace is where the operator is deployed.
 	operatorNamespace = "littlered-system"
 
+	// testNamespace is the namespace used for all e2e test resources.
+	// Override with TEST_NAMESPACE env var.
+	testNamespace = "default"
+
 	// skipOperatorDeploy skips operator deployment (use existing deployment).
 	skipOperatorDeploy = false
 
@@ -71,6 +75,7 @@ func suiteOrSpecFailed() bool {
 //   - SKIP_OPERATOR_DEPLOY: Set to "true" to skip operator deployment
 //   - USE_HELM: Set to "true" to deploy via Helm instead of make deploy
 //   - DEBUG_ON_FAILURE: Set to "true" to skip cleanup on failure
+//   - TEST_NAMESPACE: Namespace for test resources (default: "default")
 //   - KIND_CLUSTER: Kind cluster name (default: kind)
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(func(message string, callerSkip ...int) {
@@ -87,6 +92,9 @@ var _ = BeforeSuite(func() {
 	if img := os.Getenv("OPERATOR_IMAGE"); img != "" {
 		operatorImage = img
 	}
+	if ns := os.Getenv("TEST_NAMESPACE"); ns != "" {
+		testNamespace = ns
+	}
 	if os.Getenv("SKIP_OPERATOR_DEPLOY") == "true" {
 		skipOperatorDeploy = true
 	}
@@ -98,9 +106,17 @@ var _ = BeforeSuite(func() {
 	}
 
 	_, _ = fmt.Fprintf(GinkgoWriter, "Operator image: %s\n", operatorImage)
+	_, _ = fmt.Fprintf(GinkgoWriter, "Test namespace: %s\n", testNamespace)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Skip operator deploy: %v\n", skipOperatorDeploy)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Use Helm: %v\n", useHelm)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Debug on failure: %v\n", debugOnFailure)
+
+	// Create test namespace if it's not "default"
+	if testNamespace != "default" {
+		By("creating test namespace " + testNamespace)
+		cmd := exec.Command("kubectl", "create", "ns", testNamespace)
+		_, _ = utils.Run(cmd) // Ignore if exists
+	}
 
 	if skipOperatorDeploy {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping operator deployment (SKIP_OPERATOR_DEPLOY=true)\n")
@@ -133,34 +149,17 @@ var _ = AfterEach(func() {
 	}
 })
 
-// extractTestContext attempts to extract namespace and CR name from the current spec context
+// extractTestContext extracts CR name and chaos pod from spec labels.
+// Namespace is always the global testNamespace.
 func extractTestContext() (namespace, crName, chaosPod string) {
-	// Check spec labels for context information
+	namespace = testNamespace
+
 	labels := CurrentSpecReport().Labels()
 	for _, label := range labels {
-		if strings.HasPrefix(label, "namespace:") {
-			namespace = strings.TrimPrefix(label, "namespace:")
-		} else if strings.HasPrefix(label, "cr:") {
+		if strings.HasPrefix(label, "cr:") {
 			crName = strings.TrimPrefix(label, "cr:")
 		} else if strings.HasPrefix(label, "chaos:") {
 			chaosPod = strings.TrimPrefix(label, "chaos:")
-		}
-	}
-
-	// If we didn't find namespace in labels, try to infer from the spec path
-	if namespace == "" {
-		fullText := CurrentSpecReport().FullText()
-		if strings.Contains(fullText, "Cluster Mode") {
-			namespace = "littlered-cluster-func-test"
-			if strings.Contains(fullText, "Chaos") {
-				namespace = "littlered-cluster-chaos-test"
-			}
-		} else if strings.Contains(fullText, "Sentinel") || strings.Contains(fullText, "Standalone") {
-			namespace = "littlered-sentinel-chaos-test"
-		} else if strings.Contains(fullText, "Failover") {
-			namespace = "littlered-failover-test"
-		} else {
-			namespace = "littlered-test"
 		}
 	}
 
@@ -169,8 +168,15 @@ func extractTestContext() (namespace, crName, chaosPod string) {
 
 var _ = AfterSuite(func() {
 	if debugOnFailure && suiteOrSpecFailed() {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping operator undeploy due to failure and DEBUG_ON_FAILURE=true\n")
+		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping cleanup due to failure and DEBUG_ON_FAILURE=true\n")
 		return
+	}
+
+	// Delete test namespace if it's not "default"
+	if testNamespace != "default" {
+		By("cleaning up test namespace " + testNamespace)
+		cmd := exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found", "--timeout=2m")
+		_, _ = utils.Run(cmd)
 	}
 
 	if skipOperatorDeploy {
