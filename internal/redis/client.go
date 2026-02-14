@@ -199,6 +199,84 @@ func (c *SentinelClient) getMasterFromSentinel(ctx context.Context, addr string)
 	}, nil
 }
 
+// ReplicaInfo contains information about a sentinel-monitored replica
+type ReplicaInfo struct {
+	IP    string
+	Port  string
+	Flags string
+}
+
+// GetReplicas returns the list of replicas for a master as seen by any reachable sentinel
+func (c *SentinelClient) GetReplicas(ctx context.Context, masterName string) ([]ReplicaInfo, error) {
+	var lastErr error
+
+	for _, addr := range c.addresses {
+		replicas, err := c.getReplicasFromSentinel(ctx, addr, masterName)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return replicas, nil
+	}
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("failed to get replicas from any sentinel: %w", lastErr)
+	}
+	return nil, fmt.Errorf("no sentinels available")
+}
+
+func (c *SentinelClient) getReplicasFromSentinel(ctx context.Context, sentinelAddr, masterName string) ([]ReplicaInfo, error) {
+	client := redis.NewSentinelClient(&redis.Options{
+		Addr:        sentinelAddr,
+		Password:    c.password,
+		DialTimeout: DefaultTimeout,
+		ReadTimeout: DefaultTimeout,
+	})
+	defer client.Close()
+
+	// SENTINEL REPLICAS mymaster
+	result, err := client.Replicas(ctx, masterName).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get replicas: %w", err)
+	}
+
+	var replicas []ReplicaInfo
+	for _, raw := range result {
+		// go-redis returns []map[string]string for SENTINEL REPLICAS
+		replica := ReplicaInfo{
+			IP:    raw["ip"],
+			Port:  raw["port"],
+			Flags: raw["flags"],
+		}
+		replicas = append(replicas, replica)
+	}
+
+	return replicas, nil
+}
+
+// Reset clears state for a master in ALL sentinels (forcing re-discovery of replicas/sentinels)
+func (c *SentinelClient) Reset(ctx context.Context, masterName string) error {
+	var errors []string
+	for _, addr := range c.addresses {
+		client := redis.NewSentinelClient(&redis.Options{
+			Addr:        addr,
+			Password:    c.password,
+			DialTimeout: DefaultTimeout,
+			ReadTimeout: DefaultTimeout,
+		})
+		// SENTINEL RESET masterName
+		err := client.Process(ctx, redis.NewIntCmd(ctx, "SENTINEL", "RESET", masterName))
+		client.Close()
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", addr, err))
+		}
+	}
+	if len(errors) == len(c.addresses) && len(c.addresses) > 0 {
+		return fmt.Errorf("failed to issue RESET command to all sentinels: %s", strings.Join(errors, "; "))
+	}
+	return nil
+}
+
 // Ping checks if a redis instance is reachable
 func Ping(ctx context.Context, addr, password string) error {
 	client := redis.NewClient(&redis.Options{
