@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -842,6 +843,7 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 
 // updateClusterStatus updates the LittleRed status for cluster mode
 func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
+	oldStatus := littleRed.Status.DeepCopy()
 	// Get StatefulSet status
 	sts := &appsv1.StatefulSet{}
 	if err := r.Get(ctx, types.NamespacedName{
@@ -913,11 +915,14 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 		})
 	}
 
-	if err := r.Status().Update(ctx, littleRed); err != nil {
-		if apierrors.IsConflict(err) {
-			return ctrl.Result{Requeue: true}, nil
+	// Update status if changed
+	if !reflect.DeepEqual(oldStatus, &littleRed.Status) {
+		if err := r.Status().Update(ctx, littleRed); err != nil {
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{Requeue: true}, nil
+			}
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, err
 	}
 
 	fast, steady := littleRed.GetRequeueIntervals()

@@ -26,7 +26,6 @@ import (
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
@@ -80,10 +79,6 @@ func clusterHeadlessServiceName(lr *littleredv1alpha1.LittleRed) string {
 
 func serviceMonitorName(lr *littleredv1alpha1.LittleRed) string {
 	return lr.Name
-}
-
-func podServiceAccountName(lr *littleredv1alpha1.LittleRed) string {
-	return fmt.Sprintf("%s-pod", lr.Name)
 }
 
 // Label keys
@@ -822,7 +817,6 @@ func buildRedisStatefulSetSentinel(lr *littleredv1alpha1.LittleRed) *appsv1.Stat
 					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName:        podServiceAccountName(lr),
 					SecurityContext:           lr.Spec.PodTemplate.SecurityContext,
 					Containers:                containers,
 					Volumes:                   buildVolumes(lr),
@@ -1729,65 +1723,6 @@ func buildClusterClientService(lr *littleredv1alpha1.LittleRed) *corev1.Service 
 			Type:     lr.Spec.Service.Type,
 			Selector: clusterSelectorLabels(lr),
 			Ports:    ports,
-		},
-	}
-}
-
-// buildPodServiceAccount creates the ServiceAccount for Redis pods
-func buildPodServiceAccount(lr *littleredv1alpha1.LittleRed) *corev1.ServiceAccount {
-	return &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podServiceAccountName(lr),
-			Namespace: lr.Namespace,
-			Labels:    commonLabels(lr),
-		},
-	}
-}
-
-// buildPodRole creates the Role for Redis pods to read LittleRed status
-func buildPodRole(lr *littleredv1alpha1.LittleRed) *rbacv1.Role {
-	return &rbacv1.Role{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podServiceAccountName(lr),
-			Namespace: lr.Namespace,
-			Labels:    commonLabels(lr),
-		},
-		Rules: []rbacv1.PolicyRule{
-			{
-				APIGroups:     []string{"chuck-chuck-chuck.net"},
-				Resources:     []string{"littlereds"},
-				ResourceNames: []string{lr.Name},
-				Verbs:         []string{"get"},
-			},
-			{
-				APIGroups:     []string{"chuck-chuck-chuck.net"},
-				Resources:     []string{"littlereds/status"},
-				ResourceNames: []string{lr.Name},
-				Verbs:         []string{"get"},
-			},
-		},
-	}
-}
-
-// buildPodRoleBinding creates the RoleBinding for Redis pods
-func buildPodRoleBinding(lr *littleredv1alpha1.LittleRed) *rbacv1.RoleBinding {
-	return &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podServiceAccountName(lr),
-			Namespace: lr.Namespace,
-			Labels:    commonLabels(lr),
-		},
-		Subjects: []rbacv1.Subject{
-			{
-				Kind:      "ServiceAccount",
-				Name:      podServiceAccountName(lr),
-				Namespace: lr.Namespace,
-			},
-		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: "rbac.authorization.k8s.io",
-			Kind:     "Role",
-			Name:     podServiceAccountName(lr),
 		},
 	}
 }

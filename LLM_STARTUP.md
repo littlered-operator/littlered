@@ -43,9 +43,9 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 - **Key Goal**: Support the internal workings of Sentinel and Gossip, only "helping" when a permanent stall or cluster-wide failure is detected.
 
 ### 2.6 Safe Bootstrap (Sentinel Mode)
-- **Decision**: Uses `status.bootstrapRequired` and K8s API checks in pod startup scripts.
-- **Rationale**: Prevents empty restarted masters from wiping data on live replicas via full sync.
-- **Instruction**: Pods must have a ServiceAccount and read access to their own LittleRed status.
+- **Decision**: Uses `status.bootstrapRequired` and Operator-led registration in Sentinel.
+- **Rationale**: Prevents empty restarted masters from wiping data on live replicas via full sync by strictly authorizing mastership via Sentinel.
+- **Instruction**: All Redis pods must start in a wait-loop querying Sentinel until a master is assigned by the Operator.
 
 ---
 

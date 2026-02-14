@@ -9,7 +9,6 @@ rules:
     - ''
     resources:
     - configmaps
-    - serviceaccounts
     - services
     verbs:
     - create
@@ -79,19 +78,6 @@ rules:
     - monitoring.coreos.com
     resources:
     - servicemonitors
-    verbs:
-    - create
-    - delete
-    - get
-    - list
-    - patch
-    - update
-    - watch
-  - apiGroups:
-    - rbac.authorization.k8s.io
-    resources:
-    - rolebindings
-    - roles
     verbs:
     - create
     - delete

@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -66,8 +67,6 @@ type LittleRedReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 
@@ -309,6 +308,7 @@ func (r *LittleRedReconciler) reconcileServiceMonitor(ctx context.Context, littl
 // updateStatus updates the LittleRed status based on current state
 func (r *LittleRedReconciler) updateStatus(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+	oldStatus := littleRed.Status.DeepCopy()
 
 	// Get StatefulSet status
 	sts := &appsv1.StatefulSet{}
@@ -373,13 +373,15 @@ func (r *LittleRedReconciler) updateStatus(ctx context.Context, littleRed *littl
 		littleRed.Status.Status = string(littleRed.Status.Phase)
 	}
 
-	// Update status
-	if err := r.Status().Update(ctx, littleRed); err != nil {
-		if apierrors.IsConflict(err) {
-			log.Info("Status update conflict, requeueing")
-			return ctrl.Result{RequeueAfter: time.Second}, nil
+	// Update status if changed
+	if !reflect.DeepEqual(oldStatus, littleRed.Status) {
+		if err := r.Status().Update(ctx, littleRed); err != nil {
+			if apierrors.IsConflict(err) {
+				log.Info("Status update conflict, requeueing")
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, err
 	}
 
 	fast, steady := littleRed.GetRequeueIntervals()
@@ -411,12 +413,6 @@ func (r *LittleRedReconciler) reconcileSentinel(ctx context.Context, littleRed *
 	// Reconcile Sentinel ConfigMap
 	if err := r.reconcileSentinelConfigMap(ctx, littleRed); err != nil {
 		log.Error(err, "Failed to reconcile Sentinel ConfigMap")
-		return ctrl.Result{}, err
-	}
-
-	// Reconcile Pod RBAC
-	if err := r.reconcilePodRBAC(ctx, littleRed); err != nil {
-		log.Error(err, "Failed to reconcile Pod RBAC")
 		return ctrl.Result{}, err
 	}
 
@@ -556,12 +552,12 @@ func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *l
 
 	// Find pod with matching IP or Name
 	for _, pod := range podList.Items {
-		if pod.Status.PodIP == reportedIdentity || pod.Name == reportedPodName || (pod.Status.PodIP != "" && reportedIdentity != "" && pod.Status.PodIP == reportedIdentity) {
+		if pod.Status.PodIP == reportedIdentity || pod.Name == reportedPodName {
 			return pod.Name, nil
 		}
 	}
 
-	return "", fmt.Errorf("sentinel reported master identity %q not found in pod list (checked IPs and names)", reportedIdentity)
+	return "", fmt.Errorf("sentinel reported master identity %q (parsed as name %q) not found in pod list", reportedIdentity, reportedPodName)
 }
 
 // updateMasterLabel updates the role labels on Redis pods based on current master
@@ -584,10 +580,14 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 
 	masterPodName, err := r.getMasterPodName(ctx, littleRed, podList)
 	if err != nil {
-		// If we can't get the master from Sentinel, we have two cases:
-		// 1. Initial bootstrap: no master info in status, bootstrap sentinel will handle it.
-		// 2. Existing cluster: keep current labels to avoid churn during failover.
+		// If we can't get the master from Sentinel, keep current labels to avoid churn
 		log.Info("Sentinel unreachable or master unknown, skipping label update", "error", err)
+		return nil
+	}
+
+	// Safety: if masterPodName is empty, something is wrong with logic, but we must NOT 
+	// proceed to relabel everything as replicas.
+	if masterPodName == "" {
 		return nil
 	}
 
@@ -631,6 +631,7 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 // updateSentinelStatus updates the LittleRed status for sentinel mode
 func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+	oldStatus := littleRed.Status.DeepCopy()
 
 	// Get Redis StatefulSet status
 	redisSts := &appsv1.StatefulSet{}
@@ -766,13 +767,15 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRe
 		littleRed.Status.Status = string(littleRed.Status.Phase)
 	}
 
-	// Update status
-	if err := r.Status().Update(ctx, littleRed); err != nil {
-		if apierrors.IsConflict(err) {
-			log.Info("Status update conflict, requeueing")
-			return ctrl.Result{RequeueAfter: time.Second}, nil
+	// Update status if changed
+	if !reflect.DeepEqual(oldStatus, &littleRed.Status) {
+		if err := r.Status().Update(ctx, littleRed); err != nil {
+			if apierrors.IsConflict(err) {
+				log.Info("Status update conflict, requeueing")
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, err
 	}
 
 	fast, steady := littleRed.GetRequeueIntervals()
@@ -884,17 +887,6 @@ func (r *LittleRedReconciler) validateClusterSpec(littleRed *littleredv1alpha1.L
 	}
 
 	return nil
-}
-
-// reconcilePodRBAC ensures the ServiceAccount, Role and RoleBinding for pods exist
-func (r *LittleRedReconciler) reconcilePodRBAC(ctx context.Context, lr *littleredv1alpha1.LittleRed) error {
-	if err := r.apply(ctx, lr, buildPodServiceAccount(lr)); err != nil {
-		return err
-	}
-	if err := r.apply(ctx, lr, buildPodRole(lr)); err != nil {
-		return err
-	}
-	return r.apply(ctx, lr, buildPodRoleBinding(lr))
 }
 
 // bootstrapSentinel configures Sentinels to monitor the initial master
