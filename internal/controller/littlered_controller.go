@@ -565,25 +565,46 @@ func (r *LittleRedReconciler) reconcileSentinelTopology(ctx context.Context, lit
 	}
 
 	sc := redisclient.NewSentinelClient(addresses, password)
+	
+	// 1. Check if Master is valid (not a ghost)
+	masterInfo, err := sc.GetMaster(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get master for topology sync: %w", err)
+	}
+	if !validIPs[masterInfo.IP] {
+		log.Info("Sentinel master is a ghost node, skipping RESET until failover completes", "ip", masterInfo.IP)
+		return nil
+	}
+
+	// 2. Get replicas and check for ghosts
 	replicas, err := sc.GetReplicas(ctx, redisclient.SentinelMasterName)
 	if err != nil {
 		return fmt.Errorf("failed to get replicas for topology sync: %w", err)
 	}
 
 	ghostFound := false
+	validReplicaCount := 0
 	for _, replica := range replicas {
 		if !validIPs[replica.IP] {
-			log.Info("Ghost node detected in Sentinel topology", "ip", replica.IP, "flags", replica.Flags)
-			ghostFound = true
-			break
+			// Only consider ghosts that are already marked as DOWN
+			if strings.Contains(replica.Flags, "s_down") || strings.Contains(replica.Flags, "o_down") {
+				log.Info("Ghost node detected in Sentinel topology", "ip", replica.IP, "flags", replica.Flags)
+				ghostFound = true
+			}
+		} else {
+			validReplicaCount++
 		}
 	}
 
-	if ghostFound {
+	// 3. Issue RESET only if it's safe: 
+	// We found a ghost, AND the master is valid, AND we have the expected number of valid replicas (2)
+	if ghostFound && validReplicaCount == 2 {
 		log.Info("Issuing SENTINEL RESET to clear ghost nodes", "master", redisclient.SentinelMasterName)
 		if err := sc.Reset(ctx, redisclient.SentinelMasterName); err != nil {
 			return fmt.Errorf("failed to reset sentinel topology: %w", err)
 		}
+	} else if ghostFound {
+		log.Info("Ghost nodes found but cluster not yet stable for RESET", "validReplicas", validReplicaCount)
 	}
 
 	return nil
