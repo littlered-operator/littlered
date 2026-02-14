@@ -19,6 +19,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -122,7 +123,7 @@ func (c *SentinelClient) Subscribe(ctx context.Context, channels ...string) (<-c
 
 // Monitor tells the sentinels to start monitoring a new master
 func (c *SentinelClient) Monitor(ctx context.Context, name, ip string, port int, quorum int) error {
-	var lastErr error
+	var errors []string
 	for _, addr := range c.addresses {
 		client := redis.NewSentinelClient(&redis.Options{
 			Addr:        addr,
@@ -132,17 +133,23 @@ func (c *SentinelClient) Monitor(ctx context.Context, name, ip string, port int,
 		})
 		err := client.Process(ctx, redis.NewStatusCmd(ctx, "SENTINEL", "MONITOR", name, ip, port, quorum))
 		client.Close()
-		if err == nil {
-			return nil
+		if err != nil {
+			// If it's already monitored, that's fine
+			if strings.Contains(err.Error(), "ERR Duplicate master name") {
+				continue
+			}
+			errors = append(errors, fmt.Sprintf("%s: %v", addr, err))
 		}
-		lastErr = err
 	}
-	return fmt.Errorf("failed to issue MONITOR command to any sentinel: %w", lastErr)
+	if len(errors) == len(c.addresses) && len(c.addresses) > 0 {
+		return fmt.Errorf("failed to issue MONITOR command to all sentinels: %s", strings.Join(errors, "; "))
+	}
+	return nil
 }
 
 // Set updates sentinel configuration for a master
 func (c *SentinelClient) Set(ctx context.Context, name, option, value string) error {
-	var lastErr error
+	var errors []string
 	for _, addr := range c.addresses {
 		client := redis.NewSentinelClient(&redis.Options{
 			Addr:        addr,
@@ -152,12 +159,19 @@ func (c *SentinelClient) Set(ctx context.Context, name, option, value string) er
 		})
 		err := client.Process(ctx, redis.NewStatusCmd(ctx, "SENTINEL", "SET", name, option, value))
 		client.Close()
-		if err == nil {
-			return nil
+		if err != nil {
+			// If master not found on this node, we'll try again later
+			if strings.Contains(err.Error(), "ERR No such master") {
+				continue
+			}
+			errors = append(errors, fmt.Sprintf("%s: %v", addr, err))
 		}
-		lastErr = err
 	}
-	return fmt.Errorf("failed to issue SET command to any sentinel: %w", lastErr)
+	// We consider it a success if at least one sentinel was updated
+	if len(errors) == len(c.addresses) && len(c.addresses) > 0 {
+		return fmt.Errorf("failed to issue SET command to any sentinel: %s", strings.Join(errors, "; "))
+	}
+	return nil
 }
 
 func (c *SentinelClient) getMasterFromSentinel(ctx context.Context, addr string) (*MasterInfo, error) {

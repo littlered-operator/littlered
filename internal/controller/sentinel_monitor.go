@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -75,16 +74,6 @@ func (r *LittleRedReconciler) stopSentinelMonitor(nn types.NamespacedName) {
 func (r *LittleRedReconciler) monitorSentinel(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) {
 	log := logf.Log.WithName("sentinel-monitor").WithValues("littlered", littleRed.Name, "namespace", littleRed.Namespace)
 
-	// Construct Sentinel address
-	// We use the headless service to get DNS for all sentinels
-	// Format: <name>-sentinel.<namespace>.svc:<port>
-	sentinelAddress := fmt.Sprintf("%s-sentinel.%s.svc:%d",
-		littleRed.Name, littleRed.Namespace, littleredv1alpha1.SentinelPort)
-
-	// We can also try individual pod addresses if the service one fails or for better redundancy
-	// For now, let's use the headless service which should round-robin or resolving to IPs
-	addresses := []string{sentinelAddress}
-
 	// Get password if auth is enabled
 	password := ""
 	if littleRed.Spec.Auth.Enabled {
@@ -108,8 +97,6 @@ func (r *LittleRedReconciler) monitorSentinel(ctx context.Context, littleRed *li
 		}
 	}
 
-	sentinelClient := redis.NewSentinelClient(addresses, password)
-
 	// Retry loop
 	for {
 		select {
@@ -117,9 +104,12 @@ func (r *LittleRedReconciler) monitorSentinel(ctx context.Context, littleRed *li
 			log.Info("Stopping Sentinel monitor")
 			return
 		default:
-			// Connect and subscribe
+			// Refresh addresses on each retry to catch new pods
+			addresses := r.getSentinelAddresses(ctx, littleRed)
+			sentinelClient := redis.NewSentinelClient(addresses, password)
+
 			// +switch-master is the event we care about
-			log.Info("Connecting to Sentinel for monitoring", "address", sentinelAddress)
+			log.Info("Connecting to Sentinel for monitoring", "addresses", addresses)
 
 			// Use a dedicated context for the subscription so we can cancel it if the parent ctx is cancelled
 			subCtx, cancelSub := context.WithCancel(ctx)

@@ -38,6 +38,7 @@ var _ = Describe("LittleRed", Ordered, func() {
 
 		AfterAll(func() {
 			if debugOnFailure && suiteOrSpecFailed() {
+				By("skipping standalone CR cleanup to allow debugging")
 				return
 			}
 			By("cleaning up standalone CR")
@@ -46,6 +47,7 @@ var _ = Describe("LittleRed", Ordered, func() {
 		})
 
 		It("should create a standalone Redis instance", func() {
+			AddReportEntry("cr:" + crName)
 			By("Test ID: STAN-001 - applying the LittleRed CR")
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1
@@ -200,6 +202,7 @@ spec:
 		const crName = "test-sentinel"
 
 		BeforeAll(func() {
+			AddReportEntry("cr:" + crName)
 			By("Test ID: SEN-001 - applying the LittleRed CR with sentinel mode")
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1
@@ -247,6 +250,7 @@ spec:
 
 		AfterAll(func() {
 			if debugOnFailure && suiteOrSpecFailed() {
+				By("skipping sentinel CR cleanup to allow debugging")
 				return
 			}
 			By("cleaning up sentinel CR")
@@ -341,8 +345,13 @@ spec:
 	Context("Rolling Update", Ordered, func() {
 		const crName = "test-rolling-update"
 
+		BeforeAll(func() {
+			AddReportEntry("cr:" + crName)
+		})
+
 		AfterAll(func() {
 			if debugOnFailure && suiteOrSpecFailed() {
+				By("skipping rolling update CR cleanup to allow debugging")
 				return
 			}
 			By("cleaning up rolling update CR")
@@ -721,8 +730,13 @@ spec:
 	Context("Sentinel Failover", Ordered, func() {
 		const crName = "test-failover"
 
+		BeforeAll(func() {
+			AddReportEntry("cr:" + crName)
+		})
+
 		AfterAll(func() {
 			if debugOnFailure && suiteOrSpecFailed() {
+				By("skipping failover CR cleanup to allow debugging")
 				return
 			}
 			By("cleaning up failover CR")

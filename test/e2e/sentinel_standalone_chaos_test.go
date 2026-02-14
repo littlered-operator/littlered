@@ -36,6 +36,8 @@ var _ = Describe("Sentinel and Standalone Chaos Testing", Ordered, func() {
 	Context("Sentinel Resilience", Ordered, func() {
 		It("should maintain availability during rapid double failover", func() {
 			crName := fmt.Sprintf("chaos-sentinel-%d", time.Now().Unix())
+			// Add dynamic labels for the artifact collector
+			AddReportEntry("cr:" + crName)
 			const testDuration = 120 * time.Second
 
 			By(fmt.Sprintf("creating Sentinel cluster %s and chaos client simultaneously", crName))
@@ -45,8 +47,6 @@ kind: LittleRed
 metadata:
   name: %s
   namespace: %s
-  annotations:
-    chuck-chuck-chuck.net/disable-polling: "true"
 spec:
   mode: sentinel
   sentinel:
@@ -61,15 +61,26 @@ spec:
 
 			chaosPodName, err := deployChaosClient(testNamespace, "sentinel-chaos", crName, false, "chaos-sent", testDuration)
 			Expect(err).NotTo(HaveOccurred())
+			AddReportEntry("chaos:" + chaosPodName)
+
+			// Cleanup defers - these will run in LIFO order.
+			// We want artifact collection to happen BEFORE cleanup.
+			// Suite-level AfterEach runs after these defers.
 			defer func() {
 				if debugOnFailure && suiteOrSpecFailed() {
+					By("skipping Sentinel cluster cleanup to allow debugging")
+					return
+				}
+				By("cleaning up Sentinel cluster")
+				cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			}()
+			defer func() {
+				if debugOnFailure && suiteOrSpecFailed() {
+					By("skipping chaos client cleanup to allow debugging")
 					return
 				}
 				deleteChaosClient(testNamespace, chaosPodName)
-			}()
-			defer func() {
-				cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
-				_, _ = utils.Run(cmd)
 			}()
 
 			By("waiting for sentinel cluster to be ready")

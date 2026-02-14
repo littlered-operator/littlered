@@ -40,6 +40,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 		const testDuration = 30 * time.Second
 
 		BeforeAll(func() {
+			AddReportEntry("cr:" + crName)
 			By("creating a 3-shard cluster with no replicas")
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1
@@ -61,6 +62,7 @@ spec:
 			By("deploying chaos client pod simultaneously")
 			chaosPodName, err = deployChaosClient(testNamespace, "stable", crName, true, "chaos-stable", testDuration)
 			Expect(err).NotTo(HaveOccurred())
+			AddReportEntry("chaos:" + chaosPodName)
 
 			By("waiting for cluster to be ready and ok")
 			Eventually(func(g Gomega) {
@@ -106,6 +108,10 @@ spec:
 	Context("Resilience with Replicas (3 Masters, 1 Replica/Shard)", Ordered, func() {
 		const crName = "chaos-cluster-resilience"
 
+		BeforeAll(func() {
+			AddReportEntry("cr:" + crName)
+		})
+
 		AfterEach(func() {
 			if debugOnFailure && suiteOrSpecFailed() {
 				return
@@ -139,6 +145,7 @@ spec:
 			By("deploying chaos client pod simultaneously")
 			chaosPodName, err := deployChaosClient(testNamespace, "master-fail", crName, true, "chaos-master", testDuration)
 			Expect(err).NotTo(HaveOccurred())
+			AddReportEntry("chaos:" + chaosPodName)
 			defer func() {
 				if debugOnFailure && suiteOrSpecFailed() {
 					return
@@ -212,6 +219,7 @@ spec:
 			By("deploying chaos client pod simultaneously")
 			chaosPodName, err := deployChaosClient(testNamespace, "replica-fail", crName, true, "chaos-replica", testDuration)
 			Expect(err).NotTo(HaveOccurred())
+			AddReportEntry("chaos:" + chaosPodName)
 			defer func() {
 				if debugOnFailure && suiteOrSpecFailed() {
 					return
@@ -284,6 +292,7 @@ spec:
 			By("deploying chaos client pod simultaneously")
 			chaosPodName, err := deployChaosClient(testNamespace, "rolling", crName, true, "chaos-rolling", testDuration)
 			Expect(err).NotTo(HaveOccurred())
+			AddReportEntry("chaos:" + chaosPodName)
 			defer func() {
 				if debugOnFailure && suiteOrSpecFailed() {
 					return
@@ -350,6 +359,7 @@ spec:
 		const testDuration = 5 * time.Minute
 
 		BeforeAll(func() {
+			AddReportEntry("cr:" + crName)
 			By("creating a 3-shard cluster with 1 replica per shard")
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1
@@ -371,6 +381,7 @@ spec:
 			By("deploying chaos client pod simultaneously")
 			chaosPodName, err = deployChaosClient(testNamespace, "multipod", crName, true, "chaos-multi", testDuration)
 			Expect(err).NotTo(HaveOccurred())
+			AddReportEntry("chaos:" + chaosPodName)
 
 			By("waiting for cluster to be ready and ok")
 			Eventually(func(g Gomega) {

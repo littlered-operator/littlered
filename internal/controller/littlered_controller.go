@@ -509,29 +509,46 @@ func (r *LittleRedReconciler) reconcileMasterService(ctx context.Context, little
 	return r.apply(ctx, littleRed, buildMasterService(littleRed))
 }
 
+// getSentinelAddresses returns a list of Sentinel addresses to try (Service FQDN and pod IPs)
+func (r *LittleRedReconciler) getSentinelAddresses(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) []string {
+	addresses := []string{
+		fmt.Sprintf("%s-sentinel.%s.svc:%d",
+			littleRed.Name, littleRed.Namespace, littleredv1alpha1.SentinelPort),
+	}
+
+	// Also add pod IPs for resilience
+	podList := &corev1.PodList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(littleRed.Namespace),
+		client.MatchingLabels(sentinelSelectorLabels(littleRed)),
+	}
+	if err := r.List(ctx, podList, listOpts...); err == nil {
+		for _, pod := range podList.Items {
+			if pod.Status.PodIP != "" {
+				addresses = append(addresses, fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.SentinelPort))
+			}
+		}
+	}
+
+	return addresses
+}
+
 // getMasterPodName queries Sentinel to find the current master pod name.
 // Returns an error if Sentinel query fails.
 func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, podList *corev1.PodList) (string, error) {
 	// Try to get real master from Sentinel
-	sentinelAddr := fmt.Sprintf("%s-sentinel.%s.svc:%d",
-		littleRed.Name, littleRed.Namespace, littleredv1alpha1.SentinelPort)
+	addresses := r.getSentinelAddresses(ctx, littleRed)
 
 	password := ""
 	if littleRed.Spec.Auth.Enabled {
-		secret := &corev1.Secret{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      littleRed.Spec.Auth.ExistingSecret,
-			Namespace: littleRed.Namespace,
-		}, secret); err == nil {
-			password = string(secret.Data["password"])
-		}
+		password = r.getRedisPassword(ctx, littleRed)
 	}
 
 	// Use a short timeout for the check
-	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	sc := redisclient.NewSentinelClient([]string{sentinelAddr}, password)
+	sc := redisclient.NewSentinelClient(addresses, password)
 	masterInfo, err := sc.GetMaster(checkCtx)
 	if err != nil {
 		// If Sentinel explicitly says "no master", it's not a failure we should error on
@@ -585,9 +602,10 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 		return nil
 	}
 
-	// Safety: if masterPodName is empty, something is wrong with logic, but we must NOT 
+	// Safety: if masterPodName is empty, something is wrong with logic, but we must NOT
 	// proceed to relabel everything as replicas.
 	if masterPodName == "" {
+		log.Info("WARNING: Sentinel reported no master, but GetMaster returned success with empty name. Skipping label update to maintain safety.")
 		return nil
 	}
 
@@ -697,28 +715,28 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRe
 
 	masterPodName, err := r.getMasterPodName(ctx, littleRed, podList)
 	if err != nil {
-		// If we can't determine master, keep the current one from status if available
-		if littleRed.Status.Master != nil && littleRed.Status.Master.PodName != "" {
-			masterPodName = littleRed.Status.Master.PodName
-		} else {
-			// No master known yet, leave empty
-			masterPodName = ""
-		}
+		log.Info("Sentinel unreachable or master unknown, reporting no master in status", "error", err)
+		masterPodName = ""
 	}
 	littleRed.Status.Master.PodName = masterPodName
 
 	// Try to get master pod IP
-	masterPod := &corev1.Pod{}
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      masterPodName,
-		Namespace: littleRed.Namespace,
-	}, masterPod); err == nil {
-		littleRed.Status.Master.IP = masterPod.Status.PodIP
+	if masterPodName != "" {
+		masterPod := &corev1.Pod{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      masterPodName,
+			Namespace: littleRed.Namespace,
+		}, masterPod); err == nil {
+			littleRed.Status.Master.IP = masterPod.Status.PodIP
+		}
+	} else {
+		littleRed.Status.Master.IP = ""
 	}
 	// Determine phase
 	allReady := littleRed.Status.Redis.Ready == littleRed.Status.Redis.Total &&
 		littleRed.Status.Sentinels.Ready == littleRed.Status.Sentinels.Total &&
-		littleRed.Status.Redis.Ready > 0
+		littleRed.Status.Redis.Ready > 0 &&
+		masterPodName != ""
 
 	if allReady {
 		littleRed.Status.Phase = littleredv1alpha1.PhaseRunning
@@ -906,11 +924,10 @@ func (r *LittleRedReconciler) bootstrapSentinel(ctx context.Context, lr *littler
 	}
 
 	// 2. Configure Sentinels
-	sentinelAddr := fmt.Sprintf("%s-sentinel.%s.svc:%d",
-		lr.Name, lr.Namespace, littleredv1alpha1.SentinelPort)
+	addresses := r.getSentinelAddresses(ctx, lr)
 
 	password := r.getRedisPassword(ctx, lr)
-	sc := redisclient.NewSentinelClient([]string{sentinelAddr}, password)
+	sc := redisclient.NewSentinelClient(addresses, password)
 
 	masterFQDN := fmt.Sprintf("%s-redis-0.%s.%s.svc.cluster.local",
 		lr.Name, replicasServiceName(lr), lr.Namespace)
@@ -922,18 +939,8 @@ func (r *LittleRedReconciler) bootstrapSentinel(ctx context.Context, lr *littler
 
 	log.Info("Bootstrap: configuring Sentinel to monitor initial master", "master", masterFQDN)
 
-	// Check if already monitored to avoid "Duplicate master name" errors
-	if info, err := sc.GetMaster(ctx); err == nil && info != nil {
-		log.Info("Bootstrap: master already registered in Sentinel, skipping MONITOR command")
-	} else {
-		if err := sc.Monitor(ctx, "mymaster", masterFQDN, littleredv1alpha1.RedisPort, quorum); err != nil {
-			// If we still get a duplicate error, treat it as success
-			if strings.Contains(err.Error(), "ERR Duplicate master name") {
-				log.Info("Bootstrap: master already registered (duplicate error), proceeding")
-			} else {
-				return fmt.Errorf("failed to issue SENTINEL MONITOR: %w", err)
-			}
-		}
+	if err := sc.Monitor(ctx, "mymaster", masterFQDN, littleredv1alpha1.RedisPort, quorum); err != nil {
+		return fmt.Errorf("failed to issue SENTINEL MONITOR: %w", err)
 	}
 
 	// 3. Apply settings

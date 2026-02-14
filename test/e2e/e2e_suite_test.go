@@ -163,6 +163,16 @@ func extractTestContext() (namespace, crName, chaosPod string) {
 		}
 	}
 
+	// Also check report entries for dynamic names
+	for _, entry := range CurrentSpecReport().ReportEntries {
+		name := entry.Name
+		if strings.HasPrefix(name, "cr:") {
+			crName = strings.TrimPrefix(name, "cr:")
+		} else if strings.HasPrefix(name, "chaos:") {
+			chaosPod = strings.TrimPrefix(name, "chaos:")
+		}
+	}
+
 	return namespace, crName, chaosPod
 }
 

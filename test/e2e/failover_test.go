@@ -38,14 +38,17 @@ var _ = Describe("Sentinel Advanced Failover", func() {
 
 		AfterAll(func() {
 			if debugOnFailure && suiteOrSpecFailed() {
+				By("skipping event-driven CR cleanup to allow debugging")
 				return
 			}
+			By("cleaning up event-driven CR")
 			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
 			_, _ = utils.Run(cmd)
 		})
 
 		BeforeAll(func() {
 			crName = fmt.Sprintf("event-driven-%d", time.Now().Unix())
+			AddReportEntry("cr:" + crName)
 			By(fmt.Sprintf("deploying cluster %s with polling disabled", crName))
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1
@@ -152,6 +155,7 @@ spec:
 
 		BeforeAll(func() {
 			crName = fmt.Sprintf("polling-only-%d", time.Now().Unix())
+			AddReportEntry("cr:" + crName)
 			By(fmt.Sprintf("deploying cluster %s with events disabled", crName))
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1
@@ -235,6 +239,7 @@ spec:
 
 		BeforeAll(func() {
 			crName = fmt.Sprintf("hybrid-%d", time.Now().Unix())
+			AddReportEntry("cr:" + crName)
 			By(fmt.Sprintf("deploying cluster %s with standard settings", crName))
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1
@@ -305,6 +310,7 @@ spec:
 
 		BeforeAll(func() {
 			crName = fmt.Sprintf("sentinel-death-%d", time.Now().Unix())
+			AddReportEntry("cr:" + crName)
 			By(fmt.Sprintf("deploying cluster %s for sentinel death testing", crName))
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1

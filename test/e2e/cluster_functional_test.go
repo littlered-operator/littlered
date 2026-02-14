@@ -37,6 +37,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 		const crName = "func-cluster-basic"
 
 		BeforeAll(func() {
+			AddReportEntry("cr:" + crName)
 			By("creating a Redis Cluster with 3 shards and 1 replica per shard")
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1
@@ -168,6 +169,7 @@ spec:
 		const crName = "func-cluster-0replica"
 
 		BeforeAll(func() {
+			AddReportEntry("cr:" + crName)
 			By("creating a 3-shard cluster with no replicas")
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1
@@ -244,6 +246,7 @@ spec:
 		const crName = "func-cluster-failover"
 
 		BeforeAll(func() {
+			AddReportEntry("cr:" + crName)
 			By("creating a 3-shard cluster with 1 replica per shard")
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1
@@ -371,6 +374,7 @@ spec:
 		const crName = "func-cluster-cleanup"
 
 		It("should clean up all resources when CR is deleted", func() {
+			AddReportEntry("cr:" + crName)
 			By("creating cluster for cleanup")
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1
@@ -416,6 +420,7 @@ spec:
 		const crName = "func-cluster-config"
 
 		BeforeAll(func() {
+			AddReportEntry("cr:" + crName)
 			By("creating cluster with custom configuration")
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1
@@ -482,6 +487,7 @@ spec:
 		const crName = "func-cluster-debug"
 
 		BeforeAll(func() {
+			AddReportEntry("cr:" + crName)
 			By("Creating an empty cluster with debug-skip-slot-assignment annotation")
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1
