@@ -851,7 +851,7 @@ set -e
 
 # Helper to log with timestamp
 log() {
-  echo "$(date ' +%%Y-%%m-%%d %%H:%%M:%%S') [Startup] $1"
+  echo "$(date '+%%Y-%%m-%%d %%H:%%M:%%S') [Startup] $1"
 }
 
 cp /etc/redis/redis.conf /data/redis.conf
@@ -884,11 +884,17 @@ while true; do
        exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} $AUTH_ARGS
     fi
 
-    log "Joining $CURRENT_MASTER_HOST as replica..."
-    exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT --replica-announce-ip ${POD_IP} $AUTH_ARGS
+    # I am a replica. Check if master is reachable before committing.
+    # This prevents starting as a replica of a dead IP (which happens if Sentinel 
+    # hasn't detected the failure yet or is in a stale state).
+    if redis-cli -h $CURRENT_MASTER_HOST -p $CURRENT_MASTER_PORT $SENTINEL_AUTH_ARGS ping > /dev/null 2>&1; then
+       log "Joining $CURRENT_MASTER_HOST as replica..."
+       exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT --replica-announce-ip ${POD_IP} $AUTH_ARGS
+    fi
+    log "Master $CURRENT_MASTER_HOST reported but not reachable. Waiting for Sentinel to promote a new master..."
   fi
 
-  log "Sentinel has no master info. Waiting..."
+  log "Sentinel has no master info (or master unreachable). Waiting..."
   sleep 2
 done
 `, lr.Name, lr.Namespace)
@@ -1070,6 +1076,12 @@ func buildSentinelContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 	// Use shell variables directly to avoid fmt.Sprintf placeholder hell
 	script := `#!/bin/sh
 set -e
+
+# Helper to log with timestamp
+log() {
+  echo "$(date '+%%Y-%%m-%%d %%H:%%M:%%S') [Startup] $1"
+}
+
 cp /etc/sentinel/sentinel.conf /data/sentinel.conf
 
 AUTH_ARGS=""
@@ -1077,6 +1089,7 @@ if [ -n "$REDIS_PASSWORD" ]; then
   AUTH_ARGS="--sentinel auth-pass mymaster $REDIS_PASSWORD"
 fi
 
+log "Starting Sentinel node with IP ${POD_IP}..."
 exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_ARGS
 `
 
