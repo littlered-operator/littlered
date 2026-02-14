@@ -874,11 +874,11 @@ while true; do
     # Check if reported master is ME (compare IP)
     if [ "$CURRENT_MASTER_HOST" = "$POD_IP" ]; then
        log "I am the authorized master. Starting redis-server..."
-       exec redis-server /data/redis.conf %s
+       exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} %s
     fi
 
     log "Joining $CURRENT_MASTER_HOST as replica..."
-    exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT %s
+    exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT --replica-announce-ip ${POD_IP} %s
   fi
 
   log "Sentinel has no master info. Waiting..."
@@ -1076,7 +1076,7 @@ func buildSentinelContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 	startupScript := `#!/bin/sh
 set -e
 cp /etc/sentinel/sentinel.conf /data/sentinel.conf
-exec redis-sentinel /data/sentinel.conf %s
+exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} %%s
 `
 	authArgs := ""
 	if lr.Spec.Auth.Enabled {
@@ -1145,6 +1145,16 @@ exec redis-sentinel /data/sentinel.conf %s
 			},
 		},
 	}
+
+	// Add POD_IP env var
+	container.Env = append(container.Env, corev1.EnvVar{
+		Name: "POD_IP",
+		ValueFrom: &corev1.EnvVarSource{
+			FieldRef: &corev1.ObjectFieldSelector{
+				FieldPath: "status.podIP",
+			},
+		},
+	})
 
 	// Add auth env var
 	if lr.Spec.Auth.Enabled {
