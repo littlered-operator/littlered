@@ -486,14 +486,19 @@ func buildVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 
 // buildLivenessProbe creates the liveness probe for Redis
 func buildLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
-	cmd := []string{"redis-cli"}
+	// While the bootstrap-in-progress file exists, we report success to avoid being killed
+	// by K8s before authorization is complete.
+	cmd := []string{
+		"if [ -f /data/bootstrap-in-progress ]; then exit 0; fi;",
+		"redis-cli",
+	}
 	if lr.Spec.Auth.Enabled {
 		cmd = append(cmd, "-a", "$(REDIS_PASSWORD)")
 	}
 	if lr.Spec.TLS.Enabled {
 		cmd = append(cmd, "--tls", "--insecure")
 	}
-	cmd = append(cmd, "ping")
+	cmd = append(cmd, "-t", "2", "ping")
 
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
@@ -513,14 +518,18 @@ func buildLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 
 // buildReadinessProbe creates the readiness probe for Redis
 func buildReadinessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
-	cmd := []string{"redis-cli"}
+	// While bootstrapping, we are NOT ready.
+	cmd := []string{
+		"if [ -f /data/bootstrap-in-progress ]; then exit 1; fi;",
+		"redis-cli",
+	}
 	if lr.Spec.Auth.Enabled {
 		cmd = append(cmd, "-a", "$(REDIS_PASSWORD)")
 	}
 	if lr.Spec.TLS.Enabled {
 		cmd = append(cmd, "--tls", "--insecure")
 	}
-	cmd = append(cmd, "ping")
+	cmd = append(cmd, "-t", "2", "ping")
 
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
@@ -848,11 +857,15 @@ func buildRedisContainerSentinel(lr *littleredv1alpha1.LittleRed) corev1.Contain
 	// unless Sentinel (configured by the Operator) says so.
 	script := fmt.Sprintf(`#!/bin/sh
 set -e
+set -x
 
 # Helper to log with timestamp
 log() {
-  echo "$(date ' +%%Y-%%m-%%d %%H:%%M:%%S') [Startup] $1"
+  echo "$(date '+%%Y-%%m-%%d %%H:%%M:%%S') [Startup] $1"
 }
+
+# Create marker file to tell liveness probe we are starting up
+touch /data/bootstrap-in-progress
 
 cp /etc/redis/redis.conf /data/redis.conf
 
@@ -871,7 +884,8 @@ fi
 # Loop until Sentinel has a master for us
 while true; do
   # Use --raw to get just the values (IP/Host on line 1, Port on line 2)
-  SENTINEL_REPLY=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS --raw sentinel get-master-addr-by-name mymaster || true)
+  # Use -t to avoid hanging on dead IPs
+  SENTINEL_REPLY=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS -t 2 --raw sentinel get-master-addr-by-name mymaster || true)
   CURRENT_MASTER_HOST=$(echo "$SENTINEL_REPLY" | head -n 1)
   CURRENT_MASTER_PORT=$(echo "$SENTINEL_REPLY" | sed -n '2p')
 
@@ -881,14 +895,20 @@ while true; do
     # Check if reported master is ME (compare IP)
     if [ "$CURRENT_MASTER_HOST" = "$POD_IP" ]; then
        log "I am the authorized master. Starting redis-server..."
+       rm -f /data/bootstrap-in-progress
        exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} $AUTH_ARGS
     fi
 
-    log "Joining $CURRENT_MASTER_HOST as replica..."
-    exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT --replica-announce-ip ${POD_IP} $AUTH_ARGS
+    # I am a replica. Check if master is reachable before committing.
+    if redis-cli -h $CURRENT_MASTER_HOST -p $CURRENT_MASTER_PORT $SENTINEL_AUTH_ARGS -t 2 ping > /dev/null 2>&1; then
+       log "Joining $CURRENT_MASTER_HOST as replica..."
+       rm -f /data/bootstrap-in-progress
+       exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT --replica-announce-ip ${POD_IP} $AUTH_ARGS
+    fi
+    log "Master $CURRENT_MASTER_HOST reported but not reachable. Waiting for Sentinel to promote a new master..."
   fi
 
-  log "Sentinel has no master info. Waiting..."
+  log "Sentinel has no master info (or master unreachable). Waiting..."
   sleep 2
 done
 `, lr.Name, lr.Namespace)
@@ -1070,6 +1090,13 @@ func buildSentinelContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 	// Use shell variables directly to avoid fmt.Sprintf placeholder hell
 	script := `#!/bin/sh
 set -e
+set -x
+
+# Helper to log with timestamp
+log() {
+  echo "$(date '+%%Y-%%m-%%d %%H:%%M:%%S') [Startup] $1"
+}
+
 cp /etc/sentinel/sentinel.conf /data/sentinel.conf
 
 AUTH_ARGS=""
@@ -1077,6 +1104,7 @@ if [ -n "$REDIS_PASSWORD" ]; then
   AUTH_ARGS="--sentinel auth-pass mymaster $REDIS_PASSWORD"
 fi
 
+log "Starting Sentinel node with IP ${POD_IP}..."
 exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_ARGS
 `
 
