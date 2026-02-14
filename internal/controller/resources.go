@@ -870,7 +870,7 @@ touch /data/bootstrap-in-progress
 cp /etc/redis/redis.conf /data/redis.conf
 
 HOSTNAME=$(hostname)
-SENTINEL_SVC="%s-sentinel.%s.svc"
+SENTINEL_SVC="%%s-sentinel.%%s.svc"
 
 log "Starting Redis node $HOSTNAME. Waiting for Sentinel authorization..."
 
@@ -884,7 +884,7 @@ fi
 # Loop until Sentinel has a master for us
 while true; do
   # Use --raw to get just the values (IP/Host on line 1, Port on line 2)
-  # Use -t to avoid hanging on dead IPs
+  # Use -t to avoid hanging on DNS or network issues
   SENTINEL_REPLY=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS -t 2 --raw sentinel get-master-addr-by-name mymaster || true)
   CURRENT_MASTER_HOST=$(echo "$SENTINEL_REPLY" | head -n 1)
   CURRENT_MASTER_PORT=$(echo "$SENTINEL_REPLY" | sed -n '2p')
@@ -899,16 +899,15 @@ while true; do
        exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} $AUTH_ARGS
     fi
 
-    # I am a replica. Check if master is reachable before committing.
-    if redis-cli -h $CURRENT_MASTER_HOST -p $CURRENT_MASTER_PORT $SENTINEL_AUTH_ARGS -t 2 ping > /dev/null 2>&1; then
-       log "Joining $CURRENT_MASTER_HOST as replica..."
-       rm -f /data/bootstrap-in-progress
-       exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT --replica-announce-ip ${POD_IP} $AUTH_ARGS
-    fi
-    log "Master $CURRENT_MASTER_HOST reported but not reachable. Waiting for Sentinel to promote a new master..."
+    # I am a replica. We start redis-server even if the master is currently 
+    # unreachable. This allows Sentinel to discover us as a living replica
+    # and perform a failover if the master is dead.
+    log "Joining $CURRENT_MASTER_HOST as replica..."
+    rm -f /data/bootstrap-in-progress
+    exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT --replica-announce-ip ${POD_IP} $AUTH_ARGS
   fi
 
-  log "Sentinel has no master info (or master unreachable). Waiting..."
+  log "Sentinel has no master info. Waiting..."
   sleep 2
 done
 `, lr.Name, lr.Namespace)
