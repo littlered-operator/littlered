@@ -179,16 +179,11 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 
 		g.Expect(lr.Status.Master).NotTo(BeNil(), "CR Status.Master is nil")
 
-		// Sentinel might report IP or FQDN. Extract pod name for comparison.
+		// Sentinel reports IP in our strict identity model.
 		masterPodName := lr.Status.Master.PodName
 		g.Expect(masterPodName).NotTo(BeEmpty(), "Status.Master.PodName is empty")
 
-		searchString := actualMasterIP
-		if net.ParseIP(actualMasterIP) == nil && strings.Contains(actualMasterIP, ".") {
-			searchString = strings.Split(actualMasterIP, ".")[0]
-		}
-		g.Expect(masterPodName).To(ContainSubstring(searchString),
-			fmt.Sprintf("Master pod name mismatch: Sentinel reported %s, but Status has pod %s", actualMasterIP, masterPodName))
+		g.Expect(lr.Status.Master.IP).To(Equal(actualMasterIP), "Master IP mismatch in Status")
 
 		g.Expect(int(lr.Status.Sentinels.Total)).To(Equal(expectedSentinels), "Sentinel total count mismatch")
 		g.Expect(int(lr.Status.Replicas.Total)).To(Equal(expectedReplicas), "Replica total count mismatch")

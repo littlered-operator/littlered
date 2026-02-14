@@ -275,15 +275,30 @@ To prevent data loss in pure in-memory mode (where an empty master restarting co
     *   The pod **refuses** to start `redis-server` until Sentinel returns a valid master address.
 3.  **Operator Strategy (Authorization)**:
     *   The operator monitors `redis-0`. Once `redis-0` has been assigned a **PodIP**, the operator identifies it as the "seed" master.
-    *   The operator issues a `SENTINEL MONITOR` command to the Sentinels, registering `redis-0`'s FQDN as the master.
+    *   The operator issues a `SENTINEL MONITOR` command to the Sentinels, registering `redis-0`'s **Pod IP** as the master.
 4.  **Handshake**:
-    *   `redis-0` sees its own identity (hostname or IP) in the Sentinel reply. It exits the loop and starts as **master**.
+    *   `redis-0` sees its own **Pod IP** in the Sentinel reply. It exits the loop and starts as **master**.
     *   `redis-1` and `redis-2` see the master in Sentinel, exit their loops, and start as **replicas**.
 5.  **Completion**: Once all pods are ready and the cluster is healthy, the operator clears `status.bootstrapRequired: false`.
 
-This "Strict Authorization" ensures that no pod ever assumes mastership voluntarily. Mastership is a privilege granted solely by the Operator via Sentinel.
+### 3.2.2 Strict IP-Only Identity
 
-### 3.3 Cluster Mode
+For pure in-memory mode, LittleRed enforces **IP-based identity** instead of stable hostnames (FQDNs).
+
+**Rationale**:
+- **Identity Coupling**: In K8s, a StatefulSet Pod keeps its name across restarts but gets a **new IP**.
+- **Data Loss Protection**: Since we are pure in-memory, a restarted pod is an **empty node**. If we used hostnames, Sentinel might recognize the restarted `redis-0` as the previous master and re-connect to it, leading to a "Ghost Master" scenario where an empty node accepts writes.
+- **Race Prevention**: Ephemeral IPs ensure that a restarted pod is treated as a "stranger" node. Sentinel will have already promoted a replica, and the restarted pod will be forced to join as a replica and sync from the new master.
+- **DNS Resilience**: Eliminates dependency on CoreDNS resolution during critical failover windows.
+
+**Implementation**:
+- `sentinel announce-hostnames no` and `sentinel resolve-hostnames no` are set.
+- The operator strictly maps Sentinel-reported IPs to Pod names via the K8s API.
+- All internal communication (Operator → Sentinel, Pod → Sentinel) uses Pod IPs where possible.
+
+---
+
+## 3.3 Cluster Mode
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐

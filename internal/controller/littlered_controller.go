@@ -575,23 +575,17 @@ func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *l
 		return "", fmt.Errorf("failed to get master from Sentinel: %w", err)
 	}
 
-	// masterInfo.IP might be an IP address OR a FQDN (if announce-hostnames is enabled)
+	// masterInfo.IP MUST be an IP address in our strict identity model.
 	reportedIdentity := masterInfo.IP
 
-	// If it's a FQDN, extract the short pod name (the part before the first dot)
-	reportedPodName := reportedIdentity
-	if dotIdx := strings.Index(reportedIdentity, "."); dotIdx != -1 {
-		reportedPodName = reportedIdentity[:dotIdx]
-	}
-
-	// Find pod with matching IP or Name
+	// Find pod with matching IP
 	for _, pod := range podList.Items {
-		if pod.Status.PodIP == reportedIdentity || pod.Name == reportedPodName {
+		if pod.Status.PodIP == reportedIdentity {
 			return pod.Name, nil
 		}
 	}
 
-	return "", fmt.Errorf("sentinel reported master identity %q (parsed as name %q) not found in pod list", reportedIdentity, reportedPodName)
+	return "", fmt.Errorf("sentinel reported master IP %q not found in pod list", reportedIdentity)
 }
 
 // updateMasterLabel updates the role labels on Redis pods based on current master
