@@ -50,7 +50,17 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 ### 2.7 Strict IP-Only Identity (Sentinel Mode)
 - **Decision**: Sentinel and Redis nodes strictly use **Pod IPs** for identification, with hostname announcement and resolution explicitly disabled.
 - **Rationale**: In a pure in-memory architecture, a pod restart results in total data loss. By using ephemeral IPs, a restarted pod (with a new IP) is treated as a completely new node by Sentinel. This prevents "Ghost Masters" (empty pods reclaimed as masters) and eliminates DNS-related race conditions during failover.
-- **Implication**: Any transition to persistent storage (PVCs) will require a pivot to stable Podname-based identities.
+- **Implication**: Any transition to persistent storage (PVCs) will require a pivot to stable Podname-based identities. (See ADR-001)
+
+### 2.8 Discovery Deadlock Prevention (Sentinel Mode)
+- **Decision**: Removed `PING` connectivity check from the Redis startup script. (See ADR-002)
+- **Rationale**: Replicas must start `redis-server` even if the reported master is unreachable. This allows them to register with Sentinel as living replicas, enabling Sentinel to perform a failover when the master is dead. Keeping the `PING` check leads to a deadlock where no replicas ever start because they are waiting for a master that Sentinel hasn't promoted yet.
+- **Assumed Risk**: We assume Redis/Valkey handles unreachable masters gracefully at startup via standard retry logic.
+
+### 2.9 Ghost Node Removal (Sentinel Mode)
+- **Decision**: Proactively prune dead IPs from Sentinel's topology via `SENTINEL RESET`.
+- **Rationale**: To prevent Sentinel's state from being cluttered with "ghost" IPs from previous pod generations, the operator cross-references Sentinel's replica list with the Kubernetes Pod list.
+- **Safety**: Reset is only issued if the current master is a verified living Pod, ensuring Sentinel has a reliable source to re-discover the topology.
 
 ---
 

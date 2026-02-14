@@ -91,6 +91,9 @@ spec:
 			oldRunID, err := getPodRunID(testNamespace, initialMaster)
 			Expect(err).NotTo(HaveOccurred())
 
+			By("Step 1.5: Wait for Sentinel full discovery")
+			verifySentinelTopologySync(testNamespace, crName, 3, 2)
+
 			By(fmt.Sprintf("Step 2: Kill the Master %s", initialMaster))
 			cmd = exec.Command("kubectl", "delete", "pod", initialMaster,
 				"-n", testNamespace, "--grace-period=0", "--force")
@@ -180,6 +183,9 @@ spec:
 			initialMaster = strings.TrimSpace(initialMaster)
 
 			oldRunID, _ := getPodRunID(testNamespace, initialMaster)
+
+			By("Step 1.5: Wait for Sentinel full discovery")
+			verifySentinelTopologySync(testNamespace, crName, 3, 2)
 
 			By(fmt.Sprintf("Step 2: Kill the Master %s", initialMaster))
 			exec.Command("kubectl", "delete", "pod", initialMaster, "-n", testNamespace, "--grace-period=0", "--force").Run()

@@ -152,14 +152,22 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 		replicasOutput, err := utils.Run(cmd)
 		g.Expect(err).NotTo(HaveOccurred(), "Failed to execute SENTINEL replicas on sentinel pod")
 
-		// Parse replicas output
+		// Parse replicas output more robustly
 		actualNumUpReplicas := 0
-		replicaBlocks := strings.Split(strings.TrimSpace(replicasOutput), "name\n")
-		for _, block := range replicaBlocks {
-			if block == "" {
+		// Sentinel output for replicas is a list of key-value pairs separated by name\n
+		replicaBlocks := strings.Split(replicasOutput, "\nname\n")
+		for i, block := range replicaBlocks {
+			// First block might contain "name\n" at the start, handle it
+			content := block
+			if i == 0 {
+				content = strings.TrimPrefix(content, "name\n")
+			}
+			if content == "" {
 				continue
 			}
-			if !strings.Contains(block, "s_down") && !strings.Contains(block, "o_down") && strings.Contains(block, "slave") {
+			
+			// A replica is UP if it doesn't have s_down or o_down flags
+			if !strings.Contains(content, "s_down") && !strings.Contains(content, "o_down") {
 				actualNumUpReplicas++
 			}
 		}
