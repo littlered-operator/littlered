@@ -486,14 +486,19 @@ func buildVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 
 // buildLivenessProbe creates the liveness probe for Redis
 func buildLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
-	cmd := []string{"redis-cli"}
+	// While the bootstrap-in-progress file exists, we report success to avoid being killed
+	// by K8s before authorization is complete.
+	cmd := []string{
+		"if [ -f /data/bootstrap-in-progress ]; then exit 0; fi;",
+		"redis-cli",
+	}
 	if lr.Spec.Auth.Enabled {
 		cmd = append(cmd, "-a", "$(REDIS_PASSWORD)")
 	}
 	if lr.Spec.TLS.Enabled {
 		cmd = append(cmd, "--tls", "--insecure")
 	}
-	cmd = append(cmd, "ping")
+	cmd = append(cmd, "--connect-timeout", "2", "ping")
 
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
@@ -513,14 +518,18 @@ func buildLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 
 // buildReadinessProbe creates the readiness probe for Redis
 func buildReadinessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
-	cmd := []string{"redis-cli"}
+	// While bootstrapping, we are NOT ready.
+	cmd := []string{
+		"if [ -f /data/bootstrap-in-progress ]; then exit 1; fi;",
+		"redis-cli",
+	}
 	if lr.Spec.Auth.Enabled {
 		cmd = append(cmd, "-a", "$(REDIS_PASSWORD)")
 	}
 	if lr.Spec.TLS.Enabled {
 		cmd = append(cmd, "--tls", "--insecure")
 	}
-	cmd = append(cmd, "ping")
+	cmd = append(cmd, "--connect-timeout", "2", "ping")
 
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
@@ -848,11 +857,15 @@ func buildRedisContainerSentinel(lr *littleredv1alpha1.LittleRed) corev1.Contain
 	// unless Sentinel (configured by the Operator) says so.
 	script := fmt.Sprintf(`#!/bin/sh
 set -e
+set -x
 
 # Helper to log with timestamp
 log() {
   echo "$(date '+%%Y-%%m-%%d %%H:%%M:%%S') [Startup] $1"
 }
+
+# Create marker file to tell liveness probe we are starting up
+touch /data/bootstrap-in-progress
 
 cp /etc/redis/redis.conf /data/redis.conf
 
@@ -871,7 +884,8 @@ fi
 # Loop until Sentinel has a master for us
 while true; do
   # Use --raw to get just the values (IP/Host on line 1, Port on line 2)
-  SENTINEL_REPLY=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS --raw sentinel get-master-addr-by-name mymaster || true)
+  # Use --connect-timeout to avoid hanging on dead IPs
+  SENTINEL_REPLY=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS --connect-timeout 2 --raw sentinel get-master-addr-by-name mymaster || true)
   CURRENT_MASTER_HOST=$(echo "$SENTINEL_REPLY" | head -n 1)
   CURRENT_MASTER_PORT=$(echo "$SENTINEL_REPLY" | sed -n '2p')
 
@@ -881,14 +895,14 @@ while true; do
     # Check if reported master is ME (compare IP)
     if [ "$CURRENT_MASTER_HOST" = "$POD_IP" ]; then
        log "I am the authorized master. Starting redis-server..."
+       rm -f /data/bootstrap-in-progress
        exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} $AUTH_ARGS
     fi
 
     # I am a replica. Check if master is reachable before committing.
-    # This prevents starting as a replica of a dead IP (which happens if Sentinel 
-    # hasn't detected the failure yet or is in a stale state).
-    if redis-cli -h $CURRENT_MASTER_HOST -p $CURRENT_MASTER_PORT $SENTINEL_AUTH_ARGS ping > /dev/null 2>&1; then
+    if redis-cli -h $CURRENT_MASTER_HOST -p $CURRENT_MASTER_PORT $SENTINEL_AUTH_ARGS --connect-timeout 2 ping > /dev/null 2>&1; then
        log "Joining $CURRENT_MASTER_HOST as replica..."
+       rm -f /data/bootstrap-in-progress
        exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT --replica-announce-ip ${POD_IP} $AUTH_ARGS
     fi
     log "Master $CURRENT_MASTER_HOST reported but not reachable. Waiting for Sentinel to promote a new master..."
@@ -1076,6 +1090,7 @@ func buildSentinelContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 	// Use shell variables directly to avoid fmt.Sprintf placeholder hell
 	script := `#!/bin/sh
 set -e
+set -x
 
 # Helper to log with timestamp
 log() {
