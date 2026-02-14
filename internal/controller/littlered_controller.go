@@ -477,6 +477,11 @@ func (r *LittleRedReconciler) reconcileSentinel(ctx context.Context, littleRed *
 		// Don't fail - this is best effort
 	}
 
+	// Clean up ghost nodes from Sentinel topology
+	if err := r.reconcileSentinelTopology(ctx, littleRed); err != nil {
+		log.Error(err, "Failed to reconcile Sentinel topology")
+	}
+
 	// Reconcile ServiceMonitor if enabled
 	if littleRed.Spec.Metrics.IsEnabled() && littleRed.Spec.Metrics.ServiceMonitor.Enabled {
 		if err := r.reconcileServiceMonitor(ctx, littleRed); err != nil {
@@ -524,6 +529,64 @@ func (r *LittleRedReconciler) reconcileSentinelStatefulSet(ctx context.Context, 
 // reconcileMasterService ensures the master Service exists
 func (r *LittleRedReconciler) reconcileMasterService(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
 	return r.apply(ctx, littleRed, buildMasterService(littleRed))
+}
+
+// reconcileSentinelTopology ensures Sentinel's internal view matches K8s Pod list.
+// In strict IP-identity mode, old pod IPs are "ghosts" that will never return.
+func (r *LittleRedReconciler) reconcileSentinelTopology(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
+	log := logf.FromContext(ctx)
+
+	// Skip if we haven't bootstrapped yet
+	if littleRed.Status.BootstrapRequired {
+		return nil
+	}
+
+	podList := &corev1.PodList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(littleRed.Namespace),
+		client.MatchingLabels(redisSelectorLabels(littleRed)),
+	}
+	if err := r.List(ctx, podList, listOpts...); err != nil {
+		return err
+	}
+
+	// Build map of current valid Pod IPs
+	validIPs := make(map[string]bool)
+	for _, pod := range podList.Items {
+		if pod.Status.PodIP != "" {
+			validIPs[pod.Status.PodIP] = true
+		}
+	}
+
+	addresses := r.getSentinelAddresses(ctx, littleRed)
+	password := ""
+	if littleRed.Spec.Auth.Enabled {
+		password = r.getRedisPassword(ctx, littleRed)
+	}
+
+	sc := redisclient.NewSentinelClient(addresses, password)
+	replicas, err := sc.GetReplicas(ctx, redisclient.SentinelMasterName)
+	if err != nil {
+		return fmt.Errorf("failed to get replicas for topology sync: %w", err)
+	}
+
+	ghostFound := false
+	for _, replica := range replicas {
+		if !validIPs[replica.IP] {
+			log.Info("Ghost node detected in Sentinel topology", "ip", replica.IP, "flags", replica.Flags)
+			ghostFound = true
+			break
+		}
+	}
+
+	if ghostFound {
+		log.Info("Issuing SENTINEL RESET to clear ghost nodes", "master", redisclient.SentinelMasterName)
+		if err := sc.Reset(ctx, redisclient.SentinelMasterName); err != nil {
+			return fmt.Errorf("failed to reset sentinel topology: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // getSentinelAddresses returns a list of Sentinel addresses to try (Service FQDN and pod IPs)
