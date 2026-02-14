@@ -22,7 +22,6 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"os/exec"
 	"strings"
 	"time"
@@ -225,7 +224,7 @@ func getPodRunID(namespace, podName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	
+
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		if strings.HasPrefix(line, "run_id:") {
@@ -351,7 +350,7 @@ func waitForClusterFailureDetected(namespace, crName string, queryPod string, ex
 // getShardGroups returns a list of pod names grouped by their shard.
 func getShardGroups(namespace, crName string, totalNodes int) ([][]string, error) {
 	nodeIDToPodName := make(map[string]string)
-	
+
 	for i := 0; i < totalNodes; i++ {
 		podName := fmt.Sprintf("%s-cluster-%d", crName, i)
 		cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "valkey-cli", "CLUSTER", "MYID")
@@ -377,7 +376,7 @@ func getShardGroups(namespace, crName string, totalNodes int) ([][]string, error
 	}
 
 	shardMap := make(map[string][]string)
-	
+
 	type nodeInfo struct {
 		id       string
 		role     string
@@ -394,7 +393,7 @@ func getShardGroups(namespace, crName string, totalNodes int) ([][]string, error
 		id := fields[0]
 		flags := fields[2]
 		masterID := fields[3]
-		
+
 		role := "master"
 		if strings.Contains(flags, "slave") {
 			role = "replica"
