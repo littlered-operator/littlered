@@ -275,31 +275,47 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("should have sentinel quorum established", func() {
+		It("should have sentinel quorum established and broadcast working", func() {
 			By("Test ID: SEN-003")
+			// The verifySentinelTopologySync helper now checks ALL sentinels for consistency
+			verifySentinelTopologySync(testNamespace, crName, 3, 2)
+
 			Eventually(func(g Gomega) {
-				// Query sentinel for master info
+				// Query sentinel-0 for master info to verify quorum
 				cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
 					"-n", testNamespace, "-c", "sentinel", "--",
 					"valkey-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("num-slaves"))
-				g.Expect(output).To(ContainSubstring("quorum"))
+				g.Expect(output).To(ContainSubstring("num-other-sentinels"))
+				// Quorum of 2 means it needs to see at least 2 other sentinels or be acknowledged by them
+				// Redis reports num-other-sentinels: 2 when all 3 are up
+				g.Expect(output).To(ContainSubstring("num-other-sentinels\n2"))
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
-
-			verifySentinelTopologySync(testNamespace, crName, 3, 2)
 		})
 
-		It("should report master info in status", func() {
+		It("should report master info in status and clear bootstrap flag", func() {
 			By("Test ID: SEN-004")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "littlered", crName,
 					"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
-				output, err := utils.Run(cmd)
+				master, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).NotTo(BeEmpty())
+				g.Expect(master).NotTo(BeEmpty())
+
+				cmd = exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.bootstrapRequired}")
+				bootstrap, _ := utils.Run(cmd)
+				// Field has omitempty, so it might be empty string when false
+				g.Expect(bootstrap).To(Or(Equal("false"), Equal("")), "bootstrapRequired flag should be cleared once Running")
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should have correct role labels on all redis pods", func() {
+			By("Test ID: SEN-005")
+			// The verifySentinelTopologySync helper already verifies K8s labels
+			verifySentinelTopologySync(testNamespace, crName, 3, 2)
 		})
 
 		It("should have working replication", func() {

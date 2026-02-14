@@ -223,6 +223,8 @@ spec:
 				g.Expect(logs).To(ContainSubstring("Sentinel event monitoring disabled via annotation"))
 				g.Expect(logs).NotTo(ContainSubstring("Triggering reconciliation via Sentinel event"))
 			}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			verifySentinelTopologySync(testNamespace, crName, 3, 2)
 		})
 	})
 
@@ -376,6 +378,8 @@ spec:
 				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))),
 					fmt.Sprintf("Failover failed after sentinel restart. Current masters: %q", out))
 			}, 45*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label after sentinel restart")
+
+			verifySentinelTopologySync(testNamespace, crName, 3, 2)
 		})
 	})
 })

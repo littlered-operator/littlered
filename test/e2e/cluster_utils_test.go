@@ -123,23 +123,33 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 	By(fmt.Sprintf("verifying that Operator status for %s matches actual Sentinel topology", crName))
 
 	Eventually(func(g Gomega) {
-		// 1. Get ground truth from Sentinel (try sentinel-0)
-		sentinelPod := fmt.Sprintf("%s-sentinel-0", crName)
-		cmd := exec.Command("kubectl", "exec", sentinelPod, "-n", namespace, "-c", "sentinel", "--", "valkey-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
-		sentinelOutput, err := utils.Run(cmd)
-		g.Expect(err).NotTo(HaveOccurred(), "Failed to execute SENTINEL master on sentinel pod")
+		// 1. Check master information from ALL sentinels to verify broadcast/sync
+		var masterIPs []string
+		for i := 0; i < expectedSentinels; i++ {
+			sentinelPod := fmt.Sprintf("%s-sentinel-%d", crName, i)
+			cmd := exec.Command("kubectl", "exec", sentinelPod, "-n", namespace, "-c", "sentinel", "--", "valkey-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
+			sentinelOutput, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to execute SENTINEL master on %s", sentinelPod))
 
-		// Parse Sentinel output (it's a list of key-value pairs)
-		sentinelData := make(map[string]string)
-		lines := strings.Split(strings.TrimSpace(sentinelOutput), "\n")
-		for i := 0; i < len(lines)-1; i += 2 {
-			sentinelData[lines[i]] = lines[i+1]
+			// Parse Sentinel output
+			sentinelData := make(map[string]string)
+			lines := strings.Split(strings.TrimSpace(sentinelOutput), "\n")
+			for j := 0; j < len(lines)-1; j += 2 {
+				sentinelData[lines[j]] = lines[j+1]
+			}
+			masterIPs = append(masterIPs, sentinelData["ip"])
 		}
 
-		actualMasterIP := sentinelData["ip"]
+		// Verify all sentinels agree on the same master
+		for i := 1; i < len(masterIPs); i++ {
+			g.Expect(masterIPs[i]).To(Equal(masterIPs[0]), "Sentinel nodes disagree on master identity")
+		}
 
-		// 1b. Get replicas info to count only healthy ones
-		cmd = exec.Command("kubectl", "exec", sentinelPod, "-n", namespace, "-c", "sentinel", "--", "valkey-cli", "-p", "26379", "SENTINEL", "replicas", "mymaster")
+		actualMasterIP := masterIPs[0]
+
+		// 1b. Get replicas info from one sentinel to count only healthy ones
+		sentinelPod := fmt.Sprintf("%s-sentinel-0", crName)
+		cmd := exec.Command("kubectl", "exec", sentinelPod, "-n", namespace, "-c", "sentinel", "--", "valkey-cli", "-p", "26379", "SENTINEL", "replicas", "mymaster")
 		replicasOutput, err := utils.Run(cmd)
 		g.Expect(err).NotTo(HaveOccurred(), "Failed to execute SENTINEL replicas on sentinel pod")
 
@@ -150,7 +160,6 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 			if block == "" {
 				continue
 			}
-			// Each block is a list of KV pairs. We look for 'flags' and ensure it doesn't contain 's_down' or 'o_down'
 			if !strings.Contains(block, "s_down") && !strings.Contains(block, "o_down") && strings.Contains(block, "slave") {
 				actualNumUpReplicas++
 			}
@@ -170,34 +179,35 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 
 		g.Expect(lr.Status.Master).NotTo(BeNil(), "CR Status.Master is nil")
 
-		// Sentinel might report IP or FQDN depending on configuration and resolution
-		// If it's a hostname, we check if it contains the pod name
-		if net.ParseIP(actualMasterIP) == nil {
-			expectedHostnamePrefix := fmt.Sprintf("%s.", lr.Status.Master.PodName)
-			g.Expect(actualMasterIP).To(HavePrefix(expectedHostnamePrefix),
-				fmt.Sprintf("Master address mismatch: Sentinel reported %s, but Status has pod %s", actualMasterIP, lr.Status.Master.PodName))
-		} else {
-			g.Expect(lr.Status.Master.IP).To(Equal(actualMasterIP), "Master IP mismatch in Status")
-		}
+		// Sentinel might report IP or FQDN. Extract pod name for comparison.
+		masterPodName := lr.Status.Master.PodName
+		g.Expect(masterPodName).NotTo(BeEmpty(), "Status.Master.PodName is empty")
 
-		g.Expect(lr.Status.Sentinels).NotTo(BeNil(), "CR Status.Sentinels is nil")
-		g.Expect(int(lr.Status.Sentinels.Total)).To(Equal(expectedSentinels), "Sentinel total count mismatch")
-
-		g.Expect(lr.Status.Replicas).NotTo(BeNil(), "CR Status.Replicas is nil")
-		g.Expect(int(lr.Status.Replicas.Total)).To(Equal(expectedReplicas), "Replica total count mismatch")
-
-		// Map IP back to pod name to verify Status.Master.PodName
-		// We search among redis pods of this instance
-		cmd = exec.Command("kubectl", "get", "pods", "-n", namespace, "-l", "app.kubernetes.io/instance="+crName+",app.kubernetes.io/component=redis", "-o", "json")
-		podsOutput, _ := utils.Run(cmd)
-
-		// If actualMasterIP is a hostname, extract pod name
 		searchString := actualMasterIP
 		if net.ParseIP(actualMasterIP) == nil && strings.Contains(actualMasterIP, ".") {
 			searchString = strings.Split(actualMasterIP, ".")[0]
 		}
-		g.Expect(podsOutput).To(ContainSubstring(searchString), fmt.Sprintf("Master address/pod %s not found in redis pods", searchString))
-	}, 2*time.Minute, 5*time.Second).Should(Succeed(), "Operator status should eventually match Sentinel topology")
+		g.Expect(masterPodName).To(ContainSubstring(searchString),
+			fmt.Sprintf("Master pod name mismatch: Sentinel reported %s, but Status has pod %s", actualMasterIP, masterPodName))
+
+		g.Expect(int(lr.Status.Sentinels.Total)).To(Equal(expectedSentinels), "Sentinel total count mismatch")
+		g.Expect(int(lr.Status.Replicas.Total)).To(Equal(expectedReplicas), "Replica total count mismatch")
+
+		// 3. Verify K8s Pod Labels correctly reflect roles
+		cmd = exec.Command("kubectl", "get", "pods", "-n", namespace, "-l", "app.kubernetes.io/instance="+crName+",app.kubernetes.io/component=redis", "-o", "jsonpath={.items[*].metadata.name}")
+		allPodsOutput, _ := utils.Run(cmd)
+		allPods := strings.Fields(allPodsOutput)
+
+		for _, pod := range allPods {
+			cmd = exec.Command("kubectl", "get", "pod", pod, "-n", namespace, "-o", "jsonpath={.metadata.labels['chuck-chuck-chuck\\.net/role']}")
+			role, _ := utils.Run(cmd)
+			if pod == masterPodName {
+				g.Expect(role).To(Equal("master"), fmt.Sprintf("Pod %s is master but lacks master label", pod))
+			} else {
+				g.Expect(role).To(Equal("replica"), fmt.Sprintf("Pod %s should be replica but label is %s", pod, role))
+			}
+		}
+	}, 2*time.Minute, 5*time.Second).Should(Succeed(), "Operator status and labels should eventually match Sentinel topology")
 
 	By("Sentinel topology sync validation passed")
 }

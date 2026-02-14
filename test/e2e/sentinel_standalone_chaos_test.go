@@ -96,7 +96,15 @@ spec:
 				master, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(master).NotTo(BeEmpty())
+
+				cmd = exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.bootstrapRequired}")
+				bootstrap, _ := utils.Run(cmd)
+				g.Expect(bootstrap).To(Or(Equal("false"), Equal("")), "bootstrapRequired flag should be cleared")
 			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+			// Full cross-check of all sentinels and pod role labels
+			verifySentinelTopologySync(testNamespace, crName, 3, 2)
 
 			By("waiting 10 seconds for baseline traffic")
 			time.Sleep(10 * time.Second)
@@ -152,6 +160,9 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(runID).NotTo(Equal(oldRunID2), "Third master must have a different RunID")
 			}, 1*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("Step 6: Final topology synchronization verification")
+			verifySentinelTopologySync(testNamespace, crName, 3, 2)
 
 			err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
 			Expect(err).NotTo(HaveOccurred())
