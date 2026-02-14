@@ -846,12 +846,12 @@ func buildRedisContainerSentinel(lr *littleredv1alpha1.LittleRed) corev1.Contain
 	// Script to configure replication strictly based on Sentinel state.
 	// This is "Operator-Authorized" startup: no pod assumes mastership
 	// unless Sentinel (configured by the Operator) says so.
-	startupScript := `#!/bin/sh
+	script := fmt.Sprintf(`#!/bin/sh
 set -e
 
 # Helper to log with timestamp
 log() {
-  echo "$(date '+%%Y-%%m-%%d %%H:%%M:%%S') [Startup] $1"
+  echo "$(date ' +%%Y-%%m-%%d %%H:%%M:%%S') [Startup] $1"
 }
 
 cp /etc/redis/redis.conf /data/redis.conf
@@ -861,10 +861,17 @@ SENTINEL_SVC="%s-sentinel.%s.svc"
 
 log "Starting Redis node $HOSTNAME. Waiting for Sentinel authorization..."
 
+AUTH_ARGS=""
+SENTINEL_AUTH_ARGS=""
+if [ -n "$REDIS_PASSWORD" ]; then
+  AUTH_ARGS="--requirepass $REDIS_PASSWORD --masterauth $REDIS_PASSWORD"
+  SENTINEL_AUTH_ARGS="-a $REDIS_PASSWORD"
+fi
+
 # Loop until Sentinel has a master for us
 while true; do
   # Use --raw to get just the values (IP/Host on line 1, Port on line 2)
-  SENTINEL_REPLY=$(redis-cli -h $SENTINEL_SVC -p 26379 %s --raw sentinel get-master-addr-by-name mymaster || true)
+  SENTINEL_REPLY=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS --raw sentinel get-master-addr-by-name mymaster || true)
   CURRENT_MASTER_HOST=$(echo "$SENTINEL_REPLY" | head -n 1)
   CURRENT_MASTER_PORT=$(echo "$SENTINEL_REPLY" | sed -n '2p')
 
@@ -874,29 +881,17 @@ while true; do
     # Check if reported master is ME (compare IP)
     if [ "$CURRENT_MASTER_HOST" = "$POD_IP" ]; then
        log "I am the authorized master. Starting redis-server..."
-       exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} %s
+       exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} $AUTH_ARGS
     fi
 
     log "Joining $CURRENT_MASTER_HOST as replica..."
-    exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT --replica-announce-ip ${POD_IP} %s
+    exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT --replica-announce-ip ${POD_IP} $AUTH_ARGS
   fi
 
   log "Sentinel has no master info. Waiting..."
   sleep 2
 done
-`
-	authArgs := ""
-	sentinelAuthArgs := ""
-	if lr.Spec.Auth.Enabled {
-		authArgs = "--requirepass $(REDIS_PASSWORD) --masterauth $(REDIS_PASSWORD)"
-		sentinelAuthArgs = "-a $(REDIS_PASSWORD)"
-	}
-
-	script := fmt.Sprintf(startupScript,
-		lr.Name, lr.Namespace, // SENTINEL_SVC
-		sentinelAuthArgs,
-		authArgs, // exec master
-		authArgs) // exec replicaof
+`, lr.Name, lr.Namespace)
 
 	container := corev1.Container{
 		Name:            "redis",
@@ -1072,18 +1067,18 @@ func buildSentinelContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 		sentinel = &littleredv1alpha1.SentinelSpec{}
 	}
 
-	// Copy config to writable location and start sentinel
-	startupScript := `#!/bin/sh
+	// Use shell variables directly to avoid fmt.Sprintf placeholder hell
+	script := `#!/bin/sh
 set -e
 cp /etc/sentinel/sentinel.conf /data/sentinel.conf
-exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} %%s
-`
-	authArgs := ""
-	if lr.Spec.Auth.Enabled {
-		authArgs = "--sentinel auth-pass mymaster $(REDIS_PASSWORD)"
-	}
 
-	script := fmt.Sprintf(startupScript, authArgs)
+AUTH_ARGS=""
+if [ -n "$REDIS_PASSWORD" ]; then
+  AUTH_ARGS="--sentinel auth-pass mymaster $REDIS_PASSWORD"
+fi
+
+exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_ARGS
+`
 
 	container := corev1.Container{
 		Name:            "sentinel",
