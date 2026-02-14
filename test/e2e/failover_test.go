@@ -81,7 +81,6 @@ spec:
 		})
 
 		It("should update master role label immediately via Sentinel event", func() {
-			startTime := time.Now().Add(-5 * time.Second)
 			By("Step 1: Identify initial master and its RunID")
 			cmd := exec.Command("kubectl", "get", "littlered", crName,
 				"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
