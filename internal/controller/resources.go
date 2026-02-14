@@ -498,7 +498,7 @@ func buildLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 	if lr.Spec.TLS.Enabled {
 		cmd = append(cmd, "--tls", "--insecure")
 	}
-	cmd = append(cmd, "--connect-timeout", "2", "ping")
+	cmd = append(cmd, "-t", "2", "ping")
 
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
@@ -529,7 +529,7 @@ func buildReadinessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 	if lr.Spec.TLS.Enabled {
 		cmd = append(cmd, "--tls", "--insecure")
 	}
-	cmd = append(cmd, "--connect-timeout", "2", "ping")
+	cmd = append(cmd, "-t", "2", "ping")
 
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
@@ -884,8 +884,8 @@ fi
 # Loop until Sentinel has a master for us
 while true; do
   # Use --raw to get just the values (IP/Host on line 1, Port on line 2)
-  # Use --connect-timeout to avoid hanging on dead IPs
-  SENTINEL_REPLY=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS --connect-timeout 2 --raw sentinel get-master-addr-by-name mymaster || true)
+  # Use -t to avoid hanging on dead IPs
+  SENTINEL_REPLY=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS -t 2 --raw sentinel get-master-addr-by-name mymaster || true)
   CURRENT_MASTER_HOST=$(echo "$SENTINEL_REPLY" | head -n 1)
   CURRENT_MASTER_PORT=$(echo "$SENTINEL_REPLY" | sed -n '2p')
 
@@ -900,7 +900,7 @@ while true; do
     fi
 
     # I am a replica. Check if master is reachable before committing.
-    if redis-cli -h $CURRENT_MASTER_HOST -p $CURRENT_MASTER_PORT $SENTINEL_AUTH_ARGS --connect-timeout 2 ping > /dev/null 2>&1; then
+    if redis-cli -h $CURRENT_MASTER_HOST -p $CURRENT_MASTER_PORT $SENTINEL_AUTH_ARGS -t 2 ping > /dev/null 2>&1; then
        log "Joining $CURRENT_MASTER_HOST as replica..."
        rm -f /data/bootstrap-in-progress
        exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT --replica-announce-ip ${POD_IP} $AUTH_ARGS
