@@ -565,7 +565,7 @@ func (r *LittleRedReconciler) reconcileSentinelTopology(ctx context.Context, lit
 	}
 
 	sc := redisclient.NewSentinelClient(addresses, password)
-	
+
 	// 1. Check if Master is valid (not a ghost)
 	masterInfo, err := sc.GetMaster(ctx)
 	if err != nil {
@@ -596,20 +596,20 @@ func (r *LittleRedReconciler) reconcileSentinelTopology(ctx context.Context, lit
 		}
 	}
 
-	// 3. Issue RESET only if it's safe: 
-	// We found a ghost, AND the master is valid, AND we have the expected number of valid replicas (2)
-	if ghostFound && validReplicaCount == 2 {
-		log.Info("Issuing SENTINEL RESET to clear ghost nodes", "master", redisclient.SentinelMasterName)
-		if err := sc.Reset(ctx, redisclient.SentinelMasterName); err != nil {
-			return fmt.Errorf("failed to reset sentinel topology: %w", err)
+		// 3. Issue RESET only if it's safe: 
+		// We found a ghost, AND the master is valid.
+		// We don't require validReplicaCount == 2 because a stale topology might be 
+		// preventing discovery of the living replicas. RESET will force re-discovery
+		// from the (verified living) master.
+		if ghostFound {
+			log.Info("Issuing SENTINEL RESET to clear ghost nodes", "master", redisclient.SentinelMasterName)
+			if err := sc.Reset(ctx, redisclient.SentinelMasterName); err != nil {
+				return fmt.Errorf("failed to reset sentinel topology: %w", err)
+			}
 		}
-	} else if ghostFound {
-		log.Info("Ghost nodes found but cluster not yet stable for RESET", "validReplicas", validReplicaCount)
+	
+		return nil
 	}
-
-	return nil
-}
-
 // getSentinelAddresses returns a list of Sentinel addresses to try (Service FQDN and pod IPs)
 func (r *LittleRedReconciler) getSentinelAddresses(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) []string {
 	addresses := []string{
