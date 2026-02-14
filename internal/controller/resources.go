@@ -672,9 +672,12 @@ func buildSentinelConfig(lr *littleredv1alpha1.LittleRed) string {
 	}
 
 	// Announce settings for proper discovery
+	// For pure in-memory mode, we strictly use IPs. This ensures that when a pod
+	// restarts and gets a new IP, it is treated as a new (empty) node, preventing
+	// it from being incorrectly trusted as a former master with data.
 	sb.WriteString("\n# Announce settings\n")
-	sb.WriteString("sentinel resolve-hostnames yes\n")
-	sb.WriteString("sentinel announce-hostnames yes\n")
+	sb.WriteString("sentinel resolve-hostnames no\n")
+	sb.WriteString("sentinel announce-hostnames no\n")
 
 	return sb.String()
 }
@@ -868,10 +871,8 @@ while true; do
   if [ -n "$CURRENT_MASTER_HOST" ]; then
     log "Sentinel reported master at $CURRENT_MASTER_HOST:$CURRENT_MASTER_PORT"
     
-    # Check if reported master is ME (compare hostname or IP)
-    REPORTED_NAME=${CURRENT_MASTER_HOST%%%%.*}
-    
-    if [ "$REPORTED_NAME" = "$HOSTNAME" ] || [ "$CURRENT_MASTER_HOST" = "$HOSTNAME" ] || [ "$CURRENT_MASTER_HOST" = "$POD_IP" ]; then
+    # Check if reported master is ME (compare IP)
+    if [ "$CURRENT_MASTER_HOST" = "$POD_IP" ]; then
        log "I am the authorized master. Starting redis-server..."
        exec redis-server /data/redis.conf %s
     fi

@@ -47,6 +47,11 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 - **Rationale**: Prevents empty restarted masters from wiping data on live replicas via full sync by strictly authorizing mastership via Sentinel.
 - **Instruction**: All Redis pods must start in a wait-loop querying Sentinel until a master is assigned by the Operator.
 
+### 2.7 Strict IP-Only Identity (Sentinel Mode)
+- **Decision**: Sentinel and Redis nodes strictly use **Pod IPs** for identification, with hostname announcement and resolution explicitly disabled.
+- **Rationale**: In a pure in-memory architecture, a pod restart results in total data loss. By using ephemeral IPs, a restarted pod (with a new IP) is treated as a completely new node by Sentinel. This prevents "Ghost Masters" (empty pods reclaimed as masters) and eliminates DNS-related race conditions during failover.
+- **Implication**: Any transition to persistent storage (PVCs) will require a pivot to stable Podname-based identities.
+
 ---
 
 ## 3. Deployment Modes
