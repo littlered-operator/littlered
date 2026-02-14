@@ -620,17 +620,15 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 		return nil
 	}
 
-	// Log master change if detected
-	currentMaster := ""
-	for _, pod := range podList.Items {
-		if pod.Labels[LabelRole] == RoleMaster {
-			currentMaster = pod.Name
-			break
-		}
+	// Log master change if detected. Use Status as the "last known state"
+	// since the physical pod for the old master might have been deleted.
+	lastKnownMaster := ""
+	if littleRed.Status.Master != nil {
+		lastKnownMaster = littleRed.Status.Master.PodName
 	}
 
-	if currentMaster != "" && currentMaster != masterPodName {
-		log.Info("Master switch detected", "oldMaster", currentMaster, "newMaster", masterPodName)
+	if lastKnownMaster != "" && lastKnownMaster != masterPodName {
+		log.Info("Master switch detected", "oldMaster", lastKnownMaster, "newMaster", masterPodName)
 	}
 
 	for i := range podList.Items {
