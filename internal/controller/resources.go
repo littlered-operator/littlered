@@ -870,7 +870,7 @@ touch /data/bootstrap-in-progress
 cp /etc/redis/redis.conf /data/redis.conf
 
 HOSTNAME=$(hostname)
-SENTINEL_SVC="%%s-sentinel.%%s.svc"
+SENTINEL_SVC="%s-sentinel.%s.svc"
 
 log "Starting Redis node $HOSTNAME. Waiting for Sentinel authorization..."
 
