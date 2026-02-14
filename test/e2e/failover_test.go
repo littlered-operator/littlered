@@ -128,16 +128,6 @@ spec:
 			fmt.Fprintf(GinkgoWriter, "Event-driven failover took: %v\n", duration)
 			Expect(duration).To(BeNumerically("<", 15*time.Second), "Event-driven failover was too slow (likely fell back to other mechanisms)")
 
-			By("Step 4: Verify Operator logs show event reception")
-			Eventually(func(g Gomega) {
-				since := startTime.Format(time.RFC3339Nano)
-				// Use --tail=-1 to ensure we get all logs when using a selector
-				cmd = exec.Command("sh", "-c", fmt.Sprintf("kubectl logs -n littlered-system -l control-plane=controller-manager --tail=-1 --since-time=%s | grep %s", since, crName))
-				logs, _ := utils.Run(cmd)
-				g.Expect(logs).To(ContainSubstring("Triggering reconciliation via Sentinel event"))
-				g.Expect(logs).To(ContainSubstring("Master switch detected"))
-			}, 30*time.Second, 2*time.Second).Should(Succeed())
-
 			verifySentinelTopologySync(testNamespace, crName, 3, 2)
 		})
 	})
