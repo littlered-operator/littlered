@@ -40,7 +40,7 @@ func getChaosClientImage() string {
 }
 
 // deployChaosClient deploys a chaos test client pod and returns the pod name
-func deployChaosClient(namespace, name, redisService string, clusterMode bool, keyPrefix string, duration time.Duration) (string, error) {
+func deployChaosClient(namespace, name, addresses, keyPrefix string, clusterMode bool, duration time.Duration) (string, error) {
 	podName := fmt.Sprintf("chaos-client-%s", name)
 	image := getChaosClientImage()
 
@@ -65,13 +65,13 @@ spec:
     image: %s
     imagePullPolicy: Always
     args:
-    - "-addrs=%s:6379"
+    - "-addrs=%s"
     - "-prefix=%s"
     - "-duration=%s"
     - "-status-interval=5s"
     - "-write-rate=100ms"
     - "-timeout=500ms"%s
-`, podName, namespace, name, image, redisService, keyPrefix, duration.String(), clusterArg)
+`, podName, namespace, name, image, addresses, keyPrefix, duration.String(), clusterArg)
 
 	cmd := exec.Command("kubectl", "apply", "-f", "-")
 	cmd.Stdin = strings.NewReader(pod)

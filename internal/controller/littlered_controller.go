@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
@@ -123,9 +124,25 @@ func (r *LittleRedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Initialize BootstrapRequired for Sentinel mode
 	if littleRed.Spec.Mode == "sentinel" && littleRed.Status.Phase == "" && !littleRed.Status.BootstrapRequired {
-		littleRed.Status.BootstrapRequired = true
-		// Phase is empty, so it's a new resource. We don't update here,
-		// it will be updated in the mode-specific reconciler or status update.
+		log.Info("Initializing new Sentinel cluster: setting bootstrapRequired flag")
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			latest := &littleredv1alpha1.LittleRed{}
+			if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
+				return err
+			}
+			if latest.Status.Phase != "" || latest.Status.BootstrapRequired {
+				return nil // Already initialized by another pass
+			}
+			latest.Status.BootstrapRequired = true
+			return r.Status().Update(ctx, latest)
+		})
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to initialize bootstrap flag: %w", err)
+		}
+		// Re-fetch to continue with the updated object
+		if err := r.Get(ctx, req.NamespacedName, littleRed); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	switch littleRed.Spec.Mode {
@@ -647,164 +664,176 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 }
 
 // updateSentinelStatus updates the LittleRed status for sentinel mode
-func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
+func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	oldStatus := littleRed.Status.DeepCopy()
 
-	// Get Redis StatefulSet status
-	redisSts := &appsv1.StatefulSet{}
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      fmt.Sprintf("%s-redis", littleRed.Name),
-		Namespace: littleRed.Namespace,
-	}, redisSts); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &littleredv1alpha1.LittleRed{}
+		if err := r.Get(ctx, types.NamespacedName{Name: lr.Name, Namespace: lr.Namespace}, latest); err != nil {
+			return err
 		}
-		littleRed.Status.Redis.Ready = 0
-		littleRed.Status.Redis.Total = 3
-	} else {
-		littleRed.Status.Redis.Ready = redisSts.Status.ReadyReplicas
-		littleRed.Status.Redis.Total = *redisSts.Spec.Replicas
-	}
+		oldStatus := latest.Status.DeepCopy()
 
-	// Get Sentinel StatefulSet status
-	sentinelSts := &appsv1.StatefulSet{}
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      fmt.Sprintf("%s-sentinel", littleRed.Name),
-		Namespace: littleRed.Namespace,
-	}, sentinelSts); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
-		}
-		if littleRed.Status.Sentinels == nil {
-			littleRed.Status.Sentinels = &littleredv1alpha1.SentinelStatus{}
-		}
-		littleRed.Status.Sentinels.Ready = 0
-		littleRed.Status.Sentinels.Total = 3
-	} else {
-		if littleRed.Status.Sentinels == nil {
-			littleRed.Status.Sentinels = &littleredv1alpha1.SentinelStatus{}
-		}
-		littleRed.Status.Sentinels.Ready = sentinelSts.Status.ReadyReplicas
-		littleRed.Status.Sentinels.Total = *sentinelSts.Spec.Replicas
-	}
-
-	// Set replicas status (Redis pods - 1 master = replicas)
-	if littleRed.Status.Replicas == nil {
-		littleRed.Status.Replicas = &littleredv1alpha1.ReplicaStatus{}
-	}
-	if littleRed.Status.Redis.Ready > 0 {
-		littleRed.Status.Replicas.Ready = littleRed.Status.Redis.Ready - 1
-	} else {
-		littleRed.Status.Replicas.Ready = 0
-	}
-	littleRed.Status.Replicas.Total = littleRed.Status.Redis.Total - 1
-
-	// Set master info
-	if littleRed.Status.Master == nil {
-		littleRed.Status.Master = &littleredv1alpha1.MasterStatus{}
-	}
-
-	// List Redis pods to find the master IP
-	podList := &corev1.PodList{}
-	listOpts := []client.ListOption{
-		client.InNamespace(littleRed.Namespace),
-		client.MatchingLabels(redisSelectorLabels(littleRed)),
-	}
-	_ = r.List(ctx, podList, listOpts...)
-
-	masterPodName, err := r.getMasterPodName(ctx, littleRed, podList)
-	if err != nil {
-		log.Info("Sentinel unreachable or master unknown, reporting no master in status", "error", err)
-		masterPodName = ""
-	}
-	littleRed.Status.Master.PodName = masterPodName
-
-	// Try to get master pod IP
-	if masterPodName != "" {
-		masterPod := &corev1.Pod{}
+		// Get Redis StatefulSet status
+		redisSts := &appsv1.StatefulSet{}
 		if err := r.Get(ctx, types.NamespacedName{
-			Name:      masterPodName,
-			Namespace: littleRed.Namespace,
-		}, masterPod); err == nil {
-			littleRed.Status.Master.IP = masterPod.Status.PodIP
-		}
-	} else {
-		littleRed.Status.Master.IP = ""
-	}
-	// Determine phase
-	allReady := littleRed.Status.Redis.Ready == littleRed.Status.Redis.Total &&
-		littleRed.Status.Sentinels.Ready == littleRed.Status.Sentinels.Total &&
-		littleRed.Status.Redis.Ready > 0 &&
-		masterPodName != ""
-
-	if allReady {
-		littleRed.Status.Phase = littleredv1alpha1.PhaseRunning
-		// If we reach Running phase, initial bootstrap is definitely complete
-		littleRed.Status.BootstrapRequired = false
-
-		meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
-			Type:               littleredv1alpha1.ConditionReady,
-			Status:             metav1.ConditionTrue,
-			Reason:             "AllPodsReady",
-			Message:            "All Redis and Sentinel pods are ready",
-			LastTransitionTime: metav1.Now(),
-		})
-		meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
-			Type:               littleredv1alpha1.ConditionSentinelReady,
-			Status:             metav1.ConditionTrue,
-			Reason:             "QuorumEstablished",
-			Message:            "Sentinel quorum is established",
-			LastTransitionTime: metav1.Now(),
-		})
-		meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
-			Type:               littleredv1alpha1.ConditionInitialized,
-			Status:             metav1.ConditionTrue,
-			Reason:             "Initialized",
-			Message:            "Redis sentinel cluster is initialized",
-			LastTransitionTime: metav1.Now(),
-		})
-	} else {
-		littleRed.Status.Phase = littleredv1alpha1.PhaseInitializing
-		meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
-			Type:               littleredv1alpha1.ConditionReady,
-			Status:             metav1.ConditionFalse,
-			Reason:             "PodsNotReady",
-			Message:            fmt.Sprintf("Redis: %d/%d, Sentinels: %d/%d", littleRed.Status.Redis.Ready, littleRed.Status.Redis.Total, littleRed.Status.Sentinels.Ready, littleRed.Status.Sentinels.Total),
-			LastTransitionTime: metav1.Now(),
-		})
-	}
-
-	// Update observed generation
-	littleRed.Status.ObservedGeneration = littleRed.Generation
-
-	// Update high-level status summary
-	if littleRed.Status.Phase == littleredv1alpha1.PhaseRunning {
-		littleRed.Status.Status = littleRed.Status.Master.PodName
-	} else {
-		littleRed.Status.Status = string(littleRed.Status.Phase)
-	}
-
-	// Update status if changed
-	if !reflect.DeepEqual(oldStatus, &littleRed.Status) {
-		if err := r.Status().Update(ctx, littleRed); err != nil {
-			if apierrors.IsConflict(err) {
-				log.Info("Status update conflict, requeueing")
-				return ctrl.Result{RequeueAfter: time.Second}, nil
+			Name:      fmt.Sprintf("%s-redis", latest.Name),
+			Namespace: latest.Namespace,
+		}, redisSts); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return err
 			}
-			return ctrl.Result{}, err
+			latest.Status.Redis.Ready = 0
+			latest.Status.Redis.Total = 3
+		} else {
+			latest.Status.Redis.Ready = redisSts.Status.ReadyReplicas
+			latest.Status.Redis.Total = *redisSts.Spec.Replicas
 		}
+
+		// Get Sentinel StatefulSet status
+		sentinelSts := &appsv1.StatefulSet{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      fmt.Sprintf("%s-sentinel", latest.Name),
+			Namespace: latest.Namespace,
+		}, sentinelSts); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return err
+			}
+			if latest.Status.Sentinels == nil {
+				latest.Status.Sentinels = &littleredv1alpha1.SentinelStatus{}
+			}
+			latest.Status.Sentinels.Ready = 0
+			latest.Status.Sentinels.Total = 3
+		} else {
+			if latest.Status.Sentinels == nil {
+				latest.Status.Sentinels = &littleredv1alpha1.SentinelStatus{}
+			}
+			latest.Status.Sentinels.Ready = sentinelSts.Status.ReadyReplicas
+			latest.Status.Sentinels.Total = *sentinelSts.Spec.Replicas
+		}
+
+		// Set replicas status (Redis pods - 1 master = replicas)
+		if latest.Status.Replicas == nil {
+			latest.Status.Replicas = &littleredv1alpha1.ReplicaStatus{}
+		}
+		if latest.Status.Redis.Ready > 0 {
+			latest.Status.Replicas.Ready = latest.Status.Redis.Ready - 1
+		} else {
+			latest.Status.Replicas.Ready = 0
+		}
+		latest.Status.Replicas.Total = latest.Status.Redis.Total - 1
+
+		// Set master info
+		if latest.Status.Master == nil {
+			latest.Status.Master = &littleredv1alpha1.MasterStatus{}
+		}
+
+		// List Redis pods to find the master IP
+		podList := &corev1.PodList{}
+		listOpts := []client.ListOption{
+			client.InNamespace(latest.Namespace),
+			client.MatchingLabels(redisSelectorLabels(latest)),
+		}
+		_ = r.List(ctx, podList, listOpts...)
+
+		masterPodName, err := r.getMasterPodName(ctx, latest, podList)
+		if err != nil {
+			log.Info("Sentinel unreachable or master unknown, reporting no master in status", "error", err)
+			masterPodName = ""
+		}
+		latest.Status.Master.PodName = masterPodName
+
+		// Try to get master pod IP
+		if masterPodName != "" {
+			masterPod := &corev1.Pod{}
+			if err := r.Get(ctx, types.NamespacedName{
+				Name:      masterPodName,
+				Namespace: latest.Namespace,
+			}, masterPod); err == nil {
+				latest.Status.Master.IP = masterPod.Status.PodIP
+			}
+		} else {
+			latest.Status.Master.IP = ""
+		}
+		// Determine phase
+		allReady := latest.Status.Redis.Ready == latest.Status.Redis.Total &&
+			latest.Status.Sentinels.Ready == latest.Status.Sentinels.Total &&
+			latest.Status.Redis.Ready > 0 &&
+			masterPodName != ""
+
+		if allReady {
+			latest.Status.Phase = littleredv1alpha1.PhaseRunning
+			// If we reach Running phase, initial bootstrap is definitely complete
+			latest.Status.BootstrapRequired = false
+
+			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+				Type:               littleredv1alpha1.ConditionReady,
+				Status:             metav1.ConditionTrue,
+				Reason:             "AllPodsReady",
+				Message:            "All Redis and Sentinel pods are ready",
+				LastTransitionTime: metav1.Now(),
+			})
+			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+				Type:               littleredv1alpha1.ConditionSentinelReady,
+				Status:             metav1.ConditionTrue,
+				Reason:             "QuorumEstablished",
+				Message:            "Sentinel quorum is established",
+				LastTransitionTime: metav1.Now(),
+			})
+			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+				Type:               littleredv1alpha1.ConditionInitialized,
+				Status:             metav1.ConditionTrue,
+				Reason:             "Initialized",
+				Message:            "Redis sentinel cluster is initialized",
+				LastTransitionTime: metav1.Now(),
+			})
+		} else {
+			latest.Status.Phase = littleredv1alpha1.PhaseInitializing
+			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+				Type:               littleredv1alpha1.ConditionReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             "PodsNotReady",
+				Message:            fmt.Sprintf("Redis: %d/%d, Sentinels: %d/%d", latest.Status.Redis.Ready, latest.Status.Redis.Total, latest.Status.Sentinels.Ready, latest.Status.Sentinels.Total),
+				LastTransitionTime: metav1.Now(),
+			})
+		}
+
+		// Update observed generation
+		latest.Status.ObservedGeneration = latest.Generation
+
+		// Update high-level status summary
+		if latest.Status.Phase == littleredv1alpha1.PhaseRunning {
+			latest.Status.Status = latest.Status.Master.PodName
+		} else {
+			latest.Status.Status = string(latest.Status.Phase)
+		}
+
+		// Update status if changed
+		if !reflect.DeepEqual(oldStatus, &latest.Status) {
+			return r.Status().Update(ctx, latest)
+		}
+		return nil
+	})
+
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 
-	fast, steady := littleRed.GetRequeueIntervals()
+	// Re-fetch to get current phase/annotations for requeue logic
+	latest := &littleredv1alpha1.LittleRed{}
+	if err := r.Get(ctx, types.NamespacedName{Name: lr.Name, Namespace: lr.Namespace}, latest); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	fast, steady := latest.GetRequeueIntervals()
 
 	// Requeue if not running
-	if littleRed.Status.Phase != littleredv1alpha1.PhaseRunning {
+	if latest.Status.Phase != littleredv1alpha1.PhaseRunning {
 		return ctrl.Result{RequeueAfter: fast}, nil
 	}
 
 	// Periodically requeue to update master info, unless disabled via annotation
-	if littleRed.Annotations[AnnotationDisablePolling] == "true" {
+	if latest.Annotations[AnnotationDisablePolling] == "true" {
 		log.Info("Sentinel polling disabled via annotation")
 		return ctrl.Result{}, nil
 	}
@@ -813,28 +842,37 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRe
 }
 
 // setFailedStatus sets the LittleRed status to Failed
-func (r *LittleRedReconciler) setFailedStatus(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, reason, message string) (ctrl.Result, error) {
+func (r *LittleRedReconciler) setFailedStatus(ctx context.Context, lr *littleredv1alpha1.LittleRed, reason, message string) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	log.Error(fmt.Errorf("%s", message), "Validation failed", "reason", reason)
 
-	littleRed.Status.Phase = littleredv1alpha1.PhaseFailed
-	littleRed.Status.ObservedGeneration = littleRed.Generation
-	meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
-		Type:               littleredv1alpha1.ConditionConfigValid,
-		Status:             metav1.ConditionFalse,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.Now(),
-	})
-	meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
-		Type:               littleredv1alpha1.ConditionReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.Now(),
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &littleredv1alpha1.LittleRed{}
+		if err := r.Get(ctx, types.NamespacedName{Name: lr.Name, Namespace: lr.Namespace}, latest); err != nil {
+			return err
+		}
+
+		latest.Status.Phase = littleredv1alpha1.PhaseFailed
+		latest.Status.ObservedGeneration = latest.Generation
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               littleredv1alpha1.ConditionConfigValid,
+			Status:             metav1.ConditionFalse,
+			Reason:             reason,
+			Message:            message,
+			LastTransitionTime: metav1.Now(),
+		})
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               littleredv1alpha1.ConditionReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             reason,
+			Message:            message,
+			LastTransitionTime: metav1.Now(),
+		})
+
+		return r.Status().Update(ctx, latest)
 	})
 
-	if err := r.Status().Update(ctx, littleRed); err != nil {
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -911,7 +949,18 @@ func (r *LittleRedReconciler) validateClusterSpec(littleRed *littleredv1alpha1.L
 func (r *LittleRedReconciler) bootstrapSentinel(ctx context.Context, lr *littleredv1alpha1.LittleRed) error {
 	log := logf.FromContext(ctx)
 
-	// 1. Ensure redis-0 has an IP
+	// 1. Just-in-Time API Check: Re-fetch the object to ensure another worker hasn't already bootstrapped
+	latest := &littleredv1alpha1.LittleRed{}
+	if err := r.Get(ctx, types.NamespacedName{Name: lr.Name, Namespace: lr.Namespace}, latest); err != nil {
+		return err
+	}
+	if !latest.Status.BootstrapRequired {
+		log.Info("Bootstrap: flag already cleared in latest API version, skipping")
+		*lr = *latest // Update local copy
+		return nil
+	}
+
+	// 2. Ensure redis-0 has an IP (required for bootstrap)
 	pod0 := &corev1.Pod{}
 	pod0Name := fmt.Sprintf("%s-redis-0", lr.Name)
 	if err := r.Get(ctx, types.NamespacedName{Name: pod0Name, Namespace: lr.Namespace}, pod0); err != nil {
@@ -923,42 +972,62 @@ func (r *LittleRedReconciler) bootstrapSentinel(ctx context.Context, lr *littler
 		return nil
 	}
 
-	// 2. Configure Sentinels
+	// 3. Configure Sentinel Client
 	addresses := r.getSentinelAddresses(ctx, lr)
-
 	password := r.getRedisPassword(ctx, lr)
 	sc := redisclient.NewSentinelClient(addresses, password)
 
-	masterFQDN := fmt.Sprintf("%s-redis-0.%s.%s.svc.cluster.local",
-		lr.Name, replicasServiceName(lr), lr.Namespace)
+	// 4. Just-in-Time Sentinel Check: Ask Sentinel if mymaster is already registered
+	// This handles cases where the operator crashed after MONITOR but before status update.
+	if info, err := sc.GetMaster(ctx); err == nil && info != nil {
+		log.Info("Bootstrap: Sentinel already has a master registered, proceeding to clear flag", "master", info.IP)
+	} else {
+		// Only if Sentinel is fresh do we issue the MONITOR command
+		quorum := 2
+		if lr.Spec.Sentinel != nil && lr.Spec.Sentinel.Quorum > 0 {
+			quorum = lr.Spec.Sentinel.Quorum
+		}
 
-	quorum := 2
-	if lr.Spec.Sentinel != nil && lr.Spec.Sentinel.Quorum > 0 {
-		quorum = lr.Spec.Sentinel.Quorum
+		// Use Pod IP for initial bootstrap to avoid DNS races.
+		masterAddr := pod0.Status.PodIP
+		log.Info("Bootstrap: configuring Sentinel to monitor initial master", "master", masterAddr)
+
+		if err := sc.Monitor(ctx, "mymaster", masterAddr, littleredv1alpha1.RedisPort, quorum); err != nil {
+			return fmt.Errorf("failed to issue SENTINEL MONITOR: %w", err)
+		}
+
+		// Apply settings
+		if lr.Spec.Sentinel != nil {
+			s := lr.Spec.Sentinel
+			if s.DownAfterMilliseconds > 0 {
+				_ = sc.Set(ctx, "mymaster", "down-after-milliseconds", fmt.Sprintf("%d", s.DownAfterMilliseconds))
+			}
+			if s.FailoverTimeout > 0 {
+				_ = sc.Set(ctx, "mymaster", "failover-timeout", fmt.Sprintf("%d", s.FailoverTimeout))
+			}
+			if s.ParallelSyncs > 0 {
+				_ = sc.Set(ctx, "mymaster", "parallel-syncs", fmt.Sprintf("%d", s.ParallelSyncs))
+			}
+		}
 	}
 
-	log.Info("Bootstrap: configuring Sentinel to monitor initial master", "master", masterFQDN)
-
-	if err := sc.Monitor(ctx, "mymaster", masterFQDN, littleredv1alpha1.RedisPort, quorum); err != nil {
-		return fmt.Errorf("failed to issue SENTINEL MONITOR: %w", err)
-	}
-
-	// 3. Apply settings
-	if lr.Spec.Sentinel != nil {
-		s := lr.Spec.Sentinel
-		if s.DownAfterMilliseconds > 0 {
-			_ = sc.Set(ctx, "mymaster", "down-after-milliseconds", fmt.Sprintf("%d", s.DownAfterMilliseconds))
-		}
-		if s.FailoverTimeout > 0 {
-			_ = sc.Set(ctx, "mymaster", "failover-timeout", fmt.Sprintf("%d", s.FailoverTimeout))
-		}
-		if s.ParallelSyncs > 0 {
-			_ = sc.Set(ctx, "mymaster", "parallel-syncs", fmt.Sprintf("%d", s.ParallelSyncs))
-		}
-	}
-
-	// 4. Clear bootstrap flag
-	lr.Status.BootstrapRequired = false
+	// 5. Clear bootstrap flag with retry on conflict
 	log.Info("Bootstrap: initial master registered, clearing bootstrapRequired flag")
-	return r.Status().Update(ctx, lr)
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latestUpdate := &littleredv1alpha1.LittleRed{}
+		if err := r.Get(ctx, types.NamespacedName{Name: lr.Name, Namespace: lr.Namespace}, latestUpdate); err != nil {
+			return err
+		}
+		if !latestUpdate.Status.BootstrapRequired {
+			return nil // Already done
+		}
+		latestUpdate.Status.BootstrapRequired = false
+		return r.Status().Update(ctx, latestUpdate)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to clear bootstrap flag: %w", err)
+	}
+
+	// Update the local object version to avoid subsequent conflicts in the same reconcile pass
+	return r.Get(ctx, types.NamespacedName{Name: lr.Name, Namespace: lr.Namespace}, lr)
 }

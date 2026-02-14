@@ -60,7 +60,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 
 			By("deploying chaos client pod simultaneously")
-			chaosPodName, err = deployChaosClient(testNamespace, "stable", crName, true, "chaos-stable", testDuration)
+			chaosPodName, err = deployChaosClient(testNamespace, "stable", crName+":6379", "chaos-stable", true, testDuration)
 			Expect(err).NotTo(HaveOccurred())
 			AddReportEntry("chaos:" + chaosPodName)
 
@@ -143,7 +143,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 
 			By("deploying chaos client pod simultaneously")
-			chaosPodName, err := deployChaosClient(testNamespace, "master-fail", crName, true, "chaos-master", testDuration)
+			chaosPodName, err := deployChaosClient(testNamespace, "master-fail", crName+":6379", "chaos-master", true, testDuration)
 			Expect(err).NotTo(HaveOccurred())
 			AddReportEntry("chaos:" + chaosPodName)
 			defer func() {
@@ -217,7 +217,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 
 			By("deploying chaos client pod simultaneously")
-			chaosPodName, err := deployChaosClient(testNamespace, "replica-fail", crName, true, "chaos-replica", testDuration)
+			chaosPodName, err := deployChaosClient(testNamespace, "replica-fail", crName+":6379", "chaos-replica", true, testDuration)
 			Expect(err).NotTo(HaveOccurred())
 			AddReportEntry("chaos:" + chaosPodName)
 			defer func() {
@@ -290,7 +290,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 
 			By("deploying chaos client pod simultaneously")
-			chaosPodName, err := deployChaosClient(testNamespace, "rolling", crName, true, "chaos-rolling", testDuration)
+			chaosPodName, err := deployChaosClient(testNamespace, "rolling", crName+":6379", "chaos-rolling", true, testDuration)
 			Expect(err).NotTo(HaveOccurred())
 			AddReportEntry("chaos:" + chaosPodName)
 			defer func() {
@@ -379,7 +379,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 
 			By("deploying chaos client pod simultaneously")
-			chaosPodName, err = deployChaosClient(testNamespace, "multipod", crName, true, "chaos-multi", testDuration)
+			chaosPodName, err = deployChaosClient(testNamespace, "multipod", crName+":6379", "chaos-multi", true, testDuration)
 			Expect(err).NotTo(HaveOccurred())
 			AddReportEntry("chaos:" + chaosPodName)
 

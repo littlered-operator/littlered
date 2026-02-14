@@ -59,7 +59,7 @@ spec:
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			chaosPodName, err := deployChaosClient(testNamespace, "sentinel-chaos", crName, false, "chaos-sent", testDuration)
+			chaosPodName, err := deployChaosClient(testNamespace, "sentinel-chaos", crName+":6379", "chaos-sent", false, testDuration)
 			Expect(err).NotTo(HaveOccurred())
 			AddReportEntry("chaos:" + chaosPodName)
 
@@ -195,7 +195,7 @@ spec:
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			chaosPodName, err := deployChaosClient(testNamespace, "standalone-restart", crName, false, "chaos-stand", testDuration)
+			chaosPodName, err := deployChaosClient(testNamespace, "standalone-restart", crName+":6379", "chaos-stand", false, testDuration)
 			Expect(err).NotTo(HaveOccurred())
 			defer func() {
 				if debugOnFailure && suiteOrSpecFailed() {
