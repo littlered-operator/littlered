@@ -242,11 +242,11 @@ func (c *SentinelClient) getReplicasFromSentinel(ctx context.Context, sentinelAd
 
 	var replicas []ReplicaInfo
 	for _, raw := range result {
-		// go-redis returns []map[string]interface{} for SENTINEL REPLICAS
+		// go-redis returns []map[string]string for SENTINEL REPLICAS
 		replica := ReplicaInfo{
-			IP:    raw["ip"].(string),
-			Port:  fmt.Sprintf("%v", raw["port"]),
-			Flags: raw["flags"].(string),
+			IP:    raw["ip"],
+			Port:  raw["port"],
+			Flags: raw["flags"],
 		}
 		replicas = append(replicas, replica)
 	}
