@@ -666,37 +666,9 @@ func buildSentinelConfig(lr *littleredv1alpha1.LittleRed) string {
 		sentinel = &littleredv1alpha1.SentinelSpec{}
 	}
 
-	quorum := sentinel.Quorum
-	if quorum == 0 {
-		quorum = 2
-	}
-	downAfterMs := sentinel.DownAfterMilliseconds
-	if downAfterMs == 0 {
-		downAfterMs = 30000
-	}
-	failoverTimeout := sentinel.FailoverTimeout
-	if failoverTimeout == 0 {
-		failoverTimeout = 180000
-	}
-	parallelSyncs := sentinel.ParallelSyncs
-	if parallelSyncs == 0 {
-		parallelSyncs = 1
-	}
-
-	// Use the headless service for initial master discovery
-	// The first pod (index 0) will be the initial master
-	initialMaster := fmt.Sprintf("%s-redis-0.%s.%s.svc.cluster.local",
-		lr.Name, replicasServiceName(lr), lr.Namespace)
-
 	sb.WriteString("# LittleRed Sentinel configuration\n")
 	sb.WriteString(fmt.Sprintf("port %d\n", littleredv1alpha1.SentinelPort))
 	sb.WriteString("dir /data\n")
-	sb.WriteString("\n# Master monitoring\n")
-	sb.WriteString(fmt.Sprintf("sentinel monitor mymaster %s %d %d\n",
-		initialMaster, littleredv1alpha1.RedisPort, quorum))
-	sb.WriteString(fmt.Sprintf("sentinel down-after-milliseconds mymaster %d\n", downAfterMs))
-	sb.WriteString(fmt.Sprintf("sentinel failover-timeout mymaster %d\n", failoverTimeout))
-	sb.WriteString(fmt.Sprintf("sentinel parallel-syncs mymaster %d\n", parallelSyncs))
 
 	// Auth configuration
 	if lr.Spec.Auth.Enabled {
@@ -873,10 +845,10 @@ func buildRedisStatefulSetSentinel(lr *littleredv1alpha1.LittleRed) *appsv1.Stat
 }
 
 // buildRedisContainerSentinel creates the Redis container for sentinel mode
-// buildRedisContainerSentinel creates the Redis container for sentinel mode
 func buildRedisContainerSentinel(lr *littleredv1alpha1.LittleRed) corev1.Container {
-	// Script to configure replication based on pod index and Sentinel state.
-	// We copy the config to /data so it's writable for CONFIG REWRITE.
+	// Script to configure replication strictly based on Sentinel state.
+	// This is "Operator-Authorized" startup: no pod assumes mastership
+	// unless Sentinel (configured by the Operator) says so.
 	startupScript := `#!/bin/sh
 set -e
 
@@ -888,46 +860,35 @@ log() {
 cp /etc/redis/redis.conf /data/redis.conf
 
 HOSTNAME=$(hostname)
-INDEX=${HOSTNAME##*-}
-MASTER_HOST="%s-redis-0.%s.%s.svc.cluster.local"
-SENTINEL_ADDR="%s-sentinel.%s.svc:26379"
+SENTINEL_SVC="%s-sentinel.%s.svc"
 
-log "Starting Redis node $HOSTNAME (Index: $INDEX)"
+log "Starting Redis node $HOSTNAME. Waiting for Sentinel authorization..."
 
-# 1. Try to find existing master via Sentinel
-log "Querying Sentinel at $SENTINEL_ADDR for master..."
-# Use a short timeout for redis-cli
-CURRENT_MASTER_IP=$(redis-cli -h %s-sentinel.%s.svc -p 26379 %s sentinel get-master-addr-by-name mymaster | head -n 1 || true)
+# Loop until Sentinel has a master for us
+while true; do
+  # Use --raw to get just the values (IP/Host on line 1, Port on line 2)
+  SENTINEL_REPLY=$(redis-cli -h $SENTINEL_SVC -p 26379 %s --raw sentinel get-master-addr-by-name mymaster || true)
+  CURRENT_MASTER_HOST=$(echo "$SENTINEL_REPLY" | head -n 1)
+  CURRENT_MASTER_PORT=$(echo "$SENTINEL_REPLY" | sed -n '2p')
 
-if [ -n "$CURRENT_MASTER_IP" ]; then
-  log "Sentinel reported master at $CURRENT_MASTER_IP. Joining as replica."
-  exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_IP %d %s
-fi
+  if [ -n "$CURRENT_MASTER_HOST" ]; then
+    log "Sentinel reported master at $CURRENT_MASTER_HOST:$CURRENT_MASTER_PORT"
+    
+    # Check if reported master is ME (compare hostname or IP)
+    REPORTED_NAME=${CURRENT_MASTER_HOST%%%%.*}
+    
+    if [ "$REPORTED_NAME" = "$HOSTNAME" ] || [ "$CURRENT_MASTER_HOST" = "$HOSTNAME" ] || [ "$CURRENT_MASTER_HOST" = "$POD_IP" ]; then
+       log "I am the authorized master. Starting redis-server..."
+       exec redis-server /data/redis.conf %s
+    fi
 
-log "Sentinel has no master info."
-
-# 2. Check if Bootstrap is allowed via K8s API
-log "Checking if bootstrap is required via K8s API..."
-TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-API_URL="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}/apis/chuck-chuck-chuck.net/v1alpha1/namespaces/${LITTLERED_NAMESPACE}/littlereds/${LITTLERED_NAME}/status"
-
-# We use wget if curl is not available (valkey image might vary)
-BOOTSTRAP_REQUIRED=$(wget -qO- --header="Authorization: Bearer $TOKEN" --ca-certificate=$CACERT "$API_URL" | grep -o '"bootstrapRequired":[[:space:]]*true' | grep -o 'true' || echo "false")
-
-if [ "$BOOTSTRAP_REQUIRED" = "true" ]; then
-  if [ "$INDEX" = "0" ]; then
-    log "Bootstrap permitted and I am redis-0. Starting as initial master."
-    exec redis-server /data/redis.conf %s
-  else
-    log "Bootstrap permitted but I am redis-$INDEX. Waiting for redis-0 to become master..."
-    exec redis-server /data/redis.conf --replicaof $MASTER_HOST %d %s
+    log "Joining $CURRENT_MASTER_HOST as replica..."
+    exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT %s
   fi
-fi
 
-log "ERROR: Bootstrap not required and no master found in Sentinel. Refusing to start as master to avoid data loss."
-log "System state: Sentinel=Empty, BootstrapRequired=false. Manual intervention required."
-exit 1
+  log "Sentinel has no master info. Waiting..."
+  sleep 2
+done
 `
 	authArgs := ""
 	sentinelAuthArgs := ""
@@ -937,12 +898,10 @@ exit 1
 	}
 
 	script := fmt.Sprintf(startupScript,
-		lr.Name, replicasServiceName(lr), lr.Namespace, // MASTER_HOST
-		lr.Name, lr.Namespace, // SENTINEL_ADDR
-		lr.Name, lr.Namespace, sentinelAuthArgs, // redis-cli query
-		littleredv1alpha1.RedisPort, authArgs, // exec replicaof
-		authArgs,                              // exec master
-		littleredv1alpha1.RedisPort, authArgs) // exec replicaof (waiting)
+		lr.Name, lr.Namespace, // SENTINEL_SVC
+		sentinelAuthArgs,
+		authArgs, // exec master
+		authArgs) // exec replicaof
 
 	container := corev1.Container{
 		Name:            "redis",
@@ -982,6 +941,14 @@ exit 1
 				ValueFrom: &corev1.EnvVarSource{
 					FieldRef: &corev1.ObjectFieldSelector{
 						FieldPath: "metadata.namespace",
+					},
+				},
+			},
+			{
+				Name: "POD_IP",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "status.podIP",
 					},
 				},
 			},

@@ -61,13 +61,13 @@ type LittleRedReconciler struct {
 
 // +kubebuilder:rbac:groups=chuck-chuck-chuck.net,resources=littlereds,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chuck-chuck-chuck.net,resources=littlereds/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=chuck-chuck-chuck.net,resources=littlereds/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 
@@ -450,6 +450,14 @@ func (r *LittleRedReconciler) reconcileSentinel(ctx context.Context, littleRed *
 		return ctrl.Result{}, err
 	}
 
+	// Bootstrap Sentinel if required
+	if littleRed.Status.BootstrapRequired {
+		if err := r.bootstrapSentinel(ctx, littleRed); err != nil {
+			log.Error(err, "Failed to bootstrap Sentinel")
+			return ctrl.Result{}, err
+		}
+	}
+
 	// Update pod labels to reflect current master
 	if err := r.updateMasterLabel(ctx, littleRed); err != nil {
 		log.Error(err, "Failed to update master labels")
@@ -530,6 +538,10 @@ func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *l
 	sc := redisclient.NewSentinelClient([]string{sentinelAddr}, password)
 	masterInfo, err := sc.GetMaster(checkCtx)
 	if err != nil {
+		// If Sentinel explicitly says "no master", it's not a failure we should error on
+		if strings.Contains(err.Error(), "redis: nil") {
+			return "", nil
+		}
 		return "", fmt.Errorf("failed to get master from Sentinel: %w", err)
 	}
 
@@ -544,12 +556,12 @@ func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *l
 
 	// Find pod with matching IP or Name
 	for _, pod := range podList.Items {
-		if pod.Status.PodIP == reportedIdentity || pod.Name == reportedPodName {
+		if pod.Status.PodIP == reportedIdentity || pod.Name == reportedPodName || (pod.Status.PodIP != "" && reportedIdentity != "" && pod.Status.PodIP == reportedIdentity) {
 			return pod.Name, nil
 		}
 	}
 
-	return "", fmt.Errorf("sentinel reported master identity %q not found in pod list", reportedIdentity)
+	return "", fmt.Errorf("sentinel reported master identity %q not found in pod list (checked IPs and names)", reportedIdentity)
 }
 
 // updateMasterLabel updates the role labels on Redis pods based on current master
@@ -573,16 +585,10 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 	masterPodName, err := r.getMasterPodName(ctx, littleRed, podList)
 	if err != nil {
 		// If we can't get the master from Sentinel, we have two cases:
-		// 1. Initial bootstrap: no master info in status, use pod-0 as a starting point.
+		// 1. Initial bootstrap: no master info in status, bootstrap sentinel will handle it.
 		// 2. Existing cluster: keep current labels to avoid churn during failover.
-		if littleRed.Status.Master != nil && littleRed.Status.Master.PodName != "" {
-			log.Info("Sentinel unreachable or master unknown, skipping label update to avoid churn during failover", "error", err)
-			return nil
-		}
-
-		// Initial bootstrap case
-		masterPodName = fmt.Sprintf("%s-redis-0", littleRed.Name)
-		log.Info("Sentinel unreachable during bootstrap, defaulting to initial master", "pod", masterPodName)
+		log.Info("Sentinel unreachable or master unknown, skipping label update", "error", err)
+		return nil
 	}
 
 	// Log master change if detected
@@ -694,8 +700,8 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, littleRe
 		if littleRed.Status.Master != nil && littleRed.Status.Master.PodName != "" {
 			masterPodName = littleRed.Status.Master.PodName
 		} else {
-			// Bootstrap fallback
-			masterPodName = fmt.Sprintf("%s-redis-0", littleRed.Name)
+			// No master known yet, leave empty
+			masterPodName = ""
 		}
 	}
 	littleRed.Status.Master.PodName = masterPodName
@@ -889,4 +895,71 @@ func (r *LittleRedReconciler) reconcilePodRBAC(ctx context.Context, lr *littlere
 		return err
 	}
 	return r.apply(ctx, lr, buildPodRoleBinding(lr))
+}
+
+// bootstrapSentinel configures Sentinels to monitor the initial master
+func (r *LittleRedReconciler) bootstrapSentinel(ctx context.Context, lr *littleredv1alpha1.LittleRed) error {
+	log := logf.FromContext(ctx)
+
+	// 1. Ensure redis-0 has an IP
+	pod0 := &corev1.Pod{}
+	pod0Name := fmt.Sprintf("%s-redis-0", lr.Name)
+	if err := r.Get(ctx, types.NamespacedName{Name: pod0Name, Namespace: lr.Namespace}, pod0); err != nil {
+		return err
+	}
+
+	if pod0.Status.PodIP == "" {
+		log.Info("Bootstrap: waiting for redis-0 to have an IP before configuring Sentinel")
+		return nil
+	}
+
+	// 2. Configure Sentinels
+	sentinelAddr := fmt.Sprintf("%s-sentinel.%s.svc:%d",
+		lr.Name, lr.Namespace, littleredv1alpha1.SentinelPort)
+
+	password := r.getRedisPassword(ctx, lr)
+	sc := redisclient.NewSentinelClient([]string{sentinelAddr}, password)
+
+	masterFQDN := fmt.Sprintf("%s-redis-0.%s.%s.svc.cluster.local",
+		lr.Name, replicasServiceName(lr), lr.Namespace)
+
+	quorum := 2
+	if lr.Spec.Sentinel != nil && lr.Spec.Sentinel.Quorum > 0 {
+		quorum = lr.Spec.Sentinel.Quorum
+	}
+
+	log.Info("Bootstrap: configuring Sentinel to monitor initial master", "master", masterFQDN)
+
+	// Check if already monitored to avoid "Duplicate master name" errors
+	if info, err := sc.GetMaster(ctx); err == nil && info != nil {
+		log.Info("Bootstrap: master already registered in Sentinel, skipping MONITOR command")
+	} else {
+		if err := sc.Monitor(ctx, "mymaster", masterFQDN, littleredv1alpha1.RedisPort, quorum); err != nil {
+			// If we still get a duplicate error, treat it as success
+			if strings.Contains(err.Error(), "ERR Duplicate master name") {
+				log.Info("Bootstrap: master already registered (duplicate error), proceeding")
+			} else {
+				return fmt.Errorf("failed to issue SENTINEL MONITOR: %w", err)
+			}
+		}
+	}
+
+	// 3. Apply settings
+	if lr.Spec.Sentinel != nil {
+		s := lr.Spec.Sentinel
+		if s.DownAfterMilliseconds > 0 {
+			_ = sc.Set(ctx, "mymaster", "down-after-milliseconds", fmt.Sprintf("%d", s.DownAfterMilliseconds))
+		}
+		if s.FailoverTimeout > 0 {
+			_ = sc.Set(ctx, "mymaster", "failover-timeout", fmt.Sprintf("%d", s.FailoverTimeout))
+		}
+		if s.ParallelSyncs > 0 {
+			_ = sc.Set(ctx, "mymaster", "parallel-syncs", fmt.Sprintf("%d", s.ParallelSyncs))
+		}
+	}
+
+	// 4. Clear bootstrap flag
+	lr.Status.BootstrapRequired = false
+	log.Info("Bootstrap: initial master registered, clearing bootstrapRequired flag")
+	return r.Status().Update(ctx, lr)
 }

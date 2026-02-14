@@ -27,7 +27,12 @@ graph TD
 
     %% Sentinel Mode
     ModeSwitch -- sentinel --> SentinelFlow[Reconcile Sentinel Resources: Redis/Sentinel CMs, STS, SVCs]
-    SentinelFlow --> UpdateMasterLabel[Update Master Pod Labels]
+    SentinelFlow --> BootstrapSentinel{bootstrapRequired == true?}
+    BootstrapSentinel -- Yes --> WaitPodIP{redis-0 has PodIP?}
+    WaitPodIP -- Yes --> RegisterMaster[Register master in Sentinel]
+    WaitPodIP -- No --> UpdateSentinelStatus
+    RegisterMaster --> UpdateSentinelStatus
+    BootstrapSentinel -- No --> UpdateMasterLabel[Update Master Pod Labels]
     UpdateMasterLabel --> StartMonitor[Ensure Background Sentinel Monitor]
     StartMonitor --> UpdateSentinelStatus[Update Sentinel Status]
     UpdateSentinelStatus --> IsRunning{Phase == Running?}

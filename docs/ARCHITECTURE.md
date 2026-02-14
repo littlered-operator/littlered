@@ -266,18 +266,22 @@ status:
 
 ### 3.2.1 Safe Bootstrap (Sentinel Mode)
 
-To prevent data loss in pure in-memory mode, LittleRed implements a "Safe Bootstrap" mechanism for Sentinel mode:
+To prevent data loss in pure in-memory mode (where an empty master restarting could wipe live replicas), LittleRed implements a strict "Operator-Authorized" bootstrap mechanism:
 
-1.  **Operator Intent**: On CR creation, the operator sets `status.bootstrapRequired: true`.
-2.  **Pod Identity**: Each Redis pod is assigned a `ServiceAccount` and can read its parent's CR status via the K8s API.
-3.  **Startup Logic**:
-    *   Pod queries existing Sentinels. If a master is found, it **always** joins as a replica.
-    *   If no master is found, it checks `status.bootstrapRequired`.
-    *   If `true` and the pod is `redis-0`, it starts as master.
-    *   If `false` and no master is found in Sentinel, the pod **fails to start** (refuses to assume mastership).
-4.  **Completion**: Once the operator detects a healthy master and connected replicas, it clears the `bootstrapRequired` flag.
+1.  **Operator Intent**: On CR creation (or total cluster loss), the operator sets `status.bootstrapRequired: true`.
+2.  **Pod Strategy (Wait-Loop)**:
+    *   **All** Redis pods start with a shell script that enters a loop.
+    *   Inside the loop, the pod uses `redis-cli` to query the Sentinels for the current master.
+    *   The pod **refuses** to start `redis-server` until Sentinel returns a valid master address.
+3.  **Operator Strategy (Authorization)**:
+    *   The operator monitors `redis-0`. Once `redis-0` has been assigned a **PodIP**, the operator identifies it as the "seed" master.
+    *   The operator issues a `SENTINEL MONITOR` command to the Sentinels, registering `redis-0`'s FQDN as the master.
+4.  **Handshake**:
+    *   `redis-0` sees its own identity (hostname or IP) in the Sentinel reply. It exits the loop and starts as **master**.
+    *   `redis-1` and `redis-2` see the master in Sentinel, exit their loops, and start as **replicas**.
+5.  **Completion**: Once all pods are ready and the cluster is healthy, the operator clears `status.bootstrapRequired: false`.
 
-This ensures that a restarted master pod never reclaims mastership if it is empty and replicas with data exist.
+This "Strict Authorization" ensures that no pod ever assumes mastership voluntarily. Mastership is a privilege granted solely by the Operator via Sentinel.
 
 ### 3.3 Cluster Mode
 
@@ -420,8 +424,8 @@ This ensures that a restarted master pod never reclaims mastership if it is empt
                             │
                             ▼
                 ┌───────────────────────┐
-                │ Bootstrap master      │◄─── Only on initial
-                │ (if first deploy)     │     deployment
+                │ Bootstrap master      │◄─── Wait for redis-0 PodIP,
+                │ (if first deploy)     │     issue SENTINEL MONITOR
                 └───────────┬───────────┘
                             │
                             ▼

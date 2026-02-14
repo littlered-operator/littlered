@@ -6,83 +6,97 @@ metadata:
     {{- include "littlered-operator.labels" . | nindent 4 }}
 rules:
   - apiGroups:
-      - ""
+    - ''
     resources:
-      - configmaps
-      - services
+    - configmaps
+    - serviceaccounts
+    - services
     verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
   - apiGroups:
-      - ""
+    - ''
     resources:
-      - pods
+    - pods
     verbs:
-      - get
-      - list
-      - patch
-      - update
-      - watch
+    - get
+    - list
+    - patch
+    - update
+    - watch
   - apiGroups:
-      - ""
+    - ''
     resources:
-      - secrets
+    - secrets
     verbs:
-      - get
-      - list
-      - watch
+    - get
+    - list
+    - watch
   - apiGroups:
-      - apps
+    - apps
     resources:
-      - statefulsets
+    - statefulsets
     verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
   - apiGroups:
-      - chuck-chuck-chuck.net
+    - chuck-chuck-chuck.net
     resources:
-      - littlereds
+    - littlereds
     verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
   - apiGroups:
-      - chuck-chuck-chuck.net
+    - chuck-chuck-chuck.net
     resources:
-      - littlereds/finalizers
+    - littlereds/finalizers
     verbs:
-      - update
+    - update
   - apiGroups:
-      - chuck-chuck-chuck.net
+    - chuck-chuck-chuck.net
     resources:
-      - littlereds/status
+    - littlereds/status
     verbs:
-      - get
-      - patch
-      - update
+    - get
+    - patch
+    - update
   - apiGroups:
-      - monitoring.coreos.com
+    - monitoring.coreos.com
     resources:
-      - servicemonitors
+    - servicemonitors
     verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
+  - apiGroups:
+    - rbac.authorization.k8s.io
+    resources:
+    - rolebindings
+    - roles
+    verbs:
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch

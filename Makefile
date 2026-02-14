@@ -60,6 +60,8 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 	@echo "Syncing CRDs to Helm chart..."
 	@cp config/crd/bases/*.yaml charts/littlered-operator/crds/ 2>/dev/null || true
+	@echo "Syncing RBAC to Helm chart..."
+	@python3 -c 'import yaml; role = yaml.safe_load(open("config/rbac/role.yaml")); chart_role_path = "charts/littlered-operator/templates/clusterrole.yaml"; lines = open(chart_role_path).readlines(); new_lines = []; [new_lines.append(l) for l in lines]; idx = [i for i, l in enumerate(new_lines) if "rules:" in l][0]; rules_yaml = yaml.dump(role["rules"], indent=2, sort_keys=False); rules_lines = ["  " + l + "\n" for l in rules_yaml.splitlines()]; open(chart_role_path, "w").writelines(new_lines[:idx+1] + rules_lines)'
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.

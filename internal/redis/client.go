@@ -120,6 +120,46 @@ func (c *SentinelClient) Subscribe(ctx context.Context, channels ...string) (<-c
 	}, nil
 }
 
+// Monitor tells the sentinels to start monitoring a new master
+func (c *SentinelClient) Monitor(ctx context.Context, name, ip string, port int, quorum int) error {
+	var lastErr error
+	for _, addr := range c.addresses {
+		client := redis.NewSentinelClient(&redis.Options{
+			Addr:        addr,
+			Password:    c.password,
+			DialTimeout: DefaultTimeout,
+			ReadTimeout: DefaultTimeout,
+		})
+		err := client.Process(ctx, redis.NewStatusCmd(ctx, "SENTINEL", "MONITOR", name, ip, port, quorum))
+		client.Close()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+	}
+	return fmt.Errorf("failed to issue MONITOR command to any sentinel: %w", lastErr)
+}
+
+// Set updates sentinel configuration for a master
+func (c *SentinelClient) Set(ctx context.Context, name, option, value string) error {
+	var lastErr error
+	for _, addr := range c.addresses {
+		client := redis.NewSentinelClient(&redis.Options{
+			Addr:        addr,
+			Password:    c.password,
+			DialTimeout: DefaultTimeout,
+			ReadTimeout: DefaultTimeout,
+		})
+		err := client.Process(ctx, redis.NewStatusCmd(ctx, "SENTINEL", "SET", name, option, value))
+		client.Close()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+	}
+	return fmt.Errorf("failed to issue SET command to any sentinel: %w", lastErr)
+}
+
 func (c *SentinelClient) getMasterFromSentinel(ctx context.Context, addr string) (*MasterInfo, error) {
 	client := redis.NewSentinelClient(&redis.Options{
 		Addr:        addr,
