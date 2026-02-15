@@ -83,9 +83,11 @@ func serviceMonitorName(lr *littleredv1alpha1.LittleRed) string {
 
 // Label keys
 const (
-	LabelRole   = "chuck-chuck-chuck.net/role"
-	RoleMaster  = "master"
-	RoleReplica = "replica"
+	LabelRole     = "chuck-chuck-chuck.net/role"
+	RoleMaster    = "master"
+	RoleReplica   = "replica"
+	RoleOrphan    = "orphan"
+	RoleUndefined = "undefined"
 )
 
 // computeConfigHash computes a SHA256 hash of the ConfigMap data

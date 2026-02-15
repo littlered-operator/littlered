@@ -830,6 +830,7 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 	}
 
 	masterPodName, err := r.getMasterPodName(ctx, littleRed, podList)
+	defaultRole := RoleReplica
 	if err != nil {
 		var sErr *SentinelError
 		if errors.As(err, &sErr) {
@@ -838,11 +839,13 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 				log.Info("Sentinel unreachable, skipping label update to avoid churn", "error", sErr.Err)
 				return nil
 			case SentinelNoMaster:
-				log.Info("Sentinel confirms no master is currently monitored. Proceeding to relabel all as replicas.")
-				masterPodName = "" // Proceed with all as replicas
+				log.Info("Sentinel confirms no master is currently monitored. Proceeding to relabel all as undefined.")
+				masterPodName = ""
+				defaultRole = RoleUndefined
 			case SentinelGhostMaster:
-				log.Info("Sentinel reported a ghost master. Proceeding to relabel all living pods as replicas.", "ghost_ip", sErr.IP)
-				masterPodName = "" // Proceed with all as replicas
+				log.Info("Sentinel reported a ghost master. Proceeding to relabel all living pods as orphans.", "ghost_ip", sErr.IP)
+				masterPodName = ""
+				defaultRole = RoleOrphan
 			}
 		} else {
 			log.Error(err, "Unexpected error identifying master pod, skipping label update")
@@ -852,7 +855,7 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 
 	// Safety: if masterPodName is empty here, it means we talked to Sentinel
 	// and it definitively has no LIVING master. We proceed to ensure all
-	// living pods are labeled as replicas.
+	// living pods are labeled according to defaultRole (orphan or undefined).
 
 	// Log master change if detected.
 	lastKnownMaster := ""
@@ -869,9 +872,9 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 	for i := range podList.Items {
 		pod := &podList.Items[i]
 		currentRole := pod.Labels[LabelRole]
-		expectedRole := RoleReplica
+		expectedRole := defaultRole
 
-		if pod.Name == masterPodName {
+		if pod.Name == masterPodName && masterPodName != "" {
 			expectedRole = RoleMaster
 		}
 
@@ -886,7 +889,6 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 			}
 		}
 	}
-
 	return nil
 }
 
