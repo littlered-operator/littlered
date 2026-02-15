@@ -521,7 +521,7 @@ spec:
 			oldUID = strings.TrimSpace(oldUID)
 
 			cmd = exec.Command("kubectl", "get", "pod", crName+"-redis-0",
-				"-n", testNamespace, "-o", "jsonpath={.metadata.annotations.littlered\\.tanne3\\.de/config-hash}")
+				"-n", testNamespace, "-o", "jsonpath={.metadata.annotations.chuck-chuck-chuck\\.net/config-hash}")
 			oldHash, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			oldHash = strings.TrimSpace(oldHash)
@@ -562,7 +562,7 @@ spec:
 
 				// Verify new config hash is different
 				cmd = exec.Command("kubectl", "get", "pod", crName+"-redis-0",
-					"-n", testNamespace, "-o", "jsonpath={.metadata.annotations.littlered\\.tanne3\\.de/config-hash}")
+					"-n", testNamespace, "-o", "jsonpath={.metadata.annotations.chuck-chuck-chuck\\.net/config-hash}")
 				newHash, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				newHash = strings.TrimSpace(newHash)
