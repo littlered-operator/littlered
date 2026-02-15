@@ -893,7 +893,7 @@ while true; do
 
   if [ -n "$CURRENT_MASTER_HOST" ]; then
     log "Sentinel reported master at $CURRENT_MASTER_HOST:$CURRENT_MASTER_PORT"
-    
+
     # Check if reported master is ME (compare IP)
     if [ "$CURRENT_MASTER_HOST" = "$POD_IP" ]; then
        log "I am the authorized master. Starting redis-server..."
@@ -901,7 +901,7 @@ while true; do
        exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} $AUTH_ARGS
     fi
 
-    # I am a replica. We start redis-server even if the master is currently 
+    # I am a replica. We start redis-server even if the master is currently
     # unreachable. This allows Sentinel to discover us as a living replica
     # and perform a failover if the master is dead.
     log "Joining $CURRENT_MASTER_HOST as replica..."
@@ -966,6 +966,35 @@ done
 		},
 		LivenessProbe:  buildLivenessProbe(lr),
 		ReadinessProbe: buildReadinessProbe(lr),
+		Lifecycle: &corev1.Lifecycle{
+			PreStop: &corev1.LifecycleHandler{
+				Exec: &corev1.ExecAction{
+					Command: []string{"sh", "-c", fmt.Sprintf(`
+ROLE=$(redis-cli info replication | grep role | cut -d: -f2 | tr -d '\r')
+if [ "$ROLE" = "master" ]; then
+  echo "I am the master. Proactively failing over..."
+  AUTH_ARGS=""
+  if [ -n "$REDIS_PASSWORD" ]; then
+    AUTH_ARGS="-a $REDIS_PASSWORD"
+  fi
+  # Pause writes for 30s to ensure a clean handover
+  redis-cli $AUTH_ARGS CLIENT PAUSE 30000 WRITE || true
+  # Trigger failover
+  SENTINEL_SVC="%s-sentinel.%s.svc"
+  redis-cli -h $SENTINEL_SVC -p 26379 $AUTH_ARGS SENTINEL failover mymaster || true
+  # Wait for Sentinel to acknowledge the new master
+  for i in $(seq 1 10); do
+    MASTER_IP=$(redis-cli -h $SENTINEL_SVC -p 26379 $AUTH_ARGS -t 2 --raw sentinel get-master-addr-by-name mymaster | head -n 1 || true)
+    if [ -n "$MASTER_IP" ] && [ "$MASTER_IP" != "$POD_IP" ]; then
+       echo "Failover confirmed. New master: $MASTER_IP"
+       exit 0
+    fi
+    sleep 1
+  done
+fi`, lr.Name, lr.Namespace)},
+				},
+			},
+		},
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: ptr(false),
 			ReadOnlyRootFilesystem:   ptr(true),
@@ -1542,6 +1571,47 @@ exec redis-server /etc/redis/redis.conf \
 		},
 		LivenessProbe:  buildClusterLivenessProbe(lr),
 		ReadinessProbe: buildClusterReadinessProbe(lr),
+		Lifecycle: &corev1.Lifecycle{
+			PreStop: &corev1.LifecycleHandler{
+				Exec: &corev1.ExecAction{
+					Command: []string{"sh", "-c", `
+AUTH_ARGS=""
+if [ -n "$REDIS_PASSWORD" ]; then
+  AUTH_ARGS="-a $REDIS_PASSWORD"
+fi
+
+# Check if I am a master
+MY_ID=$(redis-cli $AUTH_ARGS cluster nodes | grep myself | awk '{print $1}')
+IS_MASTER=$(redis-cli $AUTH_ARGS cluster nodes | grep myself | grep -q master && echo "yes" || echo "no")
+
+if [ "$IS_MASTER" != "yes" ]; then
+  echo "I am not a master. Safe to stop."
+  exit 0
+fi
+
+# Find a healthy replica for my shard
+REPLICA_IP=$(redis-cli $AUTH_ARGS cluster nodes | grep "$MY_ID" | grep "slave" | grep -v "fail" | head -n 1 | awk '{print $2}' | cut -d: -f1 | cut -d@ -f1)
+
+if [ -z "$REPLICA_IP" ]; then
+  echo "No healthy replica found to take over. Proceeding with restart."
+  exit 0
+fi
+
+echo "Requesting replica $REPLICA_IP to take over shard..."
+redis-cli -h $REPLICA_IP $AUTH_ARGS CLUSTER FAILOVER
+
+# Wait for role swap (I become slave)
+for i in $(seq 1 10); do
+  NEW_ROLE=$(redis-cli $AUTH_ARGS cluster nodes | grep myself | awk '{print $3}')
+  if echo "$NEW_ROLE" | grep -q "slave"; then
+    echo "Failover successful. I am now a replica."
+    exit 0
+  fi
+  sleep 1
+done`},
+				},
+			},
+		},
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: ptr(false),
 			ReadOnlyRootFilesystem:   ptr(true),
