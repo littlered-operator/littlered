@@ -593,7 +593,28 @@ One of the key challenges is keeping the `{name}-master` Service pointing to the
 
 **Recommended: Option C** - Add a label `chuck-chuck-chuck.net/role: master` to the master pod, update it on failover. Service selector uses this label.
 
-### 5.2 Failover Detection
+### 5.2 Honest Labeling (Sentinel Mode)
+
+To improve observability and ensure correct traffic routing during cluster transitions, LittleRed implements "Honest Labeling." Instead of a binary master/replica choice, pods are labeled based on their actual relationship to the cluster:
+
+| Role | Meaning | Traffic Impact |
+|------|---------|----------------|
+| `master` | A living pod authorized as master by Sentinel. | Receives all traffic (Read/Write). |
+| `replica` | A living pod tracking a **living** master. | Receives read-only traffic (if configured). |
+| `orphan` | Sentinel reports a master, but it is a **ghost IP** (dead pod). | Removed from all Service endpoints. |
+| `undefined` | Sentinel has **no master information** registered. | Removed from all Service endpoints. |
+
+This prevents "Zombie Replicas" (pods following dead IPs) from being perceived as healthy cluster members.
+
+### 5.3 Proactive Topology Introduction (Sentinel Mode)
+
+Because "Strict IP Identity" prevents nodes from automatically re-discovering each other via hostnames, the Operator proactively "introduces" and repairs node relationships during reconciliation:
+
+1.  **Sentinel Membership Insurance**: The Operator ensures every Sentinel pod is monitoring the current master. If a Sentinel restarts with a new IP and enters an idle state, the Operator re-introduces the master to it.
+2.  **Replica Rescue**: The Operator verifies every Redis pod's replication state. If a pod is found pointing to a ghost IP (the "Zombie" state), the Operator authoritatively reconfigures it via `SLAVEOF` to follow the current living master.
+3.  **Ghost Node Removal**: The Operator proactively prunes dead IPs from Sentinel's topology via `SENTINEL RESET` once a new living master is stable.
+
+### 5.4 Failover Detection
 
 The operator doesn't perform failover—Sentinel does. The operator only needs to:
 1. Detect that failover occurred (master changed)

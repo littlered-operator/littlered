@@ -32,8 +32,10 @@ graph TD
     WaitPodIP -- Yes --> RegisterMaster[Register master in Sentinel]
     WaitPodIP -- No --> UpdateSentinelStatus
     RegisterMaster --> UpdateSentinelStatus
-    BootstrapSentinel -- No --> UpdateMasterLabel[Update Master Pod Labels]
-    UpdateMasterLabel --> StartMonitor[Ensure Background Sentinel Monitor]
+    BootstrapSentinel -- No --> UpdateMasterLabel[Update Pod Role Labels: master/replica/orphan/undefined]
+    UpdateMasterLabel --> TopologySync[Topology Sync: Introduction of idle Sentinels & Ghost Removal]
+    TopologySync --> ReplicaRescue[Replica Rescue: Fix zombie replicas pointing to ghost IPs]
+    ReplicaRescue --> StartMonitor[Ensure Background Sentinel Monitor]
     StartMonitor --> UpdateSentinelStatus[Update Sentinel Status]
     UpdateSentinelStatus --> IsRunning{Phase == Running?}
     IsRunning -- Yes --> ClearBootstrap[Set status.bootstrapRequired=false]
