@@ -671,7 +671,23 @@ func (r *LittleRedReconciler) reconcileRedisReplicas(ctx context.Context, little
 		return err
 	}
 
-	// 3. Verify and fix replicas
+	// 3. Verify that the master reported by Sentinel is actually a living pod.
+	// If the master is a ghost, we MUST NOT rescue replicas towards it, as that
+	// would sabotage Sentinel's attempt to perform a failover.
+	masterIsGhost := true
+	for _, pod := range podList.Items {
+		if pod.Status.PodIP == masterInfo.IP {
+			masterIsGhost = false
+			break
+		}
+	}
+
+	if masterIsGhost {
+		log.Info("Sentinel reported master is a ghost node, skipping replica rescue until failover completes", "ip", masterInfo.IP)
+		return nil
+	}
+
+	// 4. Verify and fix replicas
 	for _, pod := range podList.Items {
 		if pod.Status.PodIP == "" || pod.Status.PodIP == masterInfo.IP {
 			continue // Skip pod without IP or the master itself
@@ -686,7 +702,7 @@ func (r *LittleRedReconciler) reconcileRedisReplicas(ctx context.Context, little
 		}
 
 		if role == "master" || currentMasterHost != masterInfo.IP {
-			log.Info("Rescuing zombie replica: reconfiguring pod to follow real master", 
+			log.Info("Rescuing zombie replica: reconfiguring pod to follow real master",
 				"pod", pod.Name, "wrong_master", currentMasterHost, "real_master", masterInfo.IP)
 			if err := redisclient.SlaveOf(ctx, addr, password, masterInfo.IP, fmt.Sprintf("%d", littleredv1alpha1.RedisPort)); err != nil {
 				log.Error(err, "Failed to issue SLAVEOF command to zombie replica", "pod", pod.Name)
