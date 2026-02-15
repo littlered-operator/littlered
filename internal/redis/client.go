@@ -277,6 +277,26 @@ func (c *SentinelClient) Reset(ctx context.Context, masterName string) error {
 	return nil
 }
 
+// IsMonitoring checks if a specific sentinel address is monitoring the given master
+func (c *SentinelClient) IsMonitoring(ctx context.Context, sentinelAddr, masterName string) (bool, error) {
+	client := redis.NewSentinelClient(&redis.Options{
+		Addr:        sentinelAddr,
+		Password:    c.password,
+		DialTimeout: DefaultTimeout,
+		ReadTimeout: DefaultTimeout,
+	})
+	defer client.Close()
+
+	_, err := client.GetMasterAddrByName(ctx, masterName).Result()
+	if err != nil {
+		if strings.Contains(err.Error(), "ERR No such master") || strings.Contains(err.Error(), "redis: nil") {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // Ping checks if a redis instance is reachable
 func Ping(ctx context.Context, addr, password string) error {
 	client := redis.NewClient(&redis.Options{
@@ -288,6 +308,22 @@ func Ping(ctx context.Context, addr, password string) error {
 	defer client.Close()
 
 	return client.Ping(ctx).Err()
+}
+
+// SlaveOf reconfigures a redis instance to follow a new master
+func SlaveOf(ctx context.Context, addr, password, masterIP, masterPort string) error {
+	client := redis.NewClient(&redis.Options{
+		Addr:        addr,
+		Password:    password,
+		DialTimeout: DefaultTimeout,
+		ReadTimeout: DefaultTimeout,
+	})
+	defer client.Close()
+
+	if masterIP == "" {
+		return client.SlaveOf(ctx, "NO", "ONE").Err()
+	}
+	return client.SlaveOf(ctx, masterIP, masterPort).Err()
 }
 
 // GetReplicationInfo gets replication info from a redis instance
