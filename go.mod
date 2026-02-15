@@ -1,4 +1,4 @@
-module github.com/tanne3/littlered-operator
+module github.com/littlered-operator/littlered-operator
 
 go 1.25.3
 

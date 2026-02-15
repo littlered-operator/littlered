@@ -27,8 +27,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tanne3/littlered-operator/test/chaos"
-	"github.com/tanne3/littlered-operator/test/utils"
+	"github.com/littlered-operator/littlered-operator/test/chaos"
+	"github.com/littlered-operator/littlered-operator/test/utils"
 )
 
 // getChaosClientImage returns the chaos client image to use

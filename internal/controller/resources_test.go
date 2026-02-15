@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	littleredv1alpha1 "github.com/tanne3/littlered-operator/api/v1alpha1"
+	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 )
 
 // Helper to create a minimal LittleRed for testing

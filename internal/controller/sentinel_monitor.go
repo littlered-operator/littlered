@@ -26,8 +26,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	littleredv1alpha1 "github.com/tanne3/littlered-operator/api/v1alpha1"
-	"github.com/tanne3/littlered-operator/internal/redis"
+	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
+	"github.com/littlered-operator/littlered-operator/internal/redis"
 )
 
 // ensureSentinelMonitor ensures that a background monitor is running for the given LittleRed instance

@@ -30,7 +30,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 
-	"github.com/tanne3/littlered-operator/test/utils"
+	"github.com/littlered-operator/littlered-operator/test/utils"
 )
 
 var (
