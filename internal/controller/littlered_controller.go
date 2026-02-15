@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -49,6 +50,28 @@ const (
 	finalizerName = "chuck-chuck-chuck.net/finalizer"
 	fieldManager  = "littlered-operator"
 )
+
+type SentinelErrorCode int
+
+const (
+	SentinelUnreachable SentinelErrorCode = iota
+	SentinelNoMaster
+	SentinelGhostMaster
+)
+
+type SentinelError struct {
+	Code    SentinelErrorCode
+	Message string
+	IP      string
+	Err     error
+}
+
+func (e *SentinelError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("%s: %v", e.Message, e.Err)
+	}
+	return e.Message
+}
 
 // LittleRedReconciler reconciles a LittleRed object
 type LittleRedReconciler struct {
@@ -755,11 +778,19 @@ func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *l
 	sc := redisclient.NewSentinelClient(addresses, password)
 	masterInfo, err := sc.GetMaster(checkCtx)
 	if err != nil {
-		// If Sentinel explicitly says "no master", it's not a failure we should error on
+		// If Sentinel explicitly says "no master", it's a confirmed state
 		if strings.Contains(err.Error(), "redis: nil") {
-			return "", nil
+			return "", &SentinelError{
+				Code:    SentinelNoMaster,
+				Message: "Sentinel explicitly reported no master monitored",
+			}
 		}
-		return "", fmt.Errorf("failed to get master from Sentinel: %w", err)
+		// Otherwise it's a connection/unreachable error
+		return "", &SentinelError{
+			Code:    SentinelUnreachable,
+			Message: "Failed to reach any Sentinel or get master info",
+			Err:     err,
+		}
 	}
 
 	// masterInfo.IP MUST be an IP address in our strict identity model.
@@ -772,7 +803,12 @@ func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *l
 		}
 	}
 
-	return "", fmt.Errorf("sentinel reported master IP %q not found in pod list", reportedIdentity)
+	// Reported master IP not found in current pod list -> Ghost Master
+	return "", &SentinelError{
+		Code:    SentinelGhostMaster,
+		Message: fmt.Sprintf("Sentinel reported master IP %q not found in pod list", reportedIdentity),
+		IP:      reportedIdentity,
+	}
 }
 
 // updateMasterLabel updates the role labels on Redis pods based on current master
@@ -795,27 +831,39 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 
 	masterPodName, err := r.getMasterPodName(ctx, littleRed, podList)
 	if err != nil {
-		// If we can't get the master from Sentinel, keep current labels to avoid churn
-		log.Info("Sentinel unreachable or master unknown, skipping label update", "error", err)
-		return nil
+		var sErr *SentinelError
+		if errors.As(err, &sErr) {
+			switch sErr.Code {
+			case SentinelUnreachable:
+				log.Info("Sentinel unreachable, skipping label update to avoid churn", "error", sErr.Err)
+				return nil
+			case SentinelNoMaster:
+				log.Info("Sentinel confirms no master is currently monitored. Proceeding to relabel all as replicas.")
+				masterPodName = "" // Proceed with all as replicas
+			case SentinelGhostMaster:
+				log.Info("Sentinel reported a ghost master. Proceeding to relabel all living pods as replicas.", "ghost_ip", sErr.IP)
+				masterPodName = "" // Proceed with all as replicas
+			}
+		} else {
+			log.Error(err, "Unexpected error identifying master pod, skipping label update")
+			return nil
+		}
 	}
 
-	// Safety: if masterPodName is empty, something is wrong with logic, but we must NOT
-	// proceed to relabel everything as replicas.
-	if masterPodName == "" {
-		log.Info("WARNING: Sentinel reported no master, but GetMaster returned success with empty name. Skipping label update to maintain safety.")
-		return nil
-	}
+	// Safety: if masterPodName is empty here, it means we talked to Sentinel
+	// and it definitively has no LIVING master. We proceed to ensure all
+	// living pods are labeled as replicas.
 
-	// Log master change if detected. Use Status as the "last known state"
-	// since the physical pod for the old master might have been deleted.
+	// Log master change if detected.
 	lastKnownMaster := ""
 	if littleRed.Status.Master != nil {
 		lastKnownMaster = littleRed.Status.Master.PodName
 	}
 
-	if lastKnownMaster != "" && lastKnownMaster != masterPodName {
+	if lastKnownMaster != "" && masterPodName != "" && lastKnownMaster != masterPodName {
 		log.Info("Master switch detected", "oldMaster", lastKnownMaster, "newMaster", masterPodName)
+	} else if lastKnownMaster != "" && masterPodName == "" {
+		log.Info("Master lost: no living master reported by Sentinel", "lastKnownMaster", lastKnownMaster)
 	}
 
 	for i := range podList.Items {
