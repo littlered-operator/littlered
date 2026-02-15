@@ -26,7 +26,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tanne3/littlered-operator/test/chaos"
+	"github.com/littlered-operator/littlered-operator/test/chaos"
 )
 
 func main() {

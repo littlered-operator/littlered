@@ -30,13 +30,13 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/tanne3/littlered-operator/test/utils"
+	"github.com/littlered-operator/littlered-operator/test/utils"
 )
 
 var (
 	// operatorImage is the operator image to use for testing.
 	// Override with OPERATOR_IMAGE env var.
-	operatorImage = "ghcr.io/tanne3/littlered-operator:latest"
+	operatorImage = "ghcr.io/littlered-operator/littlered-operator:latest"
 
 	// operatorNamespace is where the operator is deployed.
 	operatorNamespace = "littlered-system"
@@ -71,7 +71,7 @@ func suiteOrSpecFailed() bool {
 // TestE2E runs the e2e test suite.
 //
 // Environment variables:
-//   - OPERATOR_IMAGE: Operator image to use (default: ghcr.io/tanne3/littlered-operator:latest)
+//   - OPERATOR_IMAGE: Operator image to use (default: ghcr.io/littlered-operator/littlered-operator:latest)
 //   - SKIP_OPERATOR_DEPLOY: Set to "true" to skip operator deployment
 //   - USE_HELM: Set to "true" to deploy via Helm instead of make deploy
 //   - DEBUG_ON_FAILURE: Set to "true" to skip cleanup on failure

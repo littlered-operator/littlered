@@ -31,7 +31,7 @@ kubectl delete crd littlereds.chuck-chuck-chuck.net
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `image.repository` | Operator image repository | `ghcr.io/tanne3/littlered-operator` |
+| `image.repository` | Operator image repository | `ghcr.io/littlered-operator/littlered-operator` |
 | `image.tag` | Operator image tag | `0.1.0` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `replicas` | Number of operator replicas | `1` |

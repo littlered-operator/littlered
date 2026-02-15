@@ -29,8 +29,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	littleredv1alpha1 "github.com/tanne3/littlered-operator/api/v1alpha1"
-	"github.com/tanne3/littlered-operator/test/utils"
+	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
+	"github.com/littlered-operator/littlered-operator/test/utils"
 )
 
 // verifyClusterTopologySync cross-validates the Operator's reported Status

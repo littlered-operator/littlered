@@ -16,7 +16,7 @@ This guide shows how to deploy and use Redis instances with the LittleRed operat
 
 ```bash
 # Clone the repository
-git clone https://github.com/tanne3/littlered-operator.git
+git clone https://github.com/littlered-operator/littlered-operator.git
 cd littlered-operator
 
 # Install the operator
@@ -45,7 +45,7 @@ Create a `values.yaml` file:
 
 ```yaml
 image:
-  repository: ghcr.io/tanne3/littlered-operator
+  repository: ghcr.io/littlered-operator/littlered-operator
   tag: "0.1.0"
 
 resources:
@@ -98,7 +98,7 @@ kubectl delete crd littlereds.chuck-chuck-chuck.net
 
 ```bash
 # Clone the repository
-git clone https://github.com/tanne3/littlered-operator.git
+git clone https://github.com/littlered-operator/littlered-operator.git
 cd littlered-operator
 
 # Install CRDs and operator
@@ -131,7 +131,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/tanne3/littlered-operator.git
+    repoURL: https://github.com/littlered-operator/littlered-operator.git
     targetRevision: main
     path: charts/littlered-operator
     helm:

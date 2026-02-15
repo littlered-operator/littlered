@@ -42,8 +42,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	littleredv1alpha1 "github.com/tanne3/littlered-operator/api/v1alpha1"
-	redisclient "github.com/tanne3/littlered-operator/internal/redis"
+	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
+	redisclient "github.com/littlered-operator/littlered-operator/internal/redis"
 )
 
 const (

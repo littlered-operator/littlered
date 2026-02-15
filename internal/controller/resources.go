@@ -29,7 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	littleredv1alpha1 "github.com/tanne3/littlered-operator/api/v1alpha1"
+	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 )
 
 // Annotation keys for config hash

@@ -275,6 +275,6 @@ When you make changes to the operator:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `SKIP_OPERATOR_DEPLOY` | Skip deploying operator (use existing) | `false` |
-| `OPERATOR_IMAGE` | Image to use when deploying | `ghcr.io/tanne3/littlered-operator:latest` |
+| `OPERATOR_IMAGE` | Image to use when deploying | `ghcr.io/littlered-operator/littlered-operator:latest` |
 | `USE_HELM` | Deploy via Helm instead of make | `false` |
 | `KIND_CLUSTER` | Kind cluster name (for local testing) | `kind` |
