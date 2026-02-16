@@ -19,3 +19,14 @@ type ClusterContext struct {
 	RedisContainer    string
 	SentinelContainer string
 }
+
+// GetRedisIPs returns a slice of all Redis pod IPs
+func (c *ClusterContext) GetRedisIPs() []string {
+	ips := make([]string, 0, len(c.RedisPods))
+	for _, p := range c.RedisPods {
+		if p.Status.PodIP != "" {
+			ips = append(ips, p.Status.PodIP)
+		}
+	}
+	return ips
+}

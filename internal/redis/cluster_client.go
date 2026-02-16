@@ -125,7 +125,7 @@ func (c *ClusterClient) GetClusterNodes(ctx context.Context, addr string) ([]Clu
 		return nil, fmt.Errorf("failed to get cluster nodes: %w", err)
 	}
 
-	return parseClusterNodes(result), nil
+	return ParseClusterNodes(result), nil
 }
 
 // GetClusterInfo returns parsed CLUSTER INFO output
@@ -138,7 +138,7 @@ func (c *ClusterClient) GetClusterInfo(ctx context.Context, addr string) (*Clust
 		return nil, fmt.Errorf("failed to get cluster info: %w", err)
 	}
 
-	return parseClusterInfo(result), nil
+	return ParseClusterInfo(result), nil
 }
 
 // ClusterMeet introduces a new node to the cluster
@@ -235,9 +235,9 @@ func (c *ClusterClient) ClusterFailoverTakeover(ctx context.Context, addr string
 	return nil
 }
 
-// parseClusterNodes parses the output of CLUSTER NODES command
+// ParseClusterNodes parses the output of CLUSTER NODES command
 // Format: <id> <ip:port@cport,hostname> <flags> <master> <ping-sent> <pong-recv> <config-epoch> <link-state> <slot> ...
-func parseClusterNodes(output string) []ClusterNodeInfo {
+func ParseClusterNodes(output string) []ClusterNodeInfo {
 	var nodes []ClusterNodeInfo
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 
@@ -292,8 +292,8 @@ func parseClusterNodes(output string) []ClusterNodeInfo {
 	return nodes
 }
 
-// parseClusterInfo parses the output of CLUSTER INFO command
-func parseClusterInfo(output string) *ClusterInfo {
+// ParseClusterInfo parses the output of CLUSTER INFO command
+func ParseClusterInfo(output string) *ClusterInfo {
 	info := &ClusterInfo{}
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 

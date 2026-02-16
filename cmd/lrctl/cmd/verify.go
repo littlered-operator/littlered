@@ -6,13 +6,13 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
 	"github.com/littlered-operator/littlered-operator/internal/cli/discovery"
 	"github.com/littlered-operator/littlered-operator/internal/cli/k8s"
 	"github.com/littlered-operator/littlered-operator/internal/cli/types"
+	redisclient "github.com/littlered-operator/littlered-operator/internal/redis"
 )
 
 var verifyCmd = &cobra.Command{
@@ -52,205 +52,158 @@ var verifyCmd = &cobra.Command{
 }
 
 func verifyCluster(ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config, cCtx *types.ClusterContext) error {
-	ipToPod := make(map[string]string)
+	clusterPods := make(map[string]string)
 	for _, p := range cCtx.RedisPods {
 		if p.Status.PodIP != "" {
-			ipToPod[p.Status.PodIP] = p.Name
+			clusterPods[p.Status.PodIP] = p.Name
 		}
 	}
 
-	fmt.Printf("Checking %d cluster pods...\n", len(cCtx.RedisPods))
+	fmt.Println("Gathering Cluster Ground Truth...")
+	g := &cliGatherer{coreClient: coreClient, config: config, cCtx: cCtx}
+	gt := redisclient.GatherClusterGroundTruth(ctx, g, clusterPods)
 
-	states := make(map[string]int)
-	slots := make(map[string]int)
-	nodeCounts := make(map[int]int)
-	var topologyOutput string
+	fmt.Printf("\nCluster State: %s\n", gt.ClusterState)
+	fmt.Printf("Total Slots Assigned: %d / 16384\n", gt.TotalSlots)
 
+	fmt.Println("\nNode Status:")
 	for _, pod := range cCtx.RedisPods {
-		// Get Info
-		stdout, _, err := k8s.Exec(coreClient, config, cCtx.Namespace, pod.Name, cCtx.RedisContainer, []string{"redis-cli", "cluster", "info"})
-		if err != nil {
-			fmt.Printf("  [!] Pod %s unreachable: %v\n", pod.Name, err)
+		node, ok := gt.Nodes[pod.Name]
+		if !ok || !node.Reachable {
+			fmt.Printf("  - Pod %s: [!] UNREACHABLE\n", pod.Name)
 			continue
 		}
 
-		state := "unknown"
-		assigned := "unknown"
-		infoLines := strings.Split(strings.ReplaceAll(stdout, "\r", ""), "\n")
-		for _, line := range infoLines {
-			if strings.HasPrefix(line, "cluster_state:") {
-				state = strings.TrimSpace(strings.TrimPrefix(line, "cluster_state:"))
-			}
-			if strings.HasPrefix(line, "cluster_slots_assigned:") {
-				assigned = strings.TrimSpace(strings.TrimPrefix(line, "cluster_slots_assigned:"))
-			}
+		role := node.Role
+		details := ""
+		if role == "master" {
+			details = fmt.Sprintf("slots:%s", strings.Join(node.Slots, ","))
+		} else {
+			details = fmt.Sprintf("following:%s, link:%s", node.MasterNodeID, node.LinkStatus)
 		}
-		states[state]++
-		slots[assigned]++
+		fmt.Printf("  - Pod %s: role:%s, id:%s, %s\n", pod.Name, role, node.NodeID, details)
+	}
 
-		// Get Nodes
-		stdout, _, err = k8s.Exec(coreClient, config, cCtx.Namespace, pod.Name, cCtx.RedisContainer, []string{"redis-cli", "cluster", "nodes"})
-		if err == nil {
-			nodesOutput := strings.TrimSpace(strings.ReplaceAll(stdout, "\r", ""))
-			if topologyOutput == "" && state == "ok" {
-				topologyOutput = nodesOutput
-			}
-			count := len(strings.Split(nodesOutput, "\n"))
-			nodeCounts[count]++
-			fmt.Printf("  - Pod %s: state=%s, slots=%s, nodes=%d\n", pod.Name, state, assigned, count)
+	if len(gt.GhostNodes) > 0 {
+		fmt.Println("\n[!] Ghost Nodes Detected (present in cluster but not in K8s):")
+		for _, id := range gt.GhostNodes {
+			fmt.Printf("  - %s\n", id)
 		}
 	}
 
-	fmt.Println("\nSummary:")
-	if len(states) == 1 {
-		for s := range states {
-			fmt.Printf("  [OK] All nodes report cluster_state:%s\n", s)
+	if gt.HasPartitions() {
+		fmt.Println("\n[!] Network Partitions Detected:")
+		for i, p := range gt.Partitions {
+			fmt.Printf("  Partition %d: %s\n", i, strings.Join(p, ", "))
 		}
+	}
+
+	fmt.Println("\nCluster Topology:")
+	// Build ID to PodName map for display
+	idToName := make(map[string]string)
+	for _, n := range gt.Nodes {
+		if n.NodeID != "" {
+			idToName[n.NodeID] = n.PodName
+		}
+	}
+
+	for _, n := range gt.Nodes {
+		if n.Role != "master" {
+			continue
+		}
+		fmt.Printf("  Master: %s (%s)\n", n.PodName, n.NodeID)
+		if len(n.Slots) > 0 {
+			fmt.Printf("    Slots: %s\n", strings.Join(n.Slots, " "))
+		} else {
+			fmt.Printf("    [!] NO SLOTS ASSIGNED\n")
+		}
+
+		// Find replicas
+		for _, r := range gt.Nodes {
+			if r.Role == "replica" && r.MasterNodeID == n.NodeID {
+				fmt.Printf("    └── Replica: %s (%s, link:%s)\n", r.PodName, r.NodeID, r.LinkStatus)
+			}
+		}
+	}
+
+	fmt.Printf("\nSummary:\n")
+	expectedNodes := int32(len(cCtx.RedisPods))
+	expectedShards := int32(3) // Default, should ideally be pulled from CR if available
+	if gt.IsHealthy(expectedNodes, expectedShards) {
+		fmt.Println("  [OK] Cluster is healthy and consistent.")
 	} else {
-		fmt.Printf("  [FAIL] Nodes disagree on state: %v\n", states)
+		fmt.Println("  [FAIL] Cluster has topology or health issues!")
 	}
 
-	if len(slots) == 1 {
-		for s := range slots {
-			if s == "16384" {
-				fmt.Printf("  [OK] All nodes report all slots (16384) assigned.\n")
-			} else {
-				fmt.Printf("  [FAIL] All nodes report %s slots assigned (expected 16384)!\n", s)
-			}
-		}
-	} else {
-		fmt.Printf("  [FAIL] Nodes disagree on assigned slots: %v\n", slots)
-	}
-
-	if topologyOutput != "" {
-		fmt.Println("\nCluster Topology:")
-		lines := strings.Split(topologyOutput, "\n")
-		idToPod := make(map[string]string)
-		for _, line := range lines {
-			parts := strings.Fields(line)
-			if len(parts) < 2 {
-				continue
-			}
-			id := parts[0]
-			addr := parts[1]
-			ip := strings.Split(addr, "@")[0] // Handle both ip:port and ip:port@bus
-			ip = strings.Split(ip, ":")[0]
-			if name, ok := ipToPod[ip]; ok {
-				idToPod[id] = name
-			} else {
-				idToPod[id] = "unknown-" + ip
-			}
-		}
-
-		for _, line := range lines {
-			parts := strings.Fields(line)
-			if len(parts) < 3 {
-				continue
-			}
-			flags := parts[2]
-			if !strings.Contains(flags, "master") {
-				continue
-			}
-			id := parts[0]
-			podName := idToPod[id]
-			slots := strings.Join(parts[8:], " ")
-			fmt.Printf("  Master: %s (Slots: %s)\n", podName, slots)
-
-			for _, rLine := range lines {
-				rParts := strings.Fields(rLine)
-				if len(rParts) < 4 {
-					continue
-				}
-				if strings.Contains(rParts[2], "slave") && rParts[3] == id {
-					fmt.Printf("    └── Replica: %s\n", idToPod[rParts[0]])
-				}
-			}
-		}
-	}
 	return nil
 }
 
 func verifySentinel(ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config, cCtx *types.ClusterContext) error {
-	ipToPod := make(map[string]corev1.Pod)
+	redisMap := make(map[string]string)
 	for _, p := range cCtx.RedisPods {
 		if p.Status.PodIP != "" {
-			ipToPod[p.Status.PodIP] = p
+			redisMap[p.Status.PodIP] = p.Name
 		}
 	}
 
-	fmt.Println("Checking Sentinels...")
-	masterIPs := make(map[string]int)
-
-	for _, pod := range cCtx.SentinelPods {
-		stdout, _, err := k8s.Exec(coreClient, config, cCtx.Namespace, pod.Name, cCtx.SentinelContainer, []string{"redis-cli", "-p", "26379", "sentinel", "get-master-addr-by-name", "mymaster"})
-		if err != nil {
-			fmt.Printf("  [!] Sentinel %s unreachable: %v\n", pod.Name, err)
-			continue
-		}
-
-		parts := strings.Fields(stdout)
-		if len(parts) < 1 {
-			fmt.Printf("  [!] Sentinel %s reports no master!\n", pod.Name)
-			masterIPs["none"]++
-			continue
-		}
-		mIP := parts[0]
-		masterIPs[mIP]++
-		fmt.Printf("  - Sentinel %s sees master at: %s\n", pod.Name, mIP)
-	}
-
-	if len(masterIPs) > 1 {
-		fmt.Printf("[FAIL] Sentinels disagree on master: %v\n", masterIPs)
-	} else if len(masterIPs) == 1 {
-		fmt.Println("[OK] All reachable Sentinels agree on master IP.")
-	}
-
-	var currentMasterAddr string
-	for addr := range masterIPs {
-		currentMasterAddr = addr
-		break
-	}
-
-	if currentMasterAddr != "" && currentMasterAddr != "none" {
-		found := false
-		for _, pod := range cCtx.RedisPods {
-			// Match by IP or Hostname
-			if pod.Status.PodIP == currentMasterAddr || strings.Contains(currentMasterAddr, pod.Name) {
-				fmt.Printf("[OK] Master %s (IP: %s) belongs to pod %s\n", currentMasterAddr, pod.Status.PodIP, pod.Name)
-				stdout, _, err := k8s.Exec(coreClient, config, cCtx.Namespace, pod.Name, cCtx.RedisContainer, []string{"redis-cli", "info", "replication"})
-				if err == nil && strings.Contains(stdout, "role:master") {
-					fmt.Printf("[OK] Pod %s correctly reports role:master\n", pod.Name)
-				} else {
-					fmt.Printf("[FAIL] Pod %s does NOT think it is master! (Error: %v)\n", pod.Name, err)
-				}
-				found = true
-				break
-			}
-		}
-		if !found {
-			fmt.Printf("[FAIL] Master %s is a GHOST! No pod found matching this address.\n", currentMasterAddr)
+	sentinelMap := make(map[string]string)
+	for _, p := range cCtx.SentinelPods {
+		if p.Status.PodIP != "" {
+			sentinelMap[p.Status.PodIP] = p.Name
 		}
 	}
 
-	fmt.Println("Checking Replicas...")
-	if len(cCtx.SentinelPods) > 0 {
-		sentinelPod := cCtx.SentinelPods[0].Name
-		stdout, _, err := k8s.Exec(coreClient, config, cCtx.Namespace, sentinelPod, cCtx.SentinelContainer, []string{"redis-cli", "-p", "26379", "sentinel", "replicas", "mymaster"})
-		if err == nil {
-			for _, pod := range cCtx.RedisPods {
-				// Skip if this pod is the master
-				if pod.Status.PodIP == currentMasterAddr || strings.Contains(currentMasterAddr, pod.Name) {
-					continue
-				}
+	fmt.Println("Gathering Cluster Ground Truth...")
+	g := &cliGatherer{coreClient: coreClient, config: config, cCtx: cCtx}
+	state := redisclient.GatherClusterState(ctx, g, redisMap, sentinelMap)
 
-				// Match by IP or Hostname in the replicas output
-				if strings.Contains(stdout, pod.Status.PodIP) || strings.Contains(stdout, pod.Name) {
-					fmt.Printf("  [OK] Pod %s (IP: %s) is known to Sentinel as replica.\n", pod.Name, pod.Status.PodIP)
-				} else {
-					fmt.Printf("  [FAIL] Pod %s (IP: %s) is NOT known to Sentinel!\n", pod.Name, pod.Status.PodIP)
-				}
-			}
+	fmt.Println("\nSentinel Status:")
+	for _, sn := range state.SentinelNodes {
+		status := "idle"
+		if sn.Monitoring {
+			status = fmt.Sprintf("monitoring %s", sn.MasterIP)
 		}
+		if !sn.Reachable {
+			status = "unreachable"
+		}
+		fmt.Printf("  - Sentinel %s: %s\n", sn.PodName, status)
+	}
+
+	fmt.Println("\nRedis Status:")
+	for _, rn := range state.RedisNodes {
+		status := fmt.Sprintf("role:%s", rn.Role)
+		if rn.Role == "slave" {
+			status += fmt.Sprintf(", following:%s, link:%s", rn.MasterHost, rn.LinkStatus)
+		}
+		if !rn.Reachable {
+			status = "unreachable"
+		}
+		fmt.Printf("  - Redis %s: %s\n", rn.PodName, status)
+	}
+
+	fmt.Printf("\nGround Truth Summary:\n")
+	if state.RealMasterIP != "" {
+		masterName := redisMap[state.RealMasterIP]
+		if masterName == "" {
+			masterName = "GHOST(" + state.RealMasterIP + ")"
+		}
+		fmt.Printf("  [OK] Authority Master: %s (%s)\n", masterName, state.RealMasterIP)
+	} else {
+		fmt.Printf("  [FAIL] Authority Master: NONE (Split Brain or Cluster not initialized)\n")
+	}
+
+	if state.FailoverActive {
+		fmt.Printf("  [!] Sentinel reports failover in progress!\n")
+	}
+
+	actions := state.GetHealActions()
+	if len(actions) > 0 {
+		fmt.Println("\nRecommended Healing Actions:")
+		for _, a := range actions {
+			fmt.Printf("  - %s\n", a)
+		}
+	} else if state.RealMasterIP != "" {
+		fmt.Println("\n[OK] Cluster configuration is consistent.")
 	}
 
 	return nil

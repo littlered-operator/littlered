@@ -430,15 +430,15 @@ func GetReplicationInfo(ctx context.Context, addr, password string) (role string
 	}
 
 	// Parse the info string
-	role = parseInfoField(info, "role")
-	masterHost = parseInfoField(info, "master_host")
-	masterLinkStatus = parseInfoField(info, "master_link_status")
+	role = ParseInfoField(info, "role")
+	masterHost = ParseInfoField(info, "master_host")
+	masterLinkStatus = ParseInfoField(info, "master_link_status")
 
 	return role, masterHost, masterLinkStatus, nil
 }
 
-// parseInfoField extracts a field value from redis INFO output
-func parseInfoField(info, field string) string {
+// ParseInfoField extracts a field value from redis INFO output
+func ParseInfoField(info, field string) string {
 	// INFO output format: "field:value\r\n"
 	prefix := field + ":"
 	start := 0

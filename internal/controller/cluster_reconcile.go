@@ -93,12 +93,7 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 	}
 
 	// 4. All pods are ready. Gather Ground Truth.
-	gt, err := r.gatherGroundTruth(ctx, littleRed)
-	if err != nil {
-		log.Error(err, "Failed to gather ground truth")
-		fast, _ := littleRed.GetRequeueIntervals()
-		return ctrl.Result{RequeueAfter: fast}, nil
-	}
+	gt := r.gatherGroundTruth(ctx, littleRed)
 
 	// Analyze state
 	isHealthy := gt.IsHealthy(expectedReplicas, int32(cluster.Shards))
@@ -120,7 +115,7 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 }
 
 // repairCluster handles healing: partitions, ghost nodes, slot restoration, and replication topology
-func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, gt *GroundTruth) (ctrl.Result, error) {
+func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, gt *redisclient.ClusterGroundTruth) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	fast, _ := littleRed.GetRequeueIntervals()
 
@@ -377,7 +372,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		// Find the intended master for each missing shard (strict: pod N owns shard N).
 		// Never assign a shard to a different master — that causes split-ownership
 		// and "Slot already busy" errors. If the intended master isn't available, wait.
-		intendedMasters := make(map[int]*NodeState) // shardIdx -> Node
+		intendedMasters := make(map[int]*redisclient.ClusterNodeState) // shardIdx -> Node
 		for i := 0; i < shards; i++ {
 			podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
 			if node, ok := gt.Nodes[podName]; ok && node.Role == "master" {
@@ -435,7 +430,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 			}
 
 			for _, em := range emptyMasters {
-				var targetMaster *NodeState
+				var targetMaster *redisclient.ClusterNodeState
 				for _, m := range gt.Nodes {
 					if m.Role == "master" && len(m.Slots) > 0 {
 						if len(shardsWithReplicas[m.NodeID]) < expectedReplicas {
@@ -480,253 +475,23 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 	return r.updateClusterStatus(ctx, littleRed)
 }
 
-// GroundTruth represents the state of the cluster as seen by the operator
-type GroundTruth struct {
-	Nodes        map[string]*NodeState // Map PodName -> NodeState
-	Partitions   [][]string            // Sets of NodeIDs that see each other
-	GhostNodes   []string              // NodeIDs present in cluster but not in K8s
-	ClusterState string                // "ok" if ANY node says ok, else "fail" or "unknown"
-	TotalSlots   int                   // Max slots assigned reported by any node
-	AllNodeIDs   map[string]bool       // Set of all NodeIDs seen in the mesh
-}
-
-type NodeState struct {
-	PodName      string
-	PodIP        string
-	NodeID       string
-	Slots        []string
-	Role         string // "master" or "replica"
-	MasterNodeID string // "-" if master
-}
-
-func (gt *GroundTruth) IsHealthy(expectedNodes, expectedShards int32) bool {
-	if len(gt.Nodes) < int(expectedNodes) {
-		return false
-	}
-	if len(gt.AllNodeIDs) != int(expectedNodes) {
-		return false
-	}
-	if gt.HasPartitions() {
-		return false
-	}
-	if gt.CountMasters() != int(expectedShards) {
-		return false
-	}
-	return gt.ClusterState == "ok" && gt.TotalSlots == 16384
-}
-
-func (gt *GroundTruth) HasPartitions() bool {
-	return len(gt.Partitions) > 1
-}
-
-func (gt *GroundTruth) HasGhostNodes() bool {
-	return len(gt.GhostNodes) > 0
-}
-
-func (gt *GroundTruth) HasOrphanedSlots() bool {
-	return gt.TotalSlots < 16384
-}
-
-func (gt *GroundTruth) CountMasters() int {
-	count := 0
-	for _, n := range gt.Nodes {
-		if n.Role == "master" && len(n.Slots) > 0 {
-			count++
-		}
-	}
-	return count
-}
-
-func (gt *GroundTruth) GetLargestPartitionSeed() *NodeState {
-	if len(gt.Partitions) == 0 {
-		for _, n := range gt.Nodes {
-			return n
-		}
-		return nil
-	}
-
-	maxIdx := 0
-	maxLen := 0
-	for i, p := range gt.Partitions {
-		if len(p) > maxLen {
-			maxLen = len(p)
-			maxIdx = i
-		}
-	}
-
-	targetID := gt.Partitions[maxIdx][0]
-	for _, n := range gt.Nodes {
-		if n.NodeID == targetID {
-			return n
-		}
-	}
-	return nil
-}
-
-func (gt *GroundTruth) GetEmptyMasters() []*NodeState {
-	var empty []*NodeState
-	for _, n := range gt.Nodes {
-		if n.Role == "master" && len(n.Slots) == 0 {
-			empty = append(empty, n)
-		}
-	}
-	return empty
-}
-
-// HasEmptyMasters returns true if any node is a master with no slots assigned.
-// This indicates a node that should be assigned as a replica.
-func (gt *GroundTruth) HasEmptyMasters() bool {
-	for _, n := range gt.Nodes {
-		if n.Role == "master" && len(n.Slots) == 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func (gt *GroundTruth) GetMastersWithReplicas() map[string][]string {
-	m := make(map[string][]string)
-	for _, n := range gt.Nodes {
-		if n.Role == "replica" && n.MasterNodeID != "-" {
-			m[n.MasterNodeID] = append(m[n.MasterNodeID], n.NodeID)
-		}
-	}
-	return m
-}
-
 // gatherGroundTruth queries all pods to build a view of the cluster
-func (r *LittleRedReconciler) gatherGroundTruth(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (*GroundTruth, error) {
-	gt := &GroundTruth{
-		Nodes:      make(map[string]*NodeState),
-		AllNodeIDs: make(map[string]bool),
-	}
-
+func (r *LittleRedReconciler) gatherGroundTruth(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) *redisclient.ClusterGroundTruth {
 	cluster := littleRed.Spec.Cluster
 	totalNodes := cluster.GetTotalNodes()
 	password := r.getRedisPassword(ctx, littleRed)
-	clusterClient := redisclient.NewClusterClient(password)
 
-	nodeIDtoPod := make(map[string]string)
-
-	// 1. Gather Pod Identities (IP + MyID)
+	clusterPods := make(map[string]string)
 	for i := 0; i < totalNodes; i++ {
 		podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
 		pod := &corev1.Pod{}
-		if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: littleRed.Namespace}, pod); err != nil {
-			continue
-		}
-		if pod.Status.PodIP == "" {
-			continue
-		}
-
-		addr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
-		id, err := clusterClient.GetMyID(ctx, addr)
-		if err != nil {
-			continue
-		}
-
-		gt.Nodes[podName] = &NodeState{
-			PodName: podName,
-			PodIP:   pod.Status.PodIP,
-			NodeID:  id,
-		}
-		nodeIDtoPod[id] = podName
-	}
-
-	// 2. Query Topology from ALL reachable nodes
-	adj := make(map[string][]string)
-
-	for _, n := range gt.Nodes {
-		addr := fmt.Sprintf("%s:%d", n.PodIP, littleredv1alpha1.RedisPort)
-
-		info, err := clusterClient.GetClusterInfo(ctx, addr)
-		if err == nil {
-			if info.State == "ok" {
-				gt.ClusterState = "ok"
-			} else if gt.ClusterState == "" || gt.ClusterState == "unknown" {
-				gt.ClusterState = info.State
-			}
-			if info.SlotsAssigned > gt.TotalSlots {
-				gt.TotalSlots = info.SlotsAssigned
-			}
-		}
-
-		nodes, err := clusterClient.GetClusterNodes(ctx, addr)
-		if err != nil {
-			continue
-		}
-
-		var known []string
-		for _, knownNode := range nodes {
-			gt.AllNodeIDs[knownNode.NodeID] = true
-
-			isFailed := false
-			for _, f := range knownNode.Flags {
-				if f == "fail" || f == "noaddr" || f == "handshake" {
-					isFailed = true
-				}
-			}
-
-			if !isFailed {
-				known = append(known, knownNode.NodeID)
-			}
-
-			if knownNode.NodeID == n.NodeID {
-				n.Slots = knownNode.Slots
-				n.Role = "master"
-				if knownNode.IsReplica() {
-					n.Role = "replica"
-				}
-				n.MasterNodeID = knownNode.MasterID
-			}
-		}
-		adj[n.NodeID] = known
-	}
-
-	// Detect ghosts: any NodeID in the mesh that has no corresponding K8s pod.
-	// This uses Kubernetes as the source of truth rather than relying on gossip
-	// failure detection, which can lag behind pod deletions by 15s+ (cluster-node-timeout).
-	ghostSet := make(map[string]bool)
-	for nodeID := range gt.AllNodeIDs {
-		if _, hasPod := nodeIDtoPod[nodeID]; !hasPod {
-			ghostSet[nodeID] = true
+		if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: littleRed.Namespace}, pod); err == nil && pod.Status.PodIP != "" {
+			clusterPods[pod.Status.PodIP] = podName
 		}
 	}
-	for ghostID := range ghostSet {
-		gt.GhostNodes = append(gt.GhostNodes, ghostID)
-	}
 
-	if gt.ClusterState == "" {
-		gt.ClusterState = "unknown"
-	}
-
-	// 3. Compute Partitions
-	visited := make(map[string]bool)
-	for id := range nodeIDtoPod {
-		if visited[id] {
-			continue
-		}
-
-		var partition []string
-		queue := []string{id}
-		visited[id] = true
-
-		for len(queue) > 0 {
-			curr := queue[0]
-			queue = queue[1:]
-			partition = append(partition, curr)
-
-			for _, neighbor := range adj[curr] {
-				if _, valid := nodeIDtoPod[neighbor]; valid && !visited[neighbor] {
-					visited[neighbor] = true
-					queue = append(queue, neighbor)
-				}
-			}
-		}
-		gt.Partitions = append(gt.Partitions, partition)
-	}
-
-	return gt, nil
+	g := &operatorGatherer{password: password}
+	return redisclient.GatherClusterGroundTruth(ctx, g, clusterPods)
 }
 
 // bootstrapCluster initializes a new Redis Cluster
@@ -862,9 +627,9 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 	}
 
 	// Gather ground truth to get node details for status
-	gt, err := r.gatherGroundTruth(ctx, littleRed)
+	gt := r.gatherGroundTruth(ctx, littleRed)
 	clusterOK := false
-	if err == nil {
+	if gt != nil {
 		if littleRed.Status.Cluster == nil {
 			littleRed.Status.Cluster = &littleredv1alpha1.ClusterStatusInfo{}
 		}

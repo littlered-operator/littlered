@@ -554,25 +554,6 @@ func (r *LittleRedReconciler) reconcileMasterService(ctx context.Context, little
 	return r.apply(ctx, littleRed, buildMasterService(littleRed))
 }
 
-type redisNodeState struct {
-	podName    string
-	ip         string
-	role       string
-	masterHost string
-	linkStatus string
-	reachable  bool
-}
-
-type sentinelNodeState struct {
-	podName        string
-	ip             string
-	monitoring     bool
-	masterIP       string
-	failoverStatus string
-	reachable      bool
-	replicas       []redisclient.ReplicaInfo
-}
-
 // reconcileSentinelCluster gathers ground truth from all pods (Redis and Sentinel)
 // and performs atomic healing of the entire cluster state.
 func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
@@ -583,10 +564,7 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		return nil
 	}
 
-	password := ""
-	if littleRed.Spec.Auth.Enabled {
-		password = r.getRedisPassword(ctx, littleRed)
-	}
+	password := r.getRedisPassword(ctx, littleRed)
 
 	// 1. Gather all living pods
 	redisPods := &corev1.PodList{}
@@ -599,113 +577,43 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		return err
 	}
 
-	validIPs := make(map[string]bool)
+	redisMap := make(map[string]string)
+	for _, p := range redisPods.Items {
+		if p.Status.PodIP != "" && p.DeletionTimestamp.IsZero() {
+			redisMap[p.Status.PodIP] = p.Name
+		}
+	}
+
+	sentinelMap := make(map[string]string)
+	for _, p := range sentinelPods.Items {
+		if p.Status.PodIP != "" && p.DeletionTimestamp.IsZero() {
+			sentinelMap[p.Status.PodIP] = p.Name
+		}
+	}
+
+	// Any pod terminating? (Important for guardrails)
 	anyTerminating := false
 	for _, p := range append(redisPods.Items, sentinelPods.Items...) {
 		if !p.DeletionTimestamp.IsZero() {
 			anyTerminating = true
-		}
-		if p.Status.PodIP != "" {
-			validIPs[p.Status.PodIP] = true
-		}
-	}
-
-	// 2. Poll all living and ready pods for their "internal brain" state
-	redisStates := make(map[string]*redisNodeState)
-	for _, pod := range redisPods.Items {
-		if pod.Status.PodIP == "" || !pod.DeletionTimestamp.IsZero() {
-			continue
-		}
-		state := &redisNodeState{podName: pod.Name, ip: pod.Status.PodIP}
-		addr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
-		role, mHost, link, err := redisclient.GetReplicationInfo(ctx, addr, password)
-		if err == nil {
-			state.role = role
-			state.masterHost = mHost
-			state.linkStatus = link
-			state.reachable = true
-		}
-		redisStates[pod.Status.PodIP] = state
-	}
-
-	sentinelAddresses := r.getSentinelAddresses(ctx, littleRed)
-	sc := redisclient.NewSentinelClient(sentinelAddresses, password)
-	sentinelStates := make(map[string]*sentinelNodeState)
-
-	for _, pod := range sentinelPods.Items {
-		if pod.Status.PodIP == "" || !pod.DeletionTimestamp.IsZero() {
-			continue
-		}
-		state := &sentinelNodeState{podName: pod.Name, ip: pod.Status.PodIP}
-		// Try to talk to this specific sentinel pod IP
-		podAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.SentinelPort)
-		singleSC := redisclient.NewSentinelClient([]string{podAddr}, password)
-
-		masterInfo, err := singleSC.GetMasterState(ctx, redisclient.SentinelMasterName)
-		if err == nil {
-			state.monitoring = true
-			state.masterIP = masterInfo.IP
-			state.failoverStatus = masterInfo.FailoverStatus
-			state.reachable = true
-			if reps, err := singleSC.GetReplicas(ctx, redisclient.SentinelMasterName); err == nil {
-				state.replicas = reps
-			}
-		} else if strings.Contains(err.Error(), "ERR No such master") || strings.Contains(err.Error(), "redis: nil") {
-			state.monitoring = false
-			state.reachable = true
-		}
-		sentinelStates[pod.Status.PodIP] = state
-	}
-
-	// 3. Determine the "Real Master" IP (The Ground Truth)
-	var realMasterIP string
-
-	// Preference 1: What do the majority of reachable Sentinels think?
-	masterCounts := make(map[string]int)
-	failoverActive := false
-	for _, s := range sentinelStates {
-		if s.reachable && s.monitoring && s.masterIP != "" {
-			masterCounts[s.masterIP]++
-			if s.failoverStatus != "" && s.failoverStatus != "none" && s.failoverStatus != "no-failover" {
-				failoverActive = true
-			}
-		}
-	}
-
-	reachableSentinels := 0
-	for _, s := range sentinelStates {
-		if s.reachable {
-			reachableSentinels++
-		}
-	}
-
-	for ip, count := range masterCounts {
-		if count >= (reachableSentinels/2)+1 && validIPs[ip] {
-			realMasterIP = ip
 			break
 		}
 	}
 
-	// Preference 2: If Sentinels are idle or split, find the one Redis pod that says it is master
-	if realMasterIP == "" && !failoverActive {
-		for _, r := range redisStates {
-			if r.reachable && r.role == "master" {
-				realMasterIP = r.ip
-				break
-			}
-		}
-	}
+	// 2. Gather Cluster State (Ground Truth)
+	g := &operatorGatherer{password: password}
+	state := redisclient.GatherClusterState(ctx, g, redisMap, sentinelMap)
 
-	if realMasterIP == "" {
+	if state.RealMasterIP == "" {
 		log.Info("Cluster has no clear master yet. Waiting for next reconciliation pass.")
 		return nil
 	}
 
-	// 4. Healing
+	// 3. Healing
 	// Rule A: Guardrails
-	if anyTerminating || failoverActive {
+	if anyTerminating || state.FailoverActive {
 		log.Info("Cluster transition in progress (Terminating pods or Active Failover). Skipping non-essential healing.",
-			"anyTerminating", anyTerminating, "failoverActive", failoverActive)
+			"anyTerminating", anyTerminating, "failoverActive", state.FailoverActive)
 		return nil
 	}
 
@@ -720,42 +628,41 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		sc.Set(ctx, redisclient.SentinelMasterName, "parallel-syncs", "1")
 	}
 
-	for _, s := range sentinelStates {
-		if !s.reachable {
+	for _, sn := range state.SentinelNodes {
+		if !sn.Reachable {
 			continue
 		}
-		if !s.monitoring || s.masterIP != realMasterIP {
-			log.Info("Healing Sentinel: introducing real master", "sentinel", s.podName, "master", realMasterIP)
-			podAddr := fmt.Sprintf("%s:%d", s.ip, littleredv1alpha1.SentinelPort)
+		if !sn.Monitoring || sn.MasterIP != state.RealMasterIP {
+			log.Info("Healing Sentinel: introducing real master", "sentinel", sn.PodName, "master", state.RealMasterIP)
+			podAddr := fmt.Sprintf("%s:%d", sn.IP, littleredv1alpha1.SentinelPort)
 			singleSC := redisclient.NewSentinelClient([]string{podAddr}, password)
-			if err := singleSC.Monitor(ctx, redisclient.SentinelMasterName, realMasterIP, littleredv1alpha1.RedisPort, 2); err == nil {
+			if err := singleSC.Monitor(ctx, redisclient.SentinelMasterName, state.RealMasterIP, littleredv1alpha1.RedisPort, 2); err == nil {
 				applySettings(singleSC)
 			}
 		}
 	}
 
 	// Rule C: Heal zombie, misconfigured or disconnected Redis replicas
-	for _, node := range redisStates {
-		if !node.reachable || node.ip == realMasterIP {
+	for _, rn := range state.RedisNodes {
+		if !rn.Reachable || rn.IP == state.RealMasterIP {
 			continue
 		}
-		// If it's a master, or following the wrong IP, or says it's following the right IP but the link is down
-		if node.role == "master" || node.masterHost != realMasterIP || node.linkStatus == "down" {
+		if rn.Role == "master" || rn.MasterHost != state.RealMasterIP || rn.LinkStatus == "down" {
 			log.Info("Healing Redis: reconfiguring node to follow real master",
-				"pod", node.podName, "current_role", node.role, "current_master", node.masterHost, "link_status", node.linkStatus, "real_master", realMasterIP)
-			if err := redisclient.SlaveOf(ctx, fmt.Sprintf("%s:%d", node.ip, littleredv1alpha1.RedisPort), password, realMasterIP, fmt.Sprintf("%d", littleredv1alpha1.RedisPort)); err != nil {
-				log.Error(err, "Failed to issue SLAVEOF command", "pod", node.podName)
+				"pod", rn.PodName, "current_role", rn.Role, "current_master", rn.MasterHost, "link_status", rn.LinkStatus, "real_master", state.RealMasterIP)
+			if err := redisclient.SlaveOf(ctx, fmt.Sprintf("%s:%d", rn.IP, littleredv1alpha1.RedisPort), password, state.RealMasterIP, fmt.Sprintf("%d", littleredv1alpha1.RedisPort)); err != nil {
+				log.Error(err, "Failed to issue SLAVEOF command", "pod", rn.PodName)
 			}
 		}
 	}
 
 	// Rule D: Prune Ghosts
 	ghostFound := false
-	for _, s := range sentinelStates {
-		if s.reachable && s.monitoring {
-			for _, replica := range s.replicas {
-				if !validIPs[replica.IP] && (strings.Contains(replica.Flags, "s_down") || strings.Contains(replica.Flags, "o_down")) {
-					log.Info("Ghost node detected in Sentinel topology", "ip", replica.IP, "sentinel", s.podName)
+	for _, sn := range state.SentinelNodes {
+		if sn.Reachable && sn.Monitoring {
+			for _, replica := range sn.Replicas {
+				if state.IsGhost(replica.IP) && (strings.Contains(replica.Flags, "s_down") || strings.Contains(replica.Flags, "o_down")) {
+					log.Info("Ghost node detected in Sentinel topology", "ip", replica.IP, "sentinel", sn.PodName)
 					ghostFound = true
 					break
 				}
@@ -768,6 +675,8 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 
 	if ghostFound {
 		log.Info("Issuing SENTINEL RESET to clear ghost nodes", "master", redisclient.SentinelMasterName)
+		sentinelAddresses := r.getSentinelAddresses(ctx, littleRed)
+		sc := redisclient.NewSentinelClient(sentinelAddresses, password)
 		if err := sc.Reset(ctx, redisclient.SentinelMasterName); err == nil {
 			applySettings(sc)
 		}

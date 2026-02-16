@@ -144,9 +144,9 @@ repl_backlog_histlen:1234
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := parseInfoField(tt.info, tt.field)
+			result := ParseInfoField(tt.info, tt.field)
 			if result != tt.expected {
-				t.Errorf("parseInfoField(%q) = %q, want %q", tt.field, result, tt.expected)
+				t.Errorf("ParseInfoField(%q) = %q, want %q", tt.field, result, tt.expected)
 			}
 		})
 	}
