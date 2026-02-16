@@ -303,19 +303,29 @@ See [docs/E2E_TESTING.md](docs/E2E_TESTING.md) for the complete guide on buildin
 ### Build
 
 ```bash
-# Build binary
+# Build operator binary
 make build
+
+# Build lrctl CLI tool
+make lrctl
 
 # Build and push both images (`littlered` operator and `littlered-chaos-client` e2e test client)
 make images
-
-# Restrict the build to a subset of images
-make images IMAGES=littlered
-
-# Only build, or only push (can be combined with IMAGES argument)
-make build-images
-make push-images
 ```
+
+## CLI Tool (lrctl)
+
+LittleRed comes with a dedicated CLI tool `lrctl` for diagnostics and cluster verification. It can be used as a standalone binary or a `kubectl` plugin.
+
+```bash
+# Get high-level status
+bin/lrctl status my-cache
+
+# Perform deep-dive consistency verification
+bin/lrctl verify my-cache
+```
+
+See [docs/LRCTL.md](docs/LRCTL.md) for full documentation and use cases.
 
 ## License
 

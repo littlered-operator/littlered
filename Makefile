@@ -155,8 +155,12 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 ##@ Build
 
 .PHONY: build
-build: manifests generate fmt vet ## Build manager binary.
+build: manifests generate fmt vet lrctl ## Build manager and lrctl binaries.
 	go build -o bin/manager cmd/littlered/main.go
+
+.PHONY: lrctl
+lrctl: manifests generate fmt vet ## Build lrctl binary.
+	go build -o bin/lrctl cmd/lrctl/main.go
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
