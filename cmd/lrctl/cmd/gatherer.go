@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"k8s.io/client-go/kubernetes"
@@ -44,12 +45,24 @@ func (g *cliGatherer) GetRedisState(ctx context.Context, podName, ip string) (*r
 	mHost := redisclient.ParseInfoField(stdout, "master_host")
 	link := redisclient.ParseInfoField(stdout, "master_link_status")
 
+	offsetStr := ""
+	if role == "master" {
+		offsetStr = redisclient.ParseInfoField(stdout, "master_repl_offset")
+	} else {
+		offsetStr = redisclient.ParseInfoField(stdout, "slave_repl_offset")
+	}
+	var offset int64
+	if offsetStr != "" {
+		fmt.Sscanf(offsetStr, "%d", &offset)
+	}
+
 	return &redisclient.RedisNodeState{
 		PodName:    podName,
 		IP:         ip,
 		Role:       role,
 		MasterHost: mHost,
 		LinkStatus: link,
+		Offset:     offset,
 		Reachable:  true,
 	}, nil
 }

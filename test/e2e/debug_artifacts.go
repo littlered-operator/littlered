@@ -304,6 +304,7 @@ func collectClusterState(debugDir, namespace string) {
 	// Get all pods
 	cmd := exec.Command("kubectl", "get", "pods",
 		"-n", namespace,
+		"-L", "chuck-chuck-chuck.net/role",
 		"-o", "wide")
 	output, err := cmd.CombinedOutput()
 	if err != nil {

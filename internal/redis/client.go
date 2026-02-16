@@ -19,6 +19,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -415,7 +416,7 @@ func SlaveOf(ctx context.Context, addr, password, masterIP, masterPort string) e
 }
 
 // GetReplicationInfo gets replication info from a redis instance
-func GetReplicationInfo(ctx context.Context, addr, password string) (role string, masterHost string, masterLinkStatus string, err error) {
+func GetReplicationInfo(ctx context.Context, addr, password string) (role string, masterHost string, masterLinkStatus string, offset int64, err error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:        addr,
 		Password:    password,
@@ -426,7 +427,7 @@ func GetReplicationInfo(ctx context.Context, addr, password string) (role string
 
 	info, err := client.Info(ctx, "replication").Result()
 	if err != nil {
-		return "", "", "", fmt.Errorf("failed to get replication info: %w", err)
+		return "", "", "", 0, fmt.Errorf("failed to get replication info: %w", err)
 	}
 
 	// Parse the info string
@@ -434,7 +435,18 @@ func GetReplicationInfo(ctx context.Context, addr, password string) (role string
 	masterHost = ParseInfoField(info, "master_host")
 	masterLinkStatus = ParseInfoField(info, "master_link_status")
 
-	return role, masterHost, masterLinkStatus, nil
+	offsetStr := ""
+	if role == "master" {
+		offsetStr = ParseInfoField(info, "master_repl_offset")
+	} else {
+		offsetStr = ParseInfoField(info, "slave_repl_offset")
+	}
+
+	if offsetStr != "" {
+		offset, _ = strconv.ParseInt(offsetStr, 10, 64)
+	}
+
+	return role, masterHost, masterLinkStatus, offset, nil
 }
 
 // ParseInfoField extracts a field value from redis INFO output
