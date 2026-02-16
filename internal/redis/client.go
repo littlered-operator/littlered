@@ -34,8 +34,11 @@ const (
 
 // MasterInfo contains information about the current master
 type MasterInfo struct {
-	IP   string
-	Port string
+	IP             string
+	Port           string
+	Name           string
+	Flags          string
+	FailoverStatus string
 }
 
 // SentinelClient wraps sentinel operations
@@ -52,7 +55,7 @@ func NewSentinelClient(addresses []string, password string) *SentinelClient {
 	}
 }
 
-// GetMaster queries sentinels to find the current master
+// GetMaster queries sentinels to find the current master IP and Port
 func (c *SentinelClient) GetMaster(ctx context.Context) (*MasterInfo, error) {
 	var lastErr error
 
@@ -69,6 +72,91 @@ func (c *SentinelClient) GetMaster(ctx context.Context) (*MasterInfo, error) {
 		return nil, fmt.Errorf("failed to get master from any sentinel: %w", lastErr)
 	}
 	return nil, fmt.Errorf("no sentinels available")
+}
+
+// GetMasterState returns the full state of the master as seen by the first reachable sentinel
+func (c *SentinelClient) GetMasterState(ctx context.Context, name string) (*MasterInfo, error) {
+	var lastErr error
+
+	for _, addr := range c.addresses {
+		client := redis.NewSentinelClient(&redis.Options{
+			Addr:        addr,
+			Password:    c.password,
+			DialTimeout: DefaultTimeout,
+			ReadTimeout: DefaultTimeout,
+		})
+		result, err := client.Master(ctx, name).Result()
+		client.Close()
+
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		return &MasterInfo{
+			Name:           result["name"],
+			IP:             result["ip"],
+			Port:           result["port"],
+			Flags:          result["flags"],
+			FailoverStatus: result["failover-status"],
+		}, nil
+	}
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("failed to get master state: %w", lastErr)
+	}
+	return nil, fmt.Errorf("no sentinels available")
+}
+
+// IsFailoverInProgress checks if any reachable sentinel reports an active failover for the master
+func (c *SentinelClient) IsFailoverInProgress(ctx context.Context, name string) (bool, error) {
+	reachable := false
+	for _, addr := range c.addresses {
+		client := redis.NewSentinelClient(&redis.Options{
+			Addr:        addr,
+			Password:    c.password,
+			DialTimeout: DefaultTimeout,
+			ReadTimeout: DefaultTimeout,
+		})
+		result, err := client.Master(ctx, name).Result()
+		client.Close()
+
+		if err != nil {
+			continue
+		}
+		reachable = true
+		status := result["failover-status"]
+		// Valid statuses when NO failover is happening are typically empty or "none" (depending on version)
+		if status != "" && status != "none" && status != "no-failover" {
+			return true, nil
+		}
+	}
+
+	if !reachable {
+		return false, fmt.Errorf("no sentinels reachable to check failover status")
+	}
+	return false, nil
+}
+
+// GetMasterAcrossAll queries all sentinels and returns a map of master IP -> count.
+// This is used to detect split-brain or lack of consensus.
+func (c *SentinelClient) GetMasterAcrossAll(ctx context.Context) (map[string]int, error) {
+	counts := make(map[string]int)
+	reachable := 0
+
+	for _, addr := range c.addresses {
+		master, err := c.getMasterFromSentinel(ctx, addr)
+		if err != nil {
+			continue
+		}
+		reachable++
+		counts[master.IP]++
+	}
+
+	if reachable == 0 {
+		return nil, fmt.Errorf("no sentinels reachable")
+	}
+	return counts, nil
 }
 
 // Subscribe connects to a sentinel and subscribes to the given channels.
@@ -327,7 +415,7 @@ func SlaveOf(ctx context.Context, addr, password, masterIP, masterPort string) e
 }
 
 // GetReplicationInfo gets replication info from a redis instance
-func GetReplicationInfo(ctx context.Context, addr, password string) (role string, masterHost string, masterPort string, err error) {
+func GetReplicationInfo(ctx context.Context, addr, password string) (role string, masterHost string, masterLinkStatus string, err error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:        addr,
 		Password:    password,
@@ -344,9 +432,9 @@ func GetReplicationInfo(ctx context.Context, addr, password string) (role string
 	// Parse the info string
 	role = parseInfoField(info, "role")
 	masterHost = parseInfoField(info, "master_host")
-	masterPort = parseInfoField(info, "master_port")
+	masterLinkStatus = parseInfoField(info, "master_link_status")
 
-	return role, masterHost, masterPort, nil
+	return role, masterHost, masterLinkStatus, nil
 }
 
 // parseInfoField extracts a field value from redis INFO output
