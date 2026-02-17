@@ -101,34 +101,6 @@ func (s *SentinelClusterState) DetermineRealMaster() {
 				return
 			}
 		}
-
-		// 5. If STILL no master found and no failover active, the cluster is masterless.
-		// Pick a reachable candidate to promote.
-		// CRITICAL: We pick the node with the HIGHEST replication offset to ensure we promote
-		// the node with the most data (and avoid promoting data-empty restarted nodes).
-		var candidate *RedisNodeState
-		for _, rn := range s.RedisNodes {
-			if !rn.Reachable {
-				continue
-			}
-			if candidate == nil {
-				candidate = rn
-				continue
-			}
-
-			// Better candidate if:
-			// 1. Higher offset
-			// 2. Same offset, but lower pod name (tie-breaker)
-			if rn.Offset > candidate.Offset {
-				candidate = rn
-			} else if rn.Offset == candidate.Offset && rn.PodName < candidate.PodName {
-				candidate = rn
-			}
-		}
-		if candidate != nil {
-			s.RealMasterIP = candidate.IP
-			return
-		}
 	}
 }
 

@@ -612,67 +612,23 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		return nil
 	}
 
-	// Helper to apply sentinel settings
-	applySettings := func(sc *redisclient.SentinelClient) {
-		s := littleRed.Spec.Sentinel
-		if s == nil {
-			s = &littleredv1alpha1.SentinelSpec{}
-		}
-		sc.Set(ctx, redisclient.SentinelMasterName, "down-after-milliseconds", fmt.Sprintf("%d", s.DownAfterMilliseconds))
-		sc.Set(ctx, redisclient.SentinelMasterName, "failover-timeout", fmt.Sprintf("%d", s.FailoverTimeout))
-		sc.Set(ctx, redisclient.SentinelMasterName, "parallel-syncs", "1")
-	}
-
-	if state.RealMasterIP != "" {
-		// Rule B: Heal idle or misconfigured Sentinels
-		for _, sn := range state.SentinelNodes {
-			if !sn.Reachable {
-				continue
-			}
-			if !sn.Monitoring || sn.MasterIP != state.RealMasterIP {
-				log.Info("Healing Sentinel: introducing real master", "sentinel", sn.PodName, "master", state.RealMasterIP)
-				podAddr := fmt.Sprintf("%s:%d", sn.IP, littleredv1alpha1.SentinelPort)
-				singleSC := redisclient.NewSentinelClient([]string{podAddr}, password)
-				if err := singleSC.Monitor(ctx, redisclient.SentinelMasterName, state.RealMasterIP, littleredv1alpha1.RedisPort, 2); err == nil {
-					applySettings(singleSC)
-				}
-			}
-		}
-
-		// Rule C: Heal zombie, misconfigured or disconnected Redis replicas
-		for _, rn := range state.RedisNodes {
-			if !rn.Reachable || rn.IP == state.RealMasterIP {
-				continue
-			}
-			if rn.Role == "master" || rn.MasterHost != state.RealMasterIP || rn.LinkStatus == "down" {
-				log.Info("Healing Redis: reconfiguring node to follow real master",
-					"pod", rn.PodName, "current_role", rn.Role, "current_master", rn.MasterHost, "link_status", rn.LinkStatus, "real_master", state.RealMasterIP)
-				if err := redisclient.SlaveOf(ctx, fmt.Sprintf("%s:%d", rn.IP, littleredv1alpha1.RedisPort), password, state.RealMasterIP, fmt.Sprintf("%d", littleredv1alpha1.RedisPort)); err != nil {
-					log.Error(err, "Failed to issue SLAVEOF command", "pod", rn.PodName)
-				}
-			}
-		}
-	} else {
-		log.Info("Cluster has no clear master yet. Checking for topology inconsistencies.")
-	}
-
-	// Rule D: Prune Ghosts
+	// Ghost pruning: only safe if the master Sentinel reports is a living pod
 	ghostFound := false
 	for _, sn := range state.SentinelNodes {
-		if sn.Reachable && sn.Monitoring {
-			// Check if master is a ghost
-			if state.IsGhost(sn.MasterIP) {
-				log.Info("Ghost master detected in Sentinel", "ip", sn.MasterIP, "sentinel", sn.PodName)
+		if !sn.Reachable || !sn.Monitoring {
+			continue
+		}
+		// Safety: skip RESET if sentinel's master is itself a ghost
+		if state.IsGhost(sn.MasterIP) {
+			log.Info("Sentinel master is a ghost node, skipping RESET until failover completes", "ip", sn.MasterIP)
+			return nil
+		}
+		// Check replicas for ghosts
+		for _, replica := range sn.Replicas {
+			if state.IsGhost(replica.IP) && (strings.Contains(replica.Flags, "s_down") || strings.Contains(replica.Flags, "o_down")) {
+				log.Info("Ghost node detected in Sentinel topology", "ip", replica.IP, "sentinel", sn.PodName)
 				ghostFound = true
 				break
-			}
-			// Check if any replica is a ghost
-			for _, replica := range sn.Replicas {
-				if state.IsGhost(replica.IP) && (strings.Contains(replica.Flags, "s_down") || strings.Contains(replica.Flags, "o_down")) {
-					log.Info("Ghost node detected in Sentinel topology", "ip", replica.IP, "sentinel", sn.PodName)
-					ghostFound = true
-					break
-				}
 			}
 		}
 		if ghostFound {
@@ -684,9 +640,7 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		log.Info("Issuing SENTINEL RESET to clear ghost nodes", "master", redisclient.SentinelMasterName)
 		sentinelAddresses := r.getSentinelAddresses(ctx, littleRed)
 		sc := redisclient.NewSentinelClient(sentinelAddresses, password)
-		if err := sc.Reset(ctx, redisclient.SentinelMasterName); err == nil {
-			applySettings(sc)
-		}
+		_ = sc.Reset(ctx, redisclient.SentinelMasterName)
 	}
 
 	return nil
@@ -793,6 +747,14 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 
 	if len(podList.Items) == 0 {
 		return nil // No pods yet
+	}
+
+	// Skip label updates during pod transitions to avoid churn during failovers
+	for _, pod := range podList.Items {
+		if !pod.DeletionTimestamp.IsZero() {
+			log.Info("Pod terminating, skipping label update to avoid churn during failover", "pod", pod.Name)
+			return nil
+		}
 	}
 
 	masterPodName, err := r.getMasterPodName(ctx, littleRed, podList)
@@ -938,8 +900,7 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *litt
 		}
 		latest.Status.Master.PodName = masterPodName
 
-		// Try to get master pod IP and check replica discovery
-		actualReplicas := int32(0)
+		// Try to get master pod IP
 		if masterPodName != "" {
 			masterPod := &corev1.Pod{}
 			if err := r.Get(ctx, types.NamespacedName{
@@ -948,26 +909,15 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *litt
 			}, masterPod); err == nil {
 				latest.Status.Master.IP = masterPod.Status.PodIP
 			}
-
-			password := r.getRedisPassword(ctx, latest)
-			// Poll Sentinel for replica count to ensure topology is complete
-			sc := redisclient.NewSentinelClient(r.getSentinelAddresses(ctx, latest), password)
-			if reps, err := sc.GetReplicas(ctx, redisclient.SentinelMasterName); err == nil {
-				actualReplicas = int32(len(reps))
-			}
 		} else {
 			latest.Status.Master.IP = ""
 		}
 
 		// Determine phase
-		// A cluster is only truly 'Running' if all pods are ready AND Sentinel has discovered all replicas.
-		// Otherwise, a failover would have no promotion targets.
-		expectedReplicas := latest.Status.Redis.Total - 1
 		allReady := latest.Status.Redis.Ready == latest.Status.Redis.Total &&
 			latest.Status.Sentinels.Ready == latest.Status.Sentinels.Total &&
 			latest.Status.Redis.Ready > 0 &&
-			masterPodName != "" &&
-			actualReplicas >= expectedReplicas
+			masterPodName != ""
 
 		if allReady {
 			latest.Status.Phase = littleredv1alpha1.PhaseRunning
@@ -1181,42 +1131,73 @@ func (r *LittleRedReconciler) bootstrapSentinel(ctx context.Context, lr *littler
 	}
 
 	// 3. Configure Sentinel Client
-	addresses := r.getSentinelAddresses(ctx, lr)
 	password := r.getRedisPassword(ctx, lr)
-	sc := redisclient.NewSentinelClient(addresses, password)
 
-	// 4. Just-in-Time Sentinel Check: Ask Sentinel if mymaster is already registered
-	// This handles cases where the operator crashed after MONITOR but before status update.
-	if info, err := sc.GetMaster(ctx); err == nil && info != nil {
-		log.Info("Bootstrap: Sentinel already has a master registered, proceeding to clear flag", "master", info.IP)
-	} else {
-		// Only if Sentinel is fresh do we issue the MONITOR command
-		quorum := 2
-		if lr.Spec.Sentinel != nil && lr.Spec.Sentinel.Quorum > 0 {
-			quorum = lr.Spec.Sentinel.Quorum
+	quorum := 2
+	if lr.Spec.Sentinel != nil && lr.Spec.Sentinel.Quorum > 0 {
+		quorum = lr.Spec.Sentinel.Quorum
+	}
+	masterAddr := pod0.Status.PodIP
+
+	// 4. Bootstrap each Sentinel pod individually.
+	//
+	// CRITICAL: We must NOT use the headless Service VIP for MONITOR because the
+	// Service load-balances to a single pod. Only that one pod would receive the
+	// MONITOR command; the other two would start with an empty config and never
+	// reach quorum. We iterate over pod IPs and configure each sentinel directly.
+	sentinelPods := &corev1.PodList{}
+	if err := r.List(ctx, sentinelPods,
+		client.InNamespace(lr.Namespace),
+		client.MatchingLabels(sentinelSelectorLabels(lr)),
+	); err != nil {
+		return fmt.Errorf("failed to list sentinel pods: %w", err)
+	}
+
+	configuredCount := 0
+	for i := range sentinelPods.Items {
+		pod := &sentinelPods.Items[i]
+		if pod.Status.PodIP == "" || !pod.DeletionTimestamp.IsZero() {
+			continue
+		}
+		podAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.SentinelPort)
+		podSC := redisclient.NewSentinelClient([]string{podAddr}, password)
+
+		// Check if this sentinel already knows the master (idempotent guard).
+		if info, err := podSC.GetMaster(ctx); err == nil && info != nil {
+			log.Info("Bootstrap: Sentinel already has master configured", "sentinel", pod.Name, "master", info.IP)
+			configuredCount++
+			continue
 		}
 
-		// Use Pod IP for initial bootstrap to avoid DNS races.
-		masterAddr := pod0.Status.PodIP
-		log.Info("Bootstrap: configuring Sentinel to monitor initial master", "master", masterAddr)
-
-		if err := sc.Monitor(ctx, "mymaster", masterAddr, littleredv1alpha1.RedisPort, quorum); err != nil {
-			return fmt.Errorf("failed to issue SENTINEL MONITOR: %w", err)
+		log.Info("Bootstrap: issuing SENTINEL MONITOR to pod", "sentinel", pod.Name, "master", masterAddr)
+		if err := podSC.Monitor(ctx, "mymaster", masterAddr, littleredv1alpha1.RedisPort, quorum); err != nil {
+			log.Error(err, "Bootstrap: failed to configure sentinel", "sentinel", pod.Name)
+			continue // best-effort; don't abort the whole bootstrap
 		}
 
-		// Apply settings
+		// Apply settings to this sentinel.
 		if lr.Spec.Sentinel != nil {
 			s := lr.Spec.Sentinel
 			if s.DownAfterMilliseconds > 0 {
-				_ = sc.Set(ctx, "mymaster", "down-after-milliseconds", fmt.Sprintf("%d", s.DownAfterMilliseconds))
+				_ = podSC.Set(ctx, "mymaster", "down-after-milliseconds", fmt.Sprintf("%d", s.DownAfterMilliseconds))
 			}
 			if s.FailoverTimeout > 0 {
-				_ = sc.Set(ctx, "mymaster", "failover-timeout", fmt.Sprintf("%d", s.FailoverTimeout))
+				_ = podSC.Set(ctx, "mymaster", "failover-timeout", fmt.Sprintf("%d", s.FailoverTimeout))
 			}
 			if s.ParallelSyncs > 0 {
-				_ = sc.Set(ctx, "mymaster", "parallel-syncs", fmt.Sprintf("%d", s.ParallelSyncs))
+				_ = podSC.Set(ctx, "mymaster", "parallel-syncs", fmt.Sprintf("%d", s.ParallelSyncs))
 			}
 		}
+		configuredCount++
+	}
+
+	if configuredCount == 0 {
+		log.Info("Bootstrap: no Sentinel pods reachable yet, will retry on next reconcile")
+		return nil
+	}
+	if configuredCount < len(sentinelPods.Items) {
+		log.Info("Bootstrap: not all sentinels configured yet", "configured", configuredCount, "total", len(sentinelPods.Items))
+		// Continue anyway — the sentinel gossip protocol will propagate the config to the others.
 	}
 
 	// 5. Clear bootstrap flag with retry on conflict

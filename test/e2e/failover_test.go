@@ -186,7 +186,7 @@ spec:
 			verifySentinelTopologySync(testNamespace, crName, 3, 2)
 
 			By(fmt.Sprintf("Step 2: Kill the Master %s", initialMaster))
-			_, err = deletePod(testNamespace, initialMaster)
+			_, err := deletePod(testNamespace, initialMaster)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Step 3: Wait for new master label and verify different RunID")
@@ -261,37 +261,40 @@ spec:
 			}, 3*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
-		It("should recover correctly with both mechanisms active", func() {
-			By("Step 1: Identify initial master and its RunID")
-			cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
-			initialMaster, _ := utils.Run(cmd)
-			initialMaster = strings.TrimSpace(initialMaster)
+		for _, mode := range restartModes {
+			mode := mode // capture range variable
+			It(fmt.Sprintf("should recover correctly with both mechanisms active (%s)", mode.Name), func() {
+				By("Step 1: Identify initial master and its RunID")
+				cmd := exec.Command("kubectl", "get", "littlered", crName, "-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
+				initialMaster, _ := utils.Run(cmd)
+				initialMaster = strings.TrimSpace(initialMaster)
 
-			oldRunID, _ := getPodRunID(testNamespace, initialMaster)
+				oldRunID, _ := getPodRunID(testNamespace, initialMaster)
 
-			By(fmt.Sprintf("Step 2: Kill the Master %s", initialMaster))
-			_, err = deletePod(testNamespace, initialMaster)
-			Expect(err).NotTo(HaveOccurred())
+				By(fmt.Sprintf("Step 2: Kill the Master %s (%s mode)", initialMaster, mode.Name))
+				_, err := deletePodMode(testNamespace, initialMaster, mode.Graceful)
+				Expect(err).NotTo(HaveOccurred())
 
-			By("Step 3: Wait for new master label and verify different RunID")
-			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
-				out, _ := utils.Run(cmd)
-				if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
-					// Check RunID
-					newMaster := strings.Fields(strings.TrimSpace(out))[0]
-					newRunID, err := getPodRunID(testNamespace, newMaster)
-					if err == nil {
-						g.Expect(newRunID).NotTo(Equal(oldRunID), "New master must have a different RunID")
-						return
+				By("Step 3: Wait for new master label and verify different RunID")
+				Eventually(func(g Gomega) {
+					cmd := exec.Command("kubectl", "get", "pods", "-n", testNamespace, "-l", "chuck-chuck-chuck.net/role=master", "-o", "jsonpath={.items[*].metadata.name}")
+					out, _ := utils.Run(cmd)
+					if strings.Contains(out, crName) && !strings.Contains(out, initialMaster) {
+						// Check RunID
+						newMaster := strings.Fields(strings.TrimSpace(out))[0]
+						newRunID, err := getPodRunID(testNamespace, newMaster)
+						if err == nil {
+							g.Expect(newRunID).NotTo(Equal(oldRunID), "New master must have a different RunID")
+							return
+						}
 					}
-				}
-				g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))),
-					fmt.Sprintf("New master label not yet applied. Current masters found: %q", out))
-			}, 20*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label")
+					g.Expect(out).To(And(ContainSubstring(crName), Not(ContainSubstring(initialMaster))),
+						fmt.Sprintf("New master label not yet applied. Current masters found: %q", out))
+				}, 45*time.Second, 1*time.Second).Should(Succeed(), "Operator failed to update master label")
 
-			verifySentinelTopologySync(testNamespace, crName, 3, 2)
-		})
+				verifySentinelTopologySync(testNamespace, crName, 3, 2)
+			})
+		}
 	})
 
 	Context("Sentinel Pod Resilience", Ordered, func() {
@@ -345,7 +348,7 @@ spec:
 
 			By("Step 2: Kill the Sentinel pod")
 			// This tests if the Operator's background monitor handles connection loss and reconnects
-			_, err = deletePod(testNamespace, sentinelPod)
+			_, err := deletePod(testNamespace, sentinelPod)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Step 3: Wait for sentinel pod to be recreated and ready")

@@ -804,79 +804,82 @@ spec:
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
-		It("should elect new master after master pod deletion", func() {
-			By("Test ID: SEN-011 - getting current master pod")
-			cmd := exec.Command("kubectl", "get", "littlered", crName,
-				"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
-			originalMaster, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			originalMaster = strings.TrimSpace(originalMaster)
-			Expect(originalMaster).NotTo(BeEmpty())
-			_, _ = fmt.Fprintf(GinkgoWriter, "Original master: %s\n", originalMaster)
-
-			By("writing test data to master before failover")
-			cmd = exec.Command("kubectl", "exec", originalMaster,
-				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "SET", "failover-test-key", "failover-test-value")
-			output, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(strings.TrimSpace(output)).To(Equal("OK"))
-
-			By("deleting the master pod to trigger failover")
-			_, err = deletePod(testNamespace, originalMaster)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("waiting for new master to be elected")
-			var newMaster string
-			Eventually(func(g Gomega) {
+		for _, mode := range restartModes {
+			mode := mode // capture range variable
+			It(fmt.Sprintf("should elect new master after master pod deletion (%s)", mode.Name), func() {
+				By("Test ID: SEN-011 - getting current master pod")
 				cmd := exec.Command("kubectl", "get", "littlered", crName,
 					"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
+				originalMaster, err := utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred())
+				originalMaster = strings.TrimSpace(originalMaster)
+				Expect(originalMaster).NotTo(BeEmpty())
+				_, _ = fmt.Fprintf(GinkgoWriter, "Original master: %s\n", originalMaster)
+
+				By("writing test data to master before failover")
+				cmd = exec.Command("kubectl", "exec", originalMaster,
+					"-n", testNamespace, "-c", "redis", "--",
+					"valkey-cli", "SET", "failover-test-key", "failover-test-value")
 				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				newMaster = strings.TrimSpace(output)
-				g.Expect(newMaster).NotTo(BeEmpty())
-				// New master should be different from original (since original pod was deleted
-				// and one of the surviving replicas must have been promoted)
-				g.Expect(newMaster).NotTo(Equal(originalMaster), "New master must be a different pod")
-			}, 90*time.Second, 3*time.Second).Should(Succeed())
-			_, _ = fmt.Fprintf(GinkgoWriter, "New master: %s\n", newMaster)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(strings.TrimSpace(output)).To(Equal("OK"))
 
-			By("verifying sentinel reports new master")
-			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
-					"-n", testNamespace, "-c", "sentinel", "--",
-					"valkey-cli", "-p", "26379", "SENTINEL", "get-master-addr-by-name", "mymaster")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).NotTo(BeEmpty())
-				_, _ = fmt.Fprintf(GinkgoWriter, "Sentinel reports master: %s\n", output)
-			}, 30*time.Second, 3*time.Second).Should(Succeed())
+				By(fmt.Sprintf("deleting the master pod to trigger failover (%s mode)", mode.Name))
+				_, err = deletePodMode(testNamespace, originalMaster, mode.Graceful)
+				Expect(err).NotTo(HaveOccurred())
 
-			By("Test ID: SEN-012 - verifying data is preserved after failover")
-			Eventually(func(g Gomega) {
-				// Query sentinel for current master address
-				cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
-					"-n", testNamespace, "-c", "sentinel", "--",
-					"valkey-cli", "-p", "26379", "SENTINEL", "get-master-addr-by-name", "mymaster")
-				masterInfo, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				_, _ = fmt.Fprintf(GinkgoWriter, "Master info: %s\n", masterInfo)
-
-				// Try reading from any available pod
-				for i := 0; i < 3; i++ {
-					podName := fmt.Sprintf("%s-redis-%d", crName, i)
-					cmd = exec.Command("kubectl", "exec", podName,
-						"-n", testNamespace, "-c", "redis", "--",
-						"valkey-cli", "GET", "failover-test-key")
+				By("waiting for new master to be elected")
+				var newMaster string
+				Eventually(func(g Gomega) {
+					cmd := exec.Command("kubectl", "get", "littlered", crName,
+						"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
 					output, err := utils.Run(cmd)
-					if err == nil && strings.TrimSpace(output) == "failover-test-value" {
-						_, _ = fmt.Fprintf(GinkgoWriter, "Data found on %s\n", podName)
-						return
+					g.Expect(err).NotTo(HaveOccurred())
+					newMaster = strings.TrimSpace(output)
+					g.Expect(newMaster).NotTo(BeEmpty())
+					// New master should be different from original (since original pod was deleted
+					// and one of the surviving replicas must have been promoted)
+					g.Expect(newMaster).NotTo(Equal(originalMaster), "New master must be a different pod")
+				}, 90*time.Second, 3*time.Second).Should(Succeed())
+				_, _ = fmt.Fprintf(GinkgoWriter, "New master: %s\n", newMaster)
+
+				By("verifying sentinel reports new master")
+				Eventually(func(g Gomega) {
+					cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
+						"-n", testNamespace, "-c", "sentinel", "--",
+						"valkey-cli", "-p", "26379", "SENTINEL", "get-master-addr-by-name", "mymaster")
+					output, err := utils.Run(cmd)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(output).NotTo(BeEmpty())
+					_, _ = fmt.Fprintf(GinkgoWriter, "Sentinel reports master: %s\n", output)
+				}, 30*time.Second, 3*time.Second).Should(Succeed())
+
+				By("Test ID: SEN-012 - verifying data is preserved after failover")
+				Eventually(func(g Gomega) {
+					// Query sentinel for current master address
+					cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
+						"-n", testNamespace, "-c", "sentinel", "--",
+						"valkey-cli", "-p", "26379", "SENTINEL", "get-master-addr-by-name", "mymaster")
+					masterInfo, err := utils.Run(cmd)
+					g.Expect(err).NotTo(HaveOccurred())
+					_, _ = fmt.Fprintf(GinkgoWriter, "Master info: %s\n", masterInfo)
+
+					// Try reading from any available pod
+					for i := 0; i < 3; i++ {
+						podName := fmt.Sprintf("%s-redis-%d", crName, i)
+						cmd = exec.Command("kubectl", "exec", podName,
+							"-n", testNamespace, "-c", "redis", "--",
+							"valkey-cli", "GET", "failover-test-key")
+						output, err := utils.Run(cmd)
+						if err == nil && strings.TrimSpace(output) == "failover-test-value" {
+							_, _ = fmt.Fprintf(GinkgoWriter, "Data found on %s\n", podName)
+							return
+						}
 					}
-				}
-				g.Expect(false).To(BeTrue(), "Data not found on any pod after failover")
-			}, 60*time.Second, 5*time.Second).Should(Succeed())
-		})
+					g.Expect(false).To(BeTrue(), "Data not found on any pod after failover")
+				}, 60*time.Second, 5*time.Second).Should(Succeed())
+			})
+		}
 
 		It("should restore full cluster after failover", func() {
 			By("Test ID: SEN-013 - waiting for all pods to be ready")

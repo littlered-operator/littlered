@@ -308,7 +308,7 @@ spec:
 
 			By("verifying topology is recovered (6 nodes, 3 masters)")
 			Eventually(func(g Gomega) {
-				cmd = exec.Command("kubectl", "exec", crName+"-cluster-1",
+				cmd := exec.Command("kubectl", "exec", crName+"-cluster-1",
 					"-n", testNamespace, "-c", "redis", "--",
 					"valkey-cli", "CLUSTER", "NODES")
 				out, err := utils.Run(cmd)

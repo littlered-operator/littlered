@@ -901,12 +901,33 @@ while true; do
        exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} $AUTH_ARGS
     fi
 
-    # I am a replica. We start redis-server even if the master is currently
-    # unreachable. This allows Sentinel to discover us as a living replica
-    # and perform a failover if the master is dead.
-    log "Joining $CURRENT_MASTER_HOST as replica..."
+    # I am a replica. Check if master is reachable before committing.
+    # Retry several times: during initial cluster boot all pods start in parallel,
+    # so the master's redis-server may not be listening yet even though the IP is valid.
+    PING_ATTEMPTS=6
+    PING_DELAY=3
+    MASTER_ALIVE=false
+    for attempt in $(seq 1 $PING_ATTEMPTS); do
+      if redis-cli -h $CURRENT_MASTER_HOST -p $CURRENT_MASTER_PORT $SENTINEL_AUTH_ARGS -t 2 ping > /dev/null 2>&1; then
+        MASTER_ALIVE=true
+        break
+      fi
+      log "Master $CURRENT_MASTER_HOST not yet reachable (attempt $attempt/$PING_ATTEMPTS). Waiting ${PING_DELAY}s..."
+      sleep $PING_DELAY
+    done
+
+    if [ "$MASTER_ALIVE" = "true" ]; then
+       log "Master is alive. Joining $CURRENT_MASTER_HOST as replica..."
+       rm -f /data/bootstrap-in-progress
+       exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT --replica-announce-ip ${POD_IP} $AUTH_ARGS
+    fi
+
+    # Master is unreachable after retries (likely a ghost IP). Start as bare server
+    # so Sentinel can discover us and perform a failover. This avoids both the
+    # deadlock (ADR-002) and the zombie-replica problem.
+    log "Master $CURRENT_MASTER_HOST unreachable after $PING_ATTEMPTS attempts. Starting bare for Sentinel discovery..."
     rm -f /data/bootstrap-in-progress
-    exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT --replica-announce-ip ${POD_IP} $AUTH_ARGS
+    exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} $AUTH_ARGS
   fi
 
   log "Sentinel has no master info. Waiting..."
