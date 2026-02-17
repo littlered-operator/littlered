@@ -95,9 +95,7 @@ spec:
 			verifySentinelTopologySync(testNamespace, crName, 3, 2)
 
 			By(fmt.Sprintf("Step 2: Kill the Master %s", initialMaster))
-			cmd = exec.Command("kubectl", "delete", "pod", initialMaster,
-				"-n", testNamespace, "--grace-period=0", "--force")
-			_, err = utils.Run(cmd)
+			_, err = deletePod(testNamespace, initialMaster)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Step 3: Wait for new master label and verify different RunID")
@@ -188,7 +186,8 @@ spec:
 			verifySentinelTopologySync(testNamespace, crName, 3, 2)
 
 			By(fmt.Sprintf("Step 2: Kill the Master %s", initialMaster))
-			exec.Command("kubectl", "delete", "pod", initialMaster, "-n", testNamespace, "--grace-period=0", "--force").Run()
+			_, err = deletePod(testNamespace, initialMaster)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("Step 3: Wait for new master label and verify different RunID")
 			start := time.Now()
@@ -271,7 +270,8 @@ spec:
 			oldRunID, _ := getPodRunID(testNamespace, initialMaster)
 
 			By(fmt.Sprintf("Step 2: Kill the Master %s", initialMaster))
-			exec.Command("kubectl", "delete", "pod", initialMaster, "-n", testNamespace, "--grace-period=0", "--force").Run()
+			_, err = deletePod(testNamespace, initialMaster)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("Step 3: Wait for new master label and verify different RunID")
 			Eventually(func(g Gomega) {
@@ -345,7 +345,8 @@ spec:
 
 			By("Step 2: Kill the Sentinel pod")
 			// This tests if the Operator's background monitor handles connection loss and reconnects
-			exec.Command("kubectl", "delete", "pod", sentinelPod, "-n", testNamespace, "--grace-period=0", "--force").Run()
+			_, err = deletePod(testNamespace, sentinelPod)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("Step 3: Wait for sentinel pod to be recreated and ready")
 			Eventually(func(g Gomega) {
@@ -355,7 +356,8 @@ spec:
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("Step 4: Kill the Redis Master")
-			exec.Command("kubectl", "delete", "pod", initialMaster, "-n", testNamespace, "--grace-period=0", "--force").Run()
+			_, err = deletePod(testNamespace, initialMaster)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("Step 5: Verify failover still happens and RunID changed")
 			Eventually(func(g Gomega) {

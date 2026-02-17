@@ -176,9 +176,7 @@ spec:
 			victimNodeID, _ := getPodNodeID(testNamespace, victimPod)
 
 			By(fmt.Sprintf("deleting master pod %s", victimPod))
-			cmd = exec.Command("kubectl", "delete", "pod", victimPod,
-				"-n", testNamespace, "--grace-period=0", "--force")
-			_, err = utils.Run(cmd)
+			_, err = deletePod(testNamespace, victimPod)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Wait for cluster to detect failure via pod-1 (expecting ID gone or fail flag)
@@ -250,9 +248,7 @@ spec:
 			victimNodeID, _ := getPodNodeID(testNamespace, victimPod)
 
 			By(fmt.Sprintf("deleting replica pod %s", victimPod))
-			cmd = exec.Command("kubectl", "delete", "pod", victimPod,
-				"-n", testNamespace, "--grace-period=0", "--force")
-			_, err = utils.Run(cmd)
+			_, err = deletePod(testNamespace, victimPod)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Wait for cluster to detect failure via pod-0
@@ -448,10 +444,10 @@ spec:
 				}
 
 				By(fmt.Sprintf("Deleting victims: %v", victims))
-				args := append([]string{"delete", "pod", "-n", testNamespace, "--grace-period=0", "--force"}, victims...)
-				cmd := exec.Command("kubectl", args...)
-				_, err = utils.Run(cmd)
-				Expect(err).NotTo(HaveOccurred())
+				for _, v := range victims {
+					_, err = deletePod(testNamespace, v)
+					Expect(err).NotTo(HaveOccurred())
+				}
 
 				// Wait for cluster to detect failure via any survivor
 				survivor := ""

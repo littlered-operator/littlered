@@ -146,9 +146,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 
 			By("deleting the pod")
-			cmd := exec.Command("kubectl", "delete", "pod", crName+"-redis-0",
-				"-n", testNamespace)
-			_, err = utils.Run(cmd)
+			_, err = deletePod(testNamespace, crName+"-redis-0")
 			Expect(err).NotTo(HaveOccurred())
 
 			By("waiting for pod to be recreated and ready with a new RunID")
@@ -825,9 +823,7 @@ spec:
 			Expect(strings.TrimSpace(output)).To(Equal("OK"))
 
 			By("deleting the master pod to trigger failover")
-			cmd = exec.Command("kubectl", "delete", "pod", originalMaster,
-				"-n", testNamespace, "--grace-period=0", "--force")
-			_, err = utils.Run(cmd)
+			_, err = deletePod(testNamespace, originalMaster)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("waiting for new master to be elected")

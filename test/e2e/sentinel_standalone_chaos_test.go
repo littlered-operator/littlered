@@ -118,9 +118,8 @@ spec:
 
 			oldRunID1, _ := getPodRunID(testNamespace, master1)
 
-			cmd = exec.Command("kubectl", "delete", "pod", master1,
-				"-n", testNamespace, "--grace-period=0", "--force")
-			_, _ = utils.Run(cmd)
+			_, err = deletePod(testNamespace, master1)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("waiting for failover to complete (approx 20s)")
 			time.Sleep(20 * time.Second)
@@ -143,9 +142,8 @@ spec:
 				oldRunID2 = runID
 			}, 1*time.Minute, 2*time.Second).Should(Succeed())
 
-			cmd = exec.Command("kubectl", "delete", "pod", master2,
-				"-n", testNamespace, "--grace-period=0", "--force")
-			_, _ = utils.Run(cmd)
+			_, err = deletePod(testNamespace, master2)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying third master eventually emerges with different RunID")
 			Eventually(func(g Gomega) {
@@ -224,9 +222,8 @@ spec:
 			oldRunID, _ := getPodRunID(testNamespace, crName+"-redis-0")
 
 			By("deleting the standalone pod")
-			cmd = exec.Command("kubectl", "delete", "pod", crName+"-redis-0",
-				"-n", testNamespace, "--grace-period=0", "--force")
-			_, _ = utils.Run(cmd)
+			_, err = deletePod(testNamespace, crName+"-redis-0")
+			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying pod restarts with different RunID")
 			Eventually(func(g Gomega) {

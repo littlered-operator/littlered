@@ -218,9 +218,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 
 			By(fmt.Sprintf("deleting master pod %s", victimPod))
-			cmd := exec.Command("kubectl", "delete", "pod", victimPod,
-				"-n", testNamespace, "--grace-period=0", "--force")
-			_, err = utils.Run(cmd)
+			_, err = deletePod(testNamespace, victimPod)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Wait for shard master to change (slot 8000 is in the middle of shard 1)
@@ -292,9 +290,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 
 			By(fmt.Sprintf("deleting master pod %s", victimPod))
-			cmd := exec.Command("kubectl", "delete", "pod", victimPod,
-				"-n", testNamespace, "--grace-period=0", "--force")
-			_, err = utils.Run(cmd)
+			_, err = deletePod(testNamespace, victimPod)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Wait for shard master to change (slot 0 is in shard 0)
@@ -343,9 +339,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 
 			By(fmt.Sprintf("deleting replica pod %s", victimPod))
-			cmd := exec.Command("kubectl", "delete", "pod", victimPod,
-				"-n", testNamespace, "--grace-period=0", "--force")
-			_, err = utils.Run(cmd)
+			_, err = deletePod(testNamespace, victimPod)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("waiting for new replica to join with a different NodeID")
