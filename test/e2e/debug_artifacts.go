@@ -76,6 +76,12 @@ func CollectDebugArtifacts(testNamespace, crName, chaosPodName string) {
 	// Collect pod logs (Redis/Valkey/Sentinel)
 	collectPodLogs(debugDir, testNamespace, crName)
 
+	// Write logs captured before pod deletions (not available via kubectl after replacement)
+	writePreDeleteLogs(debugDir)
+
+	// Copy streaming logs (dying-pod output including preStop) captured by background followers
+	copyStreamingLogsToDir(debugDir)
+
 	// Collect chaos client logs if applicable
 	if chaosPodName != "" {
 		collectChaosClientLogs(debugDir, testNamespace, chaosPodName)
@@ -258,6 +264,39 @@ func collectSinglePodLogs(debugDir, namespace, podName string) {
 	if err == nil && len(logs) > 0 {
 		logFile := filepath.Join(debugDir, fmt.Sprintf("pod-%s-previous.log", podName))
 		_ = os.WriteFile(logFile, logs, 0644)
+	}
+}
+
+// writePreDeleteLogs writes logs that were captured synchronously before pod deletions.
+// These logs are not retrievable via kubectl after the pod has been replaced.
+func writePreDeleteLogs(debugDir string) {
+	preDeleteLogsMu.Lock()
+	snapshot := make(map[string][]byte, len(preDeleteLogs))
+	for k, v := range preDeleteLogs {
+		snapshot[k] = v
+	}
+	preDeleteLogsMu.Unlock()
+
+	if len(snapshot) == 0 {
+		return
+	}
+
+	_, _ = fmt.Fprintf(GinkgoWriter, "Writing %d pre-deletion log snapshots...\n", len(snapshot))
+
+	for key, content := range snapshot {
+		// key is "podName/containerName"
+		parts := strings.SplitN(key, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		podName, container := parts[0], parts[1]
+		filename := fmt.Sprintf("pod-%s-%s-pre-delete.log", podName, container)
+		logFile := filepath.Join(debugDir, filename)
+		if err := os.WriteFile(logFile, content, 0644); err != nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Failed to write pre-delete logs for %s/%s: %v\n", podName, container, err)
+		} else {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Wrote %d bytes to %s\n", len(content), logFile)
+		}
 	}
 }
 

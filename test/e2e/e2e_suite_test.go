@@ -88,6 +88,9 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	// Initialize streaming log tmp directory (suite-wide)
+	initE2ETmpDir()
+
 	// Load configuration from environment
 	if img := os.Getenv("OPERATOR_IMAGE"); img != "" {
 		operatorImage = img
@@ -133,6 +136,10 @@ var _ = BeforeSuite(func() {
 var _ = BeforeEach(func() {
 	// Track when each test starts for log filtering
 	testStartTime = time.Now()
+	// Clear any pre-delete logs captured by a previous test
+	resetPreDeleteLogs()
+	// Stop any streaming log processes from the previous test
+	resetStreamingLogs()
 })
 
 var _ = AfterEach(func() {
@@ -177,6 +184,10 @@ func extractTestContext() (namespace, crName, chaosPod string) {
 }
 
 var _ = AfterSuite(func() {
+	// Always clean up the streaming log tmp dir (even on failure — artifacts were
+	// already copied to the debug-artifacts dir by CollectDebugArtifacts).
+	cleanupE2ETmpDir()
+
 	if debugOnFailure && suiteOrSpecFailed() {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping cleanup due to failure and DEBUG_ON_FAILURE=true\n")
 		return
