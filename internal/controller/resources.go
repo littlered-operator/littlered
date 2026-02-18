@@ -998,10 +998,25 @@ if [ "$ROLE" = "master" ]; then
   if [ -n "$REDIS_PASSWORD" ]; then
     AUTH_ARGS="-a $REDIS_PASSWORD"
   fi
+  SENTINEL_SVC="%s-sentinel.%s.svc"
+  # Wait until Sentinel has discovered all expected replicas before forcing a
+  # failover. If the master was just restarted, Sentinel may not yet know about
+  # replicas that connected within the last polling cycle (~1 s). Triggering
+  # SENTINEL FAILOVER too early means those replicas miss the REPLICAOF
+  # reconfiguration step and get stuck pointing at the dead master IP.
+  EXPECTED_SLAVES=2
+  for i in $(seq 1 10); do
+    SLAVE_COUNT=$(redis-cli --raw -h $SENTINEL_SVC -p 26379 $AUTH_ARGS SENTINEL SLAVES mymaster 2>/dev/null | grep -c "^name$" || echo 0)
+    if [ "$SLAVE_COUNT" -ge "$EXPECTED_SLAVES" ]; then
+      echo "Sentinel knows $SLAVE_COUNT/$EXPECTED_SLAVES replicas. Proceeding with failover."
+      break
+    fi
+    echo "Waiting for Sentinel to discover replicas ($SLAVE_COUNT/$EXPECTED_SLAVES)..."
+    sleep 1
+  done
   # Pause writes for 30s to ensure a clean handover
   redis-cli $AUTH_ARGS CLIENT PAUSE 30000 WRITE || true
   # Trigger failover
-  SENTINEL_SVC="%s-sentinel.%s.svc"
   redis-cli -h $SENTINEL_SVC -p 26379 $AUTH_ARGS SENTINEL failover mymaster || true
   # Wait for Sentinel to acknowledge the new master
   for i in $(seq 1 10); do
