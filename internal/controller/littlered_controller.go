@@ -605,6 +605,49 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 	state := redisclient.GatherClusterState(ctx, g, redisMap, sentinelMap)
 
 	// 3. Healing
+
+	// Rule 0: Re-register sentinel pods that started without a master configured.
+	// This happens when a sentinel pod restarts with a new IP: bootstrapRequired is
+	// already false so bootstrapSentinel() won't run, yet the new pod starts bare.
+	// Sentinel gossip cannot self-heal this — a sentinel with no master configured
+	// cannot discover the pubsub channel and therefore never joins the cluster.
+	// We detect the condition via Reachable && !Monitoring and issue SENTINEL MONITOR
+	// directly to the individual pod IP (not via the headless Service, for the same
+	// reason as bootstrap: the Service load-balances to a single backend).
+	// This action is safe during any transition because adding a monitor to an
+	// unconfigured sentinel is non-disruptive to the running cluster.
+	if state.RealMasterIP != "" {
+		quorum := 2
+		if littleRed.Spec.Sentinel != nil && littleRed.Spec.Sentinel.Quorum > 0 {
+			quorum = littleRed.Spec.Sentinel.Quorum
+		}
+		for ip, sn := range state.SentinelNodes {
+			if !sn.Reachable || sn.Monitoring {
+				continue
+			}
+			log.Info("Sentinel pod has no master configured, re-registering",
+				"pod", sn.PodName, "ip", ip, "master", state.RealMasterIP)
+			podAddr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.SentinelPort)
+			podSC := redisclient.NewSentinelClient([]string{podAddr}, password)
+			if err := podSC.Monitor(ctx, redisclient.SentinelMasterName, state.RealMasterIP, littleredv1alpha1.RedisPort, quorum); err != nil {
+				log.Error(err, "Failed to re-register sentinel pod", "pod", sn.PodName)
+				continue
+			}
+			if littleRed.Spec.Sentinel != nil {
+				s := littleRed.Spec.Sentinel
+				if s.DownAfterMilliseconds > 0 {
+					_ = podSC.Set(ctx, redisclient.SentinelMasterName, "down-after-milliseconds", fmt.Sprintf("%d", s.DownAfterMilliseconds))
+				}
+				if s.FailoverTimeout > 0 {
+					_ = podSC.Set(ctx, redisclient.SentinelMasterName, "failover-timeout", fmt.Sprintf("%d", s.FailoverTimeout))
+				}
+				if s.ParallelSyncs > 0 {
+					_ = podSC.Set(ctx, redisclient.SentinelMasterName, "parallel-syncs", fmt.Sprintf("%d", s.ParallelSyncs))
+				}
+			}
+		}
+	}
+
 	// Rule A: Guardrails
 	if anyTerminating || state.FailoverActive {
 		log.Info("Cluster transition in progress (Terminating pods or Active Failover). Skipping non-essential healing.",
