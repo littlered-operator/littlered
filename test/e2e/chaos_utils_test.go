@@ -42,6 +42,7 @@ func getChaosClientImage() string {
 // deployChaosClient deploys a chaos test client pod and returns the pod name
 func deployChaosClient(namespace, name, addresses, keyPrefix string, clusterMode bool, duration time.Duration) (string, error) {
 	podName := fmt.Sprintf("chaos-client-%s", name)
+
 	image := getChaosClientImage()
 
 	clusterArg := ""

@@ -42,8 +42,8 @@ var (
 	operatorNamespace = "littlered-system"
 
 	// testNamespace is the namespace used for all e2e test resources.
-	// Override with TEST_NAMESPACE env var.
-	testNamespace = "default"
+	// Override with TEST_NAMESPACE env var. Must not be "default".
+	testNamespace = "littlered-e2e"
 
 	// skipOperatorDeploy skips operator deployment (use existing deployment).
 	skipOperatorDeploy = false
@@ -75,7 +75,7 @@ func suiteOrSpecFailed() bool {
 //   - SKIP_OPERATOR_DEPLOY: Set to "true" to skip operator deployment
 //   - USE_HELM: Set to "true" to deploy via Helm instead of make deploy
 //   - DEBUG_ON_FAILURE: Set to "true" to skip cleanup on failure
-//   - TEST_NAMESPACE: Namespace for test resources (default: "default")
+//   - TEST_NAMESPACE: Namespace for test resources (default: "littlered-e2e"); must not be "default"
 //   - KIND_CLUSTER: Kind cluster name (default: kind)
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(func(message string, callerSkip ...int) {
@@ -114,12 +114,24 @@ var _ = BeforeSuite(func() {
 	_, _ = fmt.Fprintf(GinkgoWriter, "Use Helm: %v\n", useHelm)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Debug on failure: %v\n", debugOnFailure)
 
-	// Create test namespace if it's not "default"
-	if testNamespace != "default" {
-		By("creating test namespace " + testNamespace)
-		cmd := exec.Command("kubectl", "create", "ns", testNamespace)
-		_, _ = utils.Run(cmd) // Ignore if exists
-	}
+	// Require a dedicated namespace — "default" is not safe for e2e tests.
+	Expect(testNamespace).NotTo(Equal("default"),
+		"TEST_NAMESPACE must not be 'default'; use a dedicated namespace such as 'littlered-e2e'")
+
+	// Require the namespace to not exist yet. Stale resources from a previous run
+	// (Pods, LittleRed CRs, etc.) would corrupt the tests, so we refuse to start
+	// rather than silently inheriting leftover state.
+	By("verifying test namespace " + testNamespace + " does not exist")
+	cmd := exec.Command("kubectl", "get", "ns", testNamespace)
+	_, err := utils.Run(cmd)
+	Expect(err).To(HaveOccurred(),
+		"Test namespace %q already exists — delete it first to ensure a clean slate:\n  kubectl delete ns %s",
+		testNamespace, testNamespace)
+
+	By("creating test namespace " + testNamespace)
+	cmd = exec.Command("kubectl", "create", "ns", testNamespace)
+	_, err = utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to create test namespace %q", testNamespace)
 
 	if skipOperatorDeploy {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping operator deployment (SKIP_OPERATOR_DEPLOY=true)\n")
@@ -193,12 +205,9 @@ var _ = AfterSuite(func() {
 		return
 	}
 
-	// Delete test namespace if it's not "default"
-	if testNamespace != "default" {
-		By("cleaning up test namespace " + testNamespace)
-		cmd := exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found", "--timeout=2m")
-		_, _ = utils.Run(cmd)
-	}
+	By("cleaning up test namespace " + testNamespace)
+	cmd := exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found", "--timeout=5m")
+	_, _ = utils.Run(cmd)
 
 	if skipOperatorDeploy {
 		return

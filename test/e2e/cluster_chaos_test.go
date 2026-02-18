@@ -106,24 +106,32 @@ spec:
 	})
 
 	Context("Resilience with Replicas (3 Masters, 1 Replica/Shard)", Ordered, func() {
-		const crName = "chaos-cluster-resilience"
-
-		BeforeAll(func() {
-			AddReportEntry("cr:" + crName)
-		})
+		var currentCRName string
 
 		AfterEach(func() {
 			if debugOnFailure && suiteOrSpecFailed() {
 				return
 			}
-			By("cleaning up cluster")
-			cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=2m")
+			if currentCRName == "" {
+				return
+			}
+			By("cleaning up cluster " + currentCRName)
+			cmd := exec.Command("kubectl", "delete", "littlered", currentCRName, "-n", testNamespace, "--ignore-not-found", "--timeout=2m")
 			_, _ = utils.Run(cmd)
+			// Wait for all pods to fully terminate before the next test starts.
+			cmd = exec.Command("kubectl", "wait", "--for=delete", "pod",
+				"-l", "app.kubernetes.io/instance="+currentCRName,
+				"-n", testNamespace, "--timeout=3m")
+			_, _ = utils.Run(cmd)
+			currentCRName = ""
 		})
 
 		It("should maintain high availability during master failure", func() {
+			const crName = "chaos-cluster-master-fail"
+			currentCRName = crName
 			const testDuration = 60 * time.Second
 
+			AddReportEntry("cr:" + crName)
 			By("creating a 3-shard cluster with 1 replica per shard")
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1
@@ -194,8 +202,11 @@ spec:
 		})
 
 		It("should maintain 100% availability during replica failure", func() {
+			const crName = "chaos-cluster-replica-fail"
+			currentCRName = crName
 			const testDuration = 60 * time.Second
 
+			AddReportEntry("cr:" + crName)
 			By("creating a 3-shard cluster with 1 replica per shard")
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1
@@ -265,8 +276,11 @@ spec:
 		})
 
 		It("should maintain data integrity during rolling restart", func() {
+			const crName = "chaos-cluster-rolling"
+			currentCRName = crName
 			const testDuration = 90 * time.Second
 
+			AddReportEntry("cr:" + crName)
 			By("creating a 3-shard cluster with 1 replica per shard")
 			cr := fmt.Sprintf(`
 apiVersion: chuck-chuck-chuck.net/v1alpha1

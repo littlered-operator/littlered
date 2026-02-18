@@ -123,7 +123,8 @@ FAIL_FAST = --ginkgo.fail-fast
 E2E_VARS += DEBUG_ON_FAILURE=true
 endif
 
-# TEST_NAMESPACE allows overriding the namespace for e2e test resources (default: "default").
+# TEST_NAMESPACE allows overriding the namespace for e2e test resources (default: "littlered-e2e").
+# Must not be "default". The namespace must not exist before the tests run (clean-slate requirement).
 # Example: make test-e2e TEST_NAMESPACE=littlered-test
 ifneq ($(TEST_NAMESPACE),)
 E2E_VARS += TEST_NAMESPACE=$(TEST_NAMESPACE)
@@ -227,7 +228,11 @@ redeploy-all: undeploy ## Full reset: uninstall helm chart, delete CRDs, and dep
 	$(MAKE) deploy
 
 .PHONY: pipeline
-pipeline: images deploy
+pipeline: images deploy install
+
+.PHONY: install
+install: bin/lrctl
+	sudo install -o root -g root -m 0755 bin/lrctl /usr/local/bin/lrctl
 
 ##@ Dependencies
 

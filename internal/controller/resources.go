@@ -991,6 +991,14 @@ done
 			PreStop: &corev1.LifecycleHandler{
 				Exec: &corev1.ExecAction{
 					Command: []string{"sh", "-c", fmt.Sprintf(`
+# Redirect all output from this point forward
+exec >/proc/1/fd/1 2>&1
+
+export PS4='preStop + '
+set -x
+
+echo "preStop hook starting at $(date), PID $$"
+
 ROLE=$(redis-cli info replication | grep role | cut -d: -f2 | tr -d '\r')
 if [ "$ROLE" = "master" ]; then
   echo "I am the master. Proactively failing over..."
@@ -1611,6 +1619,14 @@ exec redis-server /etc/redis/redis.conf \
 			PreStop: &corev1.LifecycleHandler{
 				Exec: &corev1.ExecAction{
 					Command: []string{"sh", "-c", `
+# Redirect all output from this point forward
+exec >/proc/1/fd/1 2>&1
+
+export PS4='preStop + '
+set -x
+
+echo "preStop hook starting at $(date), PID $$"
+
 AUTH_ARGS=""
 if [ -n "$REDIS_PASSWORD" ]; then
   AUTH_ARGS="-a $REDIS_PASSWORD"
