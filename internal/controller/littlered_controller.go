@@ -920,11 +920,34 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *litt
 			latest.Status.Master.IP = ""
 		}
 
+		// Count healthy replicas as seen by Sentinel. A slave is "up" if it is
+		// not marked s_down, o_down, or disconnected. This prevents reporting
+		// Running while Sentinel has not yet polled the master and registered all
+		// replicas — which would let a caller (test or operator) trigger a
+		// failover before Sentinel knows every slave, leaving replicas stuck on
+		// the dead master IP.
+		sentinelReplicasOK := 0
+		if masterPodName != "" {
+			password := r.getRedisPassword(ctx, latest)
+			sc := redisclient.NewSentinelClient(r.getSentinelAddresses(ctx, latest), password)
+			if replicas, err := sc.GetReplicas(ctx, redisclient.SentinelMasterName); err == nil {
+				for _, rep := range replicas {
+					if !strings.Contains(rep.Flags, "s_down") &&
+						!strings.Contains(rep.Flags, "o_down") &&
+						!strings.Contains(rep.Flags, "disconnected") {
+						sentinelReplicasOK++
+					}
+				}
+			}
+		}
+
 		// Determine phase
+		expectedReplicas := int(latest.Status.Redis.Total) - 1
 		allReady := latest.Status.Redis.Ready == latest.Status.Redis.Total &&
 			latest.Status.Sentinels.Ready == latest.Status.Sentinels.Total &&
 			latest.Status.Redis.Ready > 0 &&
-			masterPodName != ""
+			masterPodName != "" &&
+			sentinelReplicasOK >= expectedReplicas
 
 		if allReady {
 			latest.Status.Phase = littleredv1alpha1.PhaseRunning
@@ -958,7 +981,7 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *litt
 				Type:               littleredv1alpha1.ConditionReady,
 				Status:             metav1.ConditionFalse,
 				Reason:             "PodsNotReady",
-				Message:            fmt.Sprintf("Redis: %d/%d, Sentinels: %d/%d", latest.Status.Redis.Ready, latest.Status.Redis.Total, latest.Status.Sentinels.Ready, latest.Status.Sentinels.Total),
+				Message:            fmt.Sprintf("Redis: %d/%d, Sentinels: %d/%d, Sentinel-known replicas: %d/%d", latest.Status.Redis.Ready, latest.Status.Redis.Total, latest.Status.Sentinels.Ready, latest.Status.Sentinels.Total, sentinelReplicasOK, expectedReplicas),
 				LastTransitionTime: metav1.Now(),
 			})
 		}
