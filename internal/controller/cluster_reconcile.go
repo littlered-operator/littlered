@@ -59,6 +59,7 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 		Namespace: littleRed.Namespace,
 	}, sts); err != nil {
 		if apierrors.IsNotFound(err) {
+			log.Info("StatefulSet not yet created, requeueing")
 			fast, _ := littleRed.GetRequeueIntervals()
 			return ctrl.Result{RequeueAfter: fast}, nil
 		}
@@ -608,6 +609,7 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 
 // updateClusterStatus updates the LittleRed status for cluster mode
 func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
 	oldStatus := littleRed.Status.DeepCopy()
 	// Get StatefulSet status
 	sts := &appsv1.StatefulSet{}
@@ -670,6 +672,10 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 			littleRed.Status.Phase = littleredv1alpha1.PhaseInitializing
 		}
 		littleRed.Status.Status = "Initializing"
+
+		log.Info("Not yet Running, requeueing",
+			"redis", fmt.Sprintf("%d/%d", littleRed.Status.Redis.Ready, littleRed.Status.Redis.Total),
+			"clusterHealthy", clusterOK)
 
 		meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
 			Type:               littleredv1alpha1.ConditionReady,

@@ -428,6 +428,9 @@ func (r *LittleRedReconciler) updateStatus(ctx context.Context, littleRed *littl
 
 	// Requeue if not running to check status
 	if littleRed.Status.Phase != littleredv1alpha1.PhaseRunning {
+		log.Info("Not yet Running, requeueing",
+			"phase", littleRed.Status.Phase,
+			"redis", fmt.Sprintf("%d/%d", littleRed.Status.Redis.Ready, littleRed.Status.Redis.Total))
 		return ctrl.Result{RequeueAfter: fast}, nil
 	}
 
@@ -1019,6 +1022,24 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *litt
 				LastTransitionTime: metav1.Now(),
 			})
 		} else {
+			// Build a human-readable breakdown of which condition is blocking Running.
+			var notReadyReasons []string
+			if latest.Status.Redis.Ready == 0 {
+				notReadyReasons = append(notReadyReasons, "no Redis pods ready")
+			} else if latest.Status.Redis.Ready != latest.Status.Redis.Total {
+				notReadyReasons = append(notReadyReasons, fmt.Sprintf("Redis pods %d/%d ready", latest.Status.Redis.Ready, latest.Status.Redis.Total))
+			}
+			if latest.Status.Sentinels.Ready != latest.Status.Sentinels.Total {
+				notReadyReasons = append(notReadyReasons, fmt.Sprintf("Sentinel pods %d/%d ready", latest.Status.Sentinels.Ready, latest.Status.Sentinels.Total))
+			}
+			if masterPodName == "" {
+				notReadyReasons = append(notReadyReasons, "master not yet known to Sentinel")
+			}
+			if masterPodName != "" && sentinelReplicasOK < expectedReplicas {
+				notReadyReasons = append(notReadyReasons, fmt.Sprintf("Sentinel knows %d/%d replicas as healthy", sentinelReplicasOK, expectedReplicas))
+			}
+			log.Info("Not yet Running, requeueing", "reasons", strings.Join(notReadyReasons, "; "))
+
 			latest.Status.Phase = littleredv1alpha1.PhaseInitializing
 			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 				Type:               littleredv1alpha1.ConditionReady,
