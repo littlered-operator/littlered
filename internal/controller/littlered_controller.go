@@ -669,17 +669,22 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 			log.Info("Sentinel master is a ghost node, skipping RESET until failover completes", "ip", sn.MasterIP)
 			return nil
 		}
-		// Check replicas for ghosts that are objectively down (o_down).
-		// We deliberately skip s_down (subjectively down) because s_down fires
-		// immediately during any planned failover — triggering SENTINEL RESET at
-		// that point would wipe Sentinel's replica list before it has sent
-		// REPLICAOF to all remaining replicas, leaving them stuck on the dead
-		// master IP. o_down requires all sentinels to agree the node has been
-		// unreachable for the full down-after-milliseconds period, by which time
-		// Sentinel has already finished reconfiguring the surviving replicas.
+		// Check replicas for ghost IPs (IPs not belonging to any living pod).
+		// We accept s_down here — for ghost replicas, s_down is the correct
+		// signal. o_down (objectively down) is never set on replicas by Sentinel;
+		// it only applies to the master and requires a quorum vote. Requiring
+		// o_down for replicas means the condition is permanently dead.
+		//
+		// The original concern about premature RESET during failover no longer
+		// applies here because we already check IsGhost: a replica with a ghost
+		// IP is one whose pod is truly gone from the cluster (not in ValidIPs),
+		// so it will never come back or participate in Sentinel reconfiguration.
+		// Rule A above ensures we skip this block entirely while any pod is
+		// Terminating or a failover is active, giving Sentinel time to finish
+		// sending REPLICAOF to surviving replicas before we issue RESET.
 		for _, replica := range sn.Replicas {
-			if state.IsGhost(replica.IP) && strings.Contains(replica.Flags, "o_down") {
-				log.Info("Ghost node detected in Sentinel topology (o_down)", "ip", replica.IP, "sentinel", sn.PodName)
+			if state.IsGhost(replica.IP) && (strings.Contains(replica.Flags, "s_down") || strings.Contains(replica.Flags, "o_down")) {
+				log.Info("Ghost node detected in Sentinel topology", "ip", replica.IP, "flags", replica.Flags, "sentinel", sn.PodName)
 				ghostFound = true
 				break
 			}

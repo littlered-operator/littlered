@@ -582,7 +582,7 @@ func buildSentinelLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 	// duration of: downAfterMilliseconds + failoverTimeout + buffer.
 	// Once Sentinel issues SLAVEOF, the replica's master_host changes and the probe passes again.
 	const periodSeconds = int64(10)
-	downAfterMs := int64(30000)  // Sentinel default
+	downAfterMs := int64(30000)        // Sentinel default
 	failoverTimeoutMs := int64(180000) // Sentinel default
 	if lr.Spec.Sentinel != nil {
 		if lr.Spec.Sentinel.DownAfterMilliseconds > 0 {
