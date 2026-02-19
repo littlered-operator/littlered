@@ -82,14 +82,32 @@ A full Kubernetes node failure follows a different, safe path:
 
 The eviction timeline (minutes) is always longer than the Sentinel failover time (~30–60 s), so the "same IP, empty node" scenario cannot occur on a hard node failure.
 
-### What is NOT protected (explicitly out of scope)
+### What is NOT protected in Sentinel mode (explicitly out of scope)
 
-- In-pod Redis process crash (`SIGKILL`, OOM within container limits, Redis abort) where the container restarts in < `down-after-milliseconds`.
-- No software fix is planned; correct resource configuration is the expected mitigation.
+- In-pod Redis process crash (`SIGKILL`, OOM within container limits, Redis abort) on a **Sentinel master** where the container restarts in < `down-after-milliseconds`.
+- No software fix is possible without persistence: Sentinel identity is IP-based, and there is no file equivalent to `nodes.conf` that could be cleared to force a new identity.
+- Correct resource configuration (requests == limits, conservative `maxmemory`) is the expected mitigation.
+
+### Cluster mode has an active fix
+
+Unlike Sentinel, **Cluster mode identity is node-ID-based** (stored in `nodes.conf`). The cluster startup script unconditionally deletes `nodes.conf` before starting Redis, guaranteeing a fresh node ID on every process start — including in-pod container restarts:
+
+```sh
+rm -f /data/nodes.conf
+exec redis-server /etc/redis/redis.conf ...
+```
+
+Without this, a restarted Redis process would read the surviving `nodes.conf` from the emptyDir (which is pod-scoped, not container-scoped), restore its old node ID and slot assignments, and re-announce itself as the same cluster member with no data. The cluster would not failover (restart speed < `cluster-node-timeout`), and replicas would FULLRESYNC from the empty master — identical to the Sentinel data loss scenario.
+
+With the deletion, the restarted process is a stranger with a fresh ID. The operator's existing reconciliation path — the same one exercised by normal pod deletion — handles it: `cluster-node-timeout` elapses, the replica promotes, and the stranger is assigned as the new replica for that shard. The trade-off is explicit: up to `cluster-node-timeout` (~15 s) of slot unavailability in exchange for guaranteed data safety.
+
+On normal pod deletion, the emptyDir is already gone, so the `rm -f` is a harmless no-op.
 
 ### Impact on test strategy
 
-A "super-hard" restart mode (`kubectl exec -- kill -9 1`, container restarts in place) would demonstrate data loss rather than availability. This failure mode is therefore **not included in the e2e test suite** — it would characterise a known, accepted limitation, not a regression. Testing it would also be environment-sensitive (container restart timing vs. Sentinel timeout depends on cluster load).
+A "super-hard" restart mode (`kubectl exec -- kill -9 1`, container restarts in place) would demonstrate:
+- **Sentinel**: data loss — a known, accepted limitation, not tested.
+- **Cluster**: up to ~15 s of availability loss for the affected shard, then full recovery — this *could* be tested, but the timing sensitivity (container restart speed vs. `cluster-node-timeout`) makes it environment-dependent. Not currently included in the e2e suite.
 
 ---
 

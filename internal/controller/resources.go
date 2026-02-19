@@ -1670,12 +1670,32 @@ func buildClusterStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSe
 // buildClusterRedisContainer creates the Redis container for cluster mode
 func buildClusterRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 	// Startup script that announces pod IP.
-	// We let Redis generate its own Node ID and manage nodes.conf.
-	// This results in a new Node ID on every pod restart (since data is on EmptyDir).
+	//
+	// nodes.conf is always deleted before starting Redis to guarantee a fresh node ID
+	// on every process start — including in-pod container restarts (kill -9, OOM kill,
+	// Redis crash) where the emptyDir volume survives the container restart.
+	//
+	// Without this deletion, a restarted Redis process would read the surviving
+	// nodes.conf, restore its old node ID and slot assignments, and re-announce itself
+	// as the same cluster member — but with no data (save "" / appendonly no).
+	// The cluster would not trigger failover (restart < cluster-node-timeout), replicas
+	// would perform a FULLRESYNC from the empty master, and all shard data would be
+	// silently lost.
+	//
+	// With deletion, the restarted process gets a fresh node ID and joins as a
+	// stranger. The cluster-node-timeout window elapses, the replica is promoted, and
+	// the operator reconciles the stranger into the shard as a new replica — the same
+	// path as a normal pod deletion. This trades ~cluster-node-timeout of slot
+	// unavailability for guaranteed data safety.
+	//
+	// On normal pod deletion the emptyDir is already gone, so the rm is a no-op there.
 	startupScript := `#!/bin/sh
 set -e
 
 echo "Starting Redis cluster node ${POD_NAME} with IP: ${POD_IP}"
+
+# Guarantee a fresh node ID on every process start (see comment in resources.go).
+rm -f /data/nodes.conf
 
 exec redis-server /etc/redis/redis.conf \
   --cluster-announce-ip ${POD_IP} \
