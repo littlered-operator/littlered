@@ -790,6 +790,11 @@ func TestBuildSentinelReadinessProbeWithTLS(t *testing.T) {
 }
 
 func TestBuildSentinelConfig(t *testing.T) {
+	// The static sentinel.conf is intentionally minimal: sentinels start with no master
+	// configured. The operator issues SENTINEL MONITOR at runtime (bootstrapSentinel /
+	// Rule 0), so timing parameters (quorum, downAfterMs, failoverTimeout) are not baked
+	// into the config file. IP-only mode (ADR-001) means resolve/announce-hostnames are
+	// both set to "no".
 	lr := newTestLittleRed("my-cache", "test-ns")
 	lr.Spec.Mode = "sentinel"
 	lr.Spec.Sentinel = &littleredv1alpha1.SentinelSpec{
@@ -801,16 +806,26 @@ func TestBuildSentinelConfig(t *testing.T) {
 
 	mustHave := []string{
 		"port 26379",
-		"sentinel monitor mymaster",
-		"sentinel down-after-milliseconds mymaster 5000",
-		"sentinel failover-timeout mymaster 60000",
-		"sentinel resolve-hostnames yes",
-		"sentinel announce-hostnames yes",
+		"sentinel resolve-hostnames no",
+		"sentinel announce-hostnames no",
 	}
-
 	for _, s := range mustHave {
 		if !strings.Contains(config, s) {
 			t.Errorf("sentinel.conf missing %q\nGot:\n%s", s, config)
+		}
+	}
+
+	// Static config must NOT contain a monitor stanza — that is issued at runtime.
+	mustNotHave := []string{
+		"sentinel monitor mymaster",
+		"sentinel down-after-milliseconds",
+		"sentinel failover-timeout",
+		"resolve-hostnames yes",
+		"announce-hostnames yes",
+	}
+	for _, s := range mustNotHave {
+		if strings.Contains(config, s) {
+			t.Errorf("sentinel.conf should not contain %q (must be configured at runtime)\nGot:\n%s", s, config)
 		}
 	}
 }
