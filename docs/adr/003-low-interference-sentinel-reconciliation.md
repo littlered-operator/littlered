@@ -16,7 +16,7 @@ Revert the reconciliation behavior to a low-interference approach:
 
 1. **Remove SLAVEOF healing** (Rule C): The operator no longer issues `SLAVEOF` commands to Redis nodes. Sentinel handles all replica reconfiguration.
 
-2. **Remove MONITOR healing** (Rule B): The operator no longer issues `SENTINEL MONITOR` to individual sentinels. Bootstrap handles initial MONITOR, and Sentinel's built-in gossip handles the rest.
+2. **Narrow MONITOR healing** (Rule B → Rule 0): The operator no longer re-issues `SENTINEL MONITOR` to sentinels that already have a master configured — that was the race-inducing behavior. The sole exception is a sentinel that is reachable but has **no master configured at all** (`Reachable && !Monitoring`). Such a sentinel cannot self-heal via gossip: gossip requires an existing master config to subscribe to the pubsub channel, creating a circular dependency. Issuing `SENTINEL MONITOR` to a blank sentinel is non-disruptive to the rest of the cluster and is the only way to bring it back into the quorum. This targeted form is called **Rule 0** in the code.
 
 3. **Remove offset-based promotion** (Step 5 of `DetermineRealMaster`): The operator no longer picks a "best candidate" master when no clear master exists. It waits for Sentinel to reach consensus.
 
@@ -26,13 +26,7 @@ Revert the reconciliation behavior to a low-interference approach:
 
 6. **Simplify phase check**: `updateSentinelStatus` no longer polls Sentinel for replica count. The phase check uses only StatefulSet readiness and master pod presence.
 
-## Amendment (2026-02-19): Rule 0 and zombie-replica self-healing
-
-Two related problems were discovered and addressed, while preserving the low-interference principle:
-
-### Rule 0 — SENTINEL MONITOR for unconfigured sentinels (kept)
-
-A sentinel that restarts with no master config (empty `sentinel.conf`) cannot join gossip on its own: gossip requires an existing master config to subscribe to the pubsub channel — a circular dependency Sentinel cannot break itself. The operator issues `SENTINEL MONITOR` **only** to sentinels in this unconfigured state. This is not re-issuing MONITOR to functioning sentinels (the concern in Decision #2 above), but bootstrapping a fully blank sentinel. Without this, a restarted sentinel stays silent indefinitely.
+## Amendment (2026-02-19): zombie-replica self-healing
 
 ### Zombie replica problem
 
