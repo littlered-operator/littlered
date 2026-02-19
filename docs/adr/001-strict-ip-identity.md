@@ -82,15 +82,24 @@ A full Kubernetes node failure follows a different, safe path:
 
 The eviction timeline (minutes) is always longer than the Sentinel failover time (~30–60 s), so the "same IP, empty node" scenario cannot occur on a hard node failure.
 
-### What is NOT protected in Sentinel mode (explicitly out of scope)
+### Sentinel mode has an active fix (run-id detection)
 
-- In-pod Redis process crash (`SIGKILL`, OOM within container limits, Redis abort) on a **Sentinel master** where the container restarts in < `down-after-milliseconds`.
-- No software fix is possible without persistence: Sentinel identity is IP-based, and there is no file equivalent to `nodes.conf` that could be cleared to force a new identity.
-- Correct resource configuration (requests == limits, conservative `maxmemory`) is the expected mitigation.
+Redis assigns every process a random `run-id` on startup. Sentinel tracks the master's `run-id` via the `SENTINEL MASTER` command. When the Redis process is killed and the container restarts at the **same IP**, the `run-id` changes — but Sentinel retains the *old* run-id until the new process connects.
 
-### Cluster mode has an active fix
+The sentinel Redis startup script exploits this:
 
-Unlike Sentinel, **Cluster mode identity is node-ID-based** (stored in `nodes.conf`). The cluster startup script unconditionally deletes `nodes.conf` before starting Redis, guaranteeing a fresh node ID on every process start — including in-pod container restarts:
+1. Before starting `redis-server`, query Sentinel for the stored `run-id` of the current master.
+2. If `Sentinel master IP == my POD_IP` **and** `stored run-id is non-empty` → a previous process ran here and Sentinel has seen it. This is a restart (kill-9, OOM, etc.).
+3. **Do not start Redis.** Sleep in a loop; Sentinel detects SDOWN after `down-after-milliseconds` (~30 s) and triggers failover.
+4. Once Sentinel reports a different master IP, fall through to the normal replica startup path.
+
+A timeout (120 s) prevents an infinite hang if no eligible replica exists for failover; in that degenerate case the node starts as master (data already lost, but service recovers).
+
+On first bootstrap, the stored `run-id` is empty → the condition is false → normal master startup proceeds immediately.
+
+### Cluster mode has an active fix (nodes.conf deletion)
+
+**Cluster mode identity is node-ID-based** (stored in `nodes.conf`). The cluster startup script unconditionally deletes `nodes.conf` before starting Redis, guaranteeing a fresh node ID on every process start — including in-pod container restarts:
 
 ```sh
 rm -f /data/nodes.conf
@@ -106,8 +115,8 @@ On normal pod deletion, the emptyDir is already gone, so the `rm -f` is a harmle
 ### Impact on test strategy
 
 A "super-hard" restart mode (`kubectl exec -- kill -9 1`, container restarts in place) would demonstrate:
-- **Sentinel**: data loss — a known, accepted limitation, not tested.
-- **Cluster**: up to ~15 s of availability loss for the affected shard, then full recovery — this *could* be tested, but the timing sensitivity (container restart speed vs. `cluster-node-timeout`) makes it environment-dependent. Not currently included in the e2e suite.
+- **Sentinel**: up to ~30 s of SDOWN detection + failover time, then full recovery — testable but timing-sensitive; not currently included in the e2e suite.
+- **Cluster**: up to ~15 s of slot unavailability for the affected shard, then full recovery — testable but timing-sensitive (container restart speed vs. `cluster-node-timeout`); not currently included in the e2e suite.
 
 ---
 

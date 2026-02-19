@@ -1,0 +1,490 @@
+//go:build e2e
+// +build e2e
+
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// Kill-9 in-pod process crash tests.
+//
+// These tests exercise the "super-hard" restart scenario: the Redis process inside
+// a running pod is killed with SIGKILL. The pod is NOT deleted — the container
+// restarts in-place, preserving the pod IP.
+//
+// Sentinel mode (see ADR-001): the startup script detects "I am the known master
+// with a stored run-id" and suppresses Redis start until Sentinel completes
+// failover, then joins as a replica. Data is preserved on the surviving replica.
+//
+// Cluster mode (see ADR-001): the startup script deletes nodes.conf before
+// starting redis-server, giving the restarted process a fresh node ID. The
+// cluster treats it as a stranger, the replica is promoted, and the restarted
+// node rejoins as a new replica. Data is preserved on the surviving replica.
+
+package e2e
+
+import (
+	"fmt"
+	"os/exec"
+	"strings"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/littlered-operator/littlered-operator/test/utils"
+)
+
+var _ = Describe("Kill-9 In-Pod Process Crash", Ordered, func() {
+
+	// -------------------------------------------------------------------------
+	// Smoke test: verify killPodProcess actually works
+	// -------------------------------------------------------------------------
+	//
+	// Uses standalone mode (simplest topology) to confirm that:
+	//   1. kill -9 restarts the container without replacing the pod (IP preserved).
+	//   2. The run-id changes, proving a new Redis process is running.
+	//   3. All in-memory data is wiped — the store returned empty after restart.
+	//
+	// This test is intentionally trivial. Its only job is to validate the
+	// killPodProcess helper before the sentinel/cluster tests rely on it.
+
+	Context("Standalone Mode — Kill-9 Smoke Test", Ordered, func() {
+		It("should kill the Redis process and confirm the kill took effect", func() {
+			const crName = "kill9-smoke"
+			AddReportEntry("cr:" + crName)
+
+			By("creating a standalone LittleRed")
+			cr := fmt.Sprintf(`
+apiVersion: chuck-chuck-chuck.net/v1alpha1
+kind: LittleRed
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: standalone
+`, crName, testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(cr)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			defer func() {
+				if debugOnFailure && suiteOrSpecFailed() {
+					return
+				}
+				cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			}()
+
+			By("waiting for standalone to be running")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			const pod = crName + "-redis-0"
+
+			By("writing a key before kill-9")
+			cmd = exec.Command("kubectl", "exec", pod,
+				"-n", testNamespace, "-c", "redis", "--",
+				"valkey-cli", "SET", "kill9-smoke-key", "smoke-value")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(output)).To(Equal("OK"))
+
+			By("confirming the key is present before kill-9")
+			cmd = exec.Command("kubectl", "exec", pod,
+				"-n", testNamespace, "-c", "redis", "--",
+				"valkey-cli", "GET", "kill9-smoke-key")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(output)).To(Equal("smoke-value"))
+
+			By("recording run-id and pod UID before kill-9")
+			oldRunID, err := getPodRunID(testNamespace, pod)
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd = exec.Command("kubectl", "get", "pod", pod,
+				"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+			podUID, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			podUID = strings.TrimSpace(podUID)
+
+			By("kill -9 the Redis process")
+			killPodProcess(testNamespace, pod)
+
+			By("verifying the pod UID is unchanged (only the container restarted, not the pod)")
+			Consistently(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", pod,
+					"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+				uid, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(uid)).To(Equal(podUID))
+			}, 15*time.Second, 3*time.Second).Should(Succeed())
+
+			By("verifying the redis container restarted (restart count > 0)")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", pod,
+					"-n", testNamespace,
+					"-o", `jsonpath={.status.containerStatuses[?(@.name=="redis")].restartCount}`)
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				var count int
+				fmt.Sscan(strings.TrimSpace(out), &count)
+				g.Expect(count).To(BeNumerically(">", 0))
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			By("verifying run-id changed (a fresh Redis process is running)")
+			Eventually(func(g Gomega) {
+				newRunID, err := getPodRunID(testNamespace, pod)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(newRunID).NotTo(Equal(oldRunID))
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying the key is gone (in-memory store wiped on process restart)")
+			// Use Eventually: Redis may still be starting up right after the container restart.
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "exec", pod,
+					"-n", testNamespace, "-c", "redis", "--",
+					"valkey-cli", "GET", "kill9-smoke-key")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				// valkey-cli returns empty string (not "(nil)") for missing keys when
+			// not attached to a TTY (kubectl exec without -t).
+			g.Expect(strings.TrimSpace(output)).To(BeEmpty())
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	// Sentinel mode
+	// -------------------------------------------------------------------------
+
+	Context("Sentinel Mode — Master Process Crash", Ordered, func() {
+		It("should recover from master kill-9 without data loss", func() {
+			const crName = "kill9-sentinel"
+			AddReportEntry("cr:" + crName)
+			const testDuration = 120 * time.Second
+
+			By("creating Sentinel cluster and chaos client simultaneously")
+			cr := fmt.Sprintf(`
+apiVersion: chuck-chuck-chuck.net/v1alpha1
+kind: LittleRed
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: sentinel
+  sentinel:
+    quorum: 2
+    downAfterMilliseconds: 5000
+    failoverTimeout: 10000
+`, crName, testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(cr)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			chaosPodName, err := deployChaosClient(testNamespace, "kill9-sentinel", crName+":6379", "kill9-sent", false, testDuration)
+			Expect(err).NotTo(HaveOccurred())
+			AddReportEntry("chaos:" + chaosPodName)
+
+			defer func() {
+				if debugOnFailure && suiteOrSpecFailed() {
+					return
+				}
+				cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			}()
+			defer func() {
+				if debugOnFailure && suiteOrSpecFailed() {
+					return
+				}
+				deleteChaosClient(testNamespace, chaosPodName)
+			}()
+
+			By("waiting for sentinel cluster to be running")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
+
+				cmd = exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
+				master, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(master).NotTo(BeEmpty())
+
+				cmd = exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.bootstrapRequired}")
+				bootstrap, _ := utils.Run(cmd)
+				g.Expect(bootstrap).To(Or(Equal("false"), Equal("")))
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+			verifySentinelTopologySync(testNamespace, crName, 3, 2)
+
+			By("waiting 10 seconds for baseline traffic")
+			time.Sleep(10 * time.Second)
+
+			By("identifying the current master pod")
+			cmd = exec.Command("kubectl", "get", "littlered", crName,
+				"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
+			masterPod, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			masterPod = strings.TrimSpace(masterPod)
+
+			oldRunID, err := getPodRunID(testNamespace, masterPod)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("recording master pod UID — kill-9 must NOT replace the pod")
+			cmd = exec.Command("kubectl", "get", "pod", masterPod,
+				"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+			podUID, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			podUID = strings.TrimSpace(podUID)
+
+			By(fmt.Sprintf("kill -9 on master pod %s (in-pod process crash, IP stays the same)", masterPod))
+			killPodProcess(testNamespace, masterPod)
+
+			By("verifying pod UID is unchanged — the pod was not replaced, only the container")
+			Consistently(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", masterPod,
+					"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+				uid, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(uid)).To(Equal(podUID), "Pod UID changed — this is a pod replacement, not an in-pod crash")
+			}, 15*time.Second, 3*time.Second).Should(Succeed())
+
+			By("waiting for the redis container to restart (restart count > 0)")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", masterPod,
+					"-n", testNamespace,
+					"-o", `jsonpath={.status.containerStatuses[?(@.name=="redis")].restartCount}`)
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				var count int
+				fmt.Sscan(strings.TrimSpace(out), &count)
+				g.Expect(count).To(BeNumerically(">", 0), "Container restart count should be > 0 after kill-9")
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			// At this point the startup script is running inside the restarted container.
+			// It detected the non-empty run-id stored by Sentinel and set YIELD_MASTER=true.
+			// It is now sleeping (not starting Redis), waiting for Sentinel to detect SDOWN
+			// (after downAfterMilliseconds=5s) and complete failover.
+
+			By("waiting for Sentinel to elect a new master (failover from the yielding pod)")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.master.podName}")
+				newMaster, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				newMaster = strings.TrimSpace(newMaster)
+				g.Expect(newMaster).NotTo(BeEmpty())
+				g.Expect(newMaster).NotTo(Equal(masterPod), "Original master pod must have lost the master role")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying the original master pod rejoined as a replica")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", masterPod,
+					"-n", testNamespace,
+					"-o", "jsonpath={.metadata.labels['chuck-chuck-chuck\\.net/role']}")
+				role, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(role)).To(Equal("replica"),
+					"Original master pod should have rejoined as a replica after yielding master role")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying the run-id changed (a new Redis process is running)")
+			Eventually(func(g Gomega) {
+				newRunID, err := getPodRunID(testNamespace, masterPod)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(newRunID).NotTo(Equal(oldRunID), "Run-id must change: the process was replaced")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying full Sentinel topology is consistent")
+			verifySentinelTopologySync(testNamespace, crName, 3, 2)
+
+			err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
+			Expect(err).NotTo(HaveOccurred())
+
+			metrics, err := getChaosClientMetrics(testNamespace, chaosPodName)
+			Expect(err).NotTo(HaveOccurred())
+			GinkgoWriter.Printf("Sentinel Kill-9 Metrics:\n%s\n", metrics.String())
+
+			// Downtime window: SDOWN detection (~5 s) + failover (~5–10 s) + replica startup.
+			// Over the 120 s chaos window, write availability should remain above 40%.
+			Expect(metrics.DataCorruptions).To(Equal(int64(0)), "Data corruption detected!")
+			Expect(metrics.WriteAvailability()).To(BeNumerically(">", 0.40))
+		})
+	})
+
+	// -------------------------------------------------------------------------
+	// Cluster mode
+	// -------------------------------------------------------------------------
+
+	Context("Cluster Mode — Master Process Crash", Ordered, func() {
+		It("should recover from master shard kill-9 without data loss", func() {
+			const crName = "kill9-cluster"
+			AddReportEntry("cr:" + crName)
+			const testDuration = 120 * time.Second
+
+			By("creating a 3-shard cluster with 1 replica per shard")
+			cr := fmt.Sprintf(`
+apiVersion: chuck-chuck-chuck.net/v1alpha1
+kind: LittleRed
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: cluster
+  cluster:
+    shards: 3
+    replicasPerShard: 1
+    clusterNodeTimeout: 5000
+`, crName, testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(cr)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			chaosPodName, err := deployChaosClient(testNamespace, "kill9-cluster", crName+":6379", "kill9-clust", true, testDuration)
+			Expect(err).NotTo(HaveOccurred())
+			AddReportEntry("chaos:" + chaosPodName)
+
+			defer func() {
+				if debugOnFailure && suiteOrSpecFailed() {
+					return
+				}
+				cmd := exec.Command("kubectl", "delete", "littlered", crName, "-n", testNamespace, "--ignore-not-found", "--timeout=2m")
+				_, _ = utils.Run(cmd)
+			}()
+			defer func() {
+				if debugOnFailure && suiteOrSpecFailed() {
+					return
+				}
+				deleteChaosClient(testNamespace, chaosPodName)
+			}()
+
+			By("waiting for cluster to be running")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
+
+				cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
+					"-n", testNamespace, "-c", "redis", "--",
+					"valkey-cli", "CLUSTER", "INFO")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting 10 seconds for baseline traffic")
+			time.Sleep(10 * time.Second)
+
+			// pod-0 is always shard-0's master (first shard, assigned slots 0–5460).
+			const victimPod = crName + "-cluster-0"
+
+			By(fmt.Sprintf("recording node ID and pod UID of %s before kill-9", victimPod))
+			oldNodeID, err := getPodNodeID(testNamespace, victimPod)
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd = exec.Command("kubectl", "get", "pod", victimPod,
+				"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+			podUID, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			podUID = strings.TrimSpace(podUID)
+
+			By(fmt.Sprintf("kill -9 on master pod %s (in-pod process crash, IP stays the same)", victimPod))
+			killPodProcess(testNamespace, victimPod)
+
+			By("verifying pod UID is unchanged — the pod was not replaced, only the container")
+			Consistently(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", victimPod,
+					"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
+				uid, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(uid)).To(Equal(podUID), "Pod UID changed — this is a pod replacement, not an in-pod crash")
+			}, 15*time.Second, 3*time.Second).Should(Succeed())
+
+			By("waiting for the redis container to restart (restart count > 0)")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pod", victimPod,
+					"-n", testNamespace,
+					"-o", `jsonpath={.status.containerStatuses[?(@.name=="redis")].restartCount}`)
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				var count int
+				fmt.Sscan(strings.TrimSpace(out), &count)
+				g.Expect(count).To(BeNumerically(">", 0), "Container restart count should be > 0 after kill-9")
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			// At this point the startup script deleted nodes.conf and started redis-server
+			// with a fresh node ID. The cluster treats the restarted node as a stranger.
+			// After clusterNodeTimeout (5 s) the replica is promoted to master.
+
+			By("waiting for shard-0 failover: slot 0 must transfer to the former replica")
+			// Query via pod-1 (a surviving node in a different shard).
+			waitForShardMasterChange(testNamespace, crName+"-cluster-1", 0, oldNodeID)
+
+			By("verifying the restarted pod has a new node ID (nodes.conf was deleted)")
+			Eventually(func(g Gomega) {
+				newNodeID, err := getPodNodeID(testNamespace, victimPod)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(newNodeID).NotTo(Equal(oldNodeID),
+					"Node ID must change after kill-9: startup script deleted nodes.conf")
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("waiting for cluster to be fully healthy")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
+
+				// Query via pod-1 (pod-0 may still be joining).
+				cmd = exec.Command("kubectl", "exec", crName+"-cluster-1",
+					"-n", testNamespace, "-c", "redis", "--",
+					"valkey-cli", "CLUSTER", "INFO")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
+				g.Expect(output).To(ContainSubstring("cluster_slots_assigned:16384"))
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+			verifyClusterTopologySync(testNamespace, crName, 6)
+
+			err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
+			Expect(err).NotTo(HaveOccurred())
+
+			metrics, err := getChaosClientMetrics(testNamespace, chaosPodName)
+			Expect(err).NotTo(HaveOccurred())
+			GinkgoWriter.Printf("Cluster Kill-9 Metrics:\n%s\n", metrics.String())
+
+			// Slot-0 shard is unavailable for up to clusterNodeTimeout (5 s) + election.
+			// Over the 120 s chaos window, write availability should remain >= 80%.
+			Expect(metrics.DataCorruptions).To(Equal(int64(0)), "Data corruption detected!")
+			Expect(metrics.WriteAvailability()).To(BeNumerically(">=", 0.80))
+		})
+	})
+})

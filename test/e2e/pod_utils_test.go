@@ -20,6 +20,7 @@ limitations under the License.
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -286,6 +287,137 @@ func deletePodMode(namespace, podName string, graceful bool) (string, error) {
 
 	cmd := exec.Command("kubectl", args...)
 	return utils.Run(cmd)
+}
+
+// killPodProcess kills the redis container's init process, triggering a
+// container restart without deleting the pod (pod IP is preserved).
+//
+// Why not "kubectl exec -- kill -9 1"?
+//
+//  1. "kill" is absent from minimal Redis/Valkey images.
+//  2. Even when present: Linux unconditionally blocks SIGKILL sent to PID 1
+//     from within the same PID namespace. An exec'd redis-server IS PID 1,
+//     so the kernel silently drops the signal.
+//
+// Solution — escape the container's PID namespace:
+//
+//  1. Spin up a one-shot busybox pod on the same node with hostPID:true.
+//     hostPID gives it a view of every process on the node via /proc.
+//
+//  2. Scan /proc/*/cgroup for entries containing the container ID. The
+//     container runtime embeds the container ID in every cgroup path.
+//
+//  3. Among matching host PIDs, find the one whose /proc/<pid>/status
+//     "NSpid" field ends in "1" — that is PID 1 inside the container's
+//     PID namespace, expressed as a host-namespace PID.
+//
+//  4. kill -9 that host PID. The signal comes from outside the container's
+//     PID namespace, so the kernel's PID-1 immunity rule does not apply.
+func killPodProcess(namespace, podName string) {
+	capturePreDeleteLogs(namespace, podName)
+	startStreamingLogs(namespace, podName)
+
+	// ── resolve node and container ID ──────────────────────────────────────
+
+	cmd := exec.Command("kubectl", "get", "pod", podName,
+		"-n", namespace, "-o", "jsonpath={.spec.nodeName}")
+	nodeNameRaw, err := utils.Run(cmd)
+	if err != nil || strings.TrimSpace(nodeNameRaw) == "" {
+		fmt.Printf("[Utility] killPodProcess: cannot get node for %s/%s: %v\n", namespace, podName, err)
+		return
+	}
+	nodeName := strings.TrimSpace(nodeNameRaw)
+
+	// Target the redis container by name — pods may have sidecars (e.g. metrics exporter).
+	cmd = exec.Command("kubectl", "get", "pod", podName,
+		"-n", namespace, "-o", `jsonpath={.status.containerStatuses[?(@.name=="redis")].containerID}`)
+	containerIDRaw, err := utils.Run(cmd)
+	if err != nil || strings.TrimSpace(containerIDRaw) == "" {
+		fmt.Printf("[Utility] killPodProcess: cannot get containerID for %s/%s: %v\n", namespace, podName, err)
+		return
+	}
+	// Strip runtime prefix, e.g. "containerd://" → bare 64-char hash.
+	containerID := strings.TrimSpace(containerIDRaw)
+	if idx := strings.Index(containerID, "://"); idx >= 0 {
+		containerID = containerID[idx+3:]
+	}
+	// 12 hex chars (48 bits) is more than enough for a unique grep substring match.
+	shortID := containerID
+	if len(shortID) > 12 {
+		shortID = shortID[:12]
+	}
+	fmt.Printf("[Utility] killPodProcess: hunting host PID for container %s on node %s\n", shortID, nodeName)
+
+	// ── build the kill script ───────────────────────────────────────────────
+
+	script := "ID=" + shortID + "\n" +
+		"for f in $(grep -rl $ID /proc/[0-9]*/cgroup 2>/dev/null); do\n" +
+		"  pid=$(echo $f | cut -d/ -f3)\n" +
+		"  nspid=$(grep NSpid /proc/$pid/status 2>/dev/null | awk '{print $NF}')\n" +
+		"  [ \"$nspid\" = \"1\" ] || continue\n" +
+		"  echo \"Killing host PID $pid (container $ID)\"\n" +
+		"  kill -9 $pid\n" +
+		"  exit 0\n" +
+		"done\n" +
+		"echo \"Container init not found for $ID\" >&2; exit 1\n"
+
+	// ── launch a privileged hostPID pod on the target node ─────────────────
+	//
+	// spec.nodeName bypasses the scheduler for guaranteed placement.
+	// json.Marshal encodes the script with proper escaping.
+
+	helperPodName := "kill-proc-" + shortID
+	scriptJSON, err := json.Marshal(script)
+	if err != nil {
+		fmt.Printf("[Utility] killPodProcess: script marshal failed: %v\n", err)
+		return
+	}
+	podManifest := fmt.Sprintf(`{
+		"apiVersion":"v1","kind":"Pod",
+		"metadata":{"name":%q,"namespace":%q},
+		"spec":{
+			"hostPID":true,
+			"nodeName":%q,
+			"tolerations":[{"operator":"Exists"}],
+			"restartPolicy":"Never",
+			"containers":[{
+				"name":"kill-proc",
+				"image":"busybox",
+				"command":["sh","-c",%s],
+				"securityContext":{"privileged":true}
+			}]
+		}
+	}`, helperPodName, namespace, nodeName, string(scriptJSON))
+
+	cmd = exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(podManifest)
+	if _, err := utils.Run(cmd); err != nil {
+		fmt.Printf("[Utility] killPodProcess: failed to create helper pod: %v\n", err)
+		return
+	}
+	defer func() {
+		cmd := exec.Command("kubectl", "delete", "pod", helperPodName,
+			"-n", namespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+	}()
+
+	// ── wait for the helper pod to finish (up to 60 s) ─────────────────────
+
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		cmd = exec.Command("kubectl", "get", "pod", helperPodName,
+			"-n", namespace, "-o", "jsonpath={.status.phase}")
+		phase, _ := utils.Run(cmd)
+		if p := strings.TrimSpace(phase); p == "Succeeded" || p == "Failed" {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	// Surface the helper pod output so it appears in test logs and artifacts.
+	cmd = exec.Command("kubectl", "logs", helperPodName, "-n", namespace)
+	output, _ := utils.Run(cmd)
+	fmt.Printf("[Utility] killPodProcess: %s\n", strings.TrimSpace(output))
 }
 
 // deletePodsWithLabel deletes all pods matching the label selector in the given namespace.

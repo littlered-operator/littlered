@@ -991,6 +991,33 @@ if [ -n "$REDIS_PASSWORD" ]; then
   SENTINEL_AUTH_ARGS="-a $REDIS_PASSWORD"
 fi
 
+# Kill-9 / in-pod crash protection (see ADR-001 amendment):
+# If Sentinel already has a non-empty run-id stored for a master at MY IP, a previous
+# Redis process ran here and Sentinel observed it. The container must have restarted
+# (kill-9, OOM, etc.) while the pod IP stayed the same.
+# Starting as master in that state means an empty node becomes master and replicas
+# perform a FULLRESYNC from empty data — all data for this shard is lost.
+#
+# Defence: set YIELD_MASTER=true. The main loop sleeps (Redis NOT started) until
+# Sentinel's down-after-milliseconds fires, failover completes, and a different
+# master is elected. We then join as a replica.
+STORED_RUNID=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS -t 2 --raw sentinel master mymaster 2>/dev/null \
+  | awk 'prev=="runid"{print; exit} {prev=$0}' || true)
+SENTINEL_MASTER_IP=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS -t 2 --raw sentinel get-master-addr-by-name mymaster 2>/dev/null \
+  | head -n 1 || true)
+
+YIELD_MASTER=false
+YIELD_COUNT=0
+# 60 iterations x 2 s = 120 s: enough for 30 s SDOWN + failover + margin.
+# If failover never completes (no eligible replica), we give up and start as master.
+YIELD_LIMIT=60
+
+if [ "$SENTINEL_MASTER_IP" = "$POD_IP" ] && [ -n "$STORED_RUNID" ]; then
+  log "Kill-9 protection: Sentinel knows $POD_IP as master (run-id=$STORED_RUNID)."
+  log "Suppressing Redis start. Waiting for Sentinel SDOWN detection and failover..."
+  YIELD_MASTER=true
+fi
+
 # Loop until Sentinel has a master for us
 while true; do
   # Use --raw to get just the values (IP/Host on line 1, Port on line 2)
@@ -1004,9 +1031,20 @@ while true; do
 
     # Check if reported master is ME (compare IP)
     if [ "$CURRENT_MASTER_HOST" = "$POD_IP" ]; then
-       log "I am the authorized master. Starting redis-server..."
-       rm -f /data/bootstrap-in-progress
-       exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} $AUTH_ARGS
+      if [ "$YIELD_MASTER" = "true" ]; then
+        YIELD_COUNT=$((YIELD_COUNT + 1))
+        if [ "$YIELD_COUNT" -ge "$YIELD_LIMIT" ]; then
+          log "Yield timeout (${YIELD_LIMIT} attempts). No failover completed — no eligible replica? Starting as master."
+          YIELD_MASTER=false
+        else
+          log "Yielding ($YIELD_COUNT/$YIELD_LIMIT): still master per Sentinel. Waiting for SDOWN + failover..."
+          sleep 2
+          continue
+        fi
+      fi
+      log "I am the authorized master. Starting redis-server..."
+      rm -f /data/bootstrap-in-progress
+      exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} $AUTH_ARGS
     fi
 
     # I am a replica. Check if master is reachable before committing.
