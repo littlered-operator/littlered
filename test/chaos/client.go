@@ -138,6 +138,13 @@ func containsClusterStateOk(info string) bool {
 	return strings.Contains(info, "cluster_state:ok")
 }
 
+// containsClusterSlotsOk checks if all 16384 hash slots are mapped to healthy nodes.
+// cluster_state:ok is insufficient: the cluster can report "ok" while slot assignments
+// are still propagating after topology changes, causing MOVED/CLUSTERDOWN errors on writes.
+func containsClusterSlotsOk(info string) bool {
+	return strings.Contains(info, "cluster_slots_ok:16384")
+}
+
 // NewTestClient creates a new test client
 func NewTestClient(cfg Config) (*TestClient, error) {
 	var client redis.UniversalClient
@@ -201,6 +208,8 @@ ConnectLoop:
 					if lastErr == nil {
 						if !containsClusterStateOk(info) {
 							lastErr = fmt.Errorf("cluster not ready (state not ok)")
+						} else if !containsClusterSlotsOk(info) {
+							lastErr = fmt.Errorf("cluster not ready (slots not fully ok)")
 						}
 					}
 				}
