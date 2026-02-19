@@ -549,6 +549,114 @@ func buildReadinessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 	}
 }
 
+// buildSentinelLivenessProbe creates the liveness probe for the Redis container in sentinel mode.
+//
+// Beyond the basic PING check used in standalone mode, this probe detects "zombie replicas":
+// pods that started following a ghost master IP (an IP no longer belonging to any running pod).
+// This happens when a pod restarts during a Sentinel failover transition and the ghost master
+// responds briefly to PING before dying — the startup script commits to REPLICAOF <ghost>,
+// then the ghost disappears, leaving the replica permanently stuck with link:down.
+// Sentinel cannot self-heal this because the zombie never syncs to the real master, so the
+// real master doesn't list it as a replica, and Sentinel therefore never issues SLAVEOF to it.
+//
+// The probe logic:
+//  1. Bootstrap guard: pass while /data/bootstrap-in-progress exists (pod still starting)
+//  2. Masters always pass
+//  3. Replicas with link:up pass
+//  4. Replicas with link:down but a still-reachable master pass — this is a legitimate failover
+//     in progress; Sentinel will issue SLAVEOF to redirect us once the new master is elected.
+//  5. Replicas with link:down and an unreachable master fail — the master is gone forever
+//     (ghost), Sentinel will never redirect us, so k8s should restart the pod.
+//
+// The failureThreshold is computed from the CR's downAfterMilliseconds + failoverTimeout so
+// that a legitimate crash failover always completes (and Sentinel redirects the replica) before
+// the threshold is reached, avoiding false-positive restarts of healthy replicas.
+func buildSentinelLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
+	tlsFlags := ""
+	if lr.Spec.TLS.Enabled {
+		tlsFlags = " --tls --insecure"
+	}
+
+	// Compute a failure threshold large enough to survive a legitimate crash failover.
+	// A replica has master_link_status:down (with an unreachable master) for the entire
+	// duration of: downAfterMilliseconds + failoverTimeout + buffer.
+	// Once Sentinel issues SLAVEOF, the replica's master_host changes and the probe passes again.
+	const periodSeconds = int64(10)
+	downAfterMs := int64(30000)  // Sentinel default
+	failoverTimeoutMs := int64(180000) // Sentinel default
+	if lr.Spec.Sentinel != nil {
+		if lr.Spec.Sentinel.DownAfterMilliseconds > 0 {
+			downAfterMs = int64(lr.Spec.Sentinel.DownAfterMilliseconds)
+		}
+		if lr.Spec.Sentinel.FailoverTimeout > 0 {
+			failoverTimeoutMs = int64(lr.Spec.Sentinel.FailoverTimeout)
+		}
+	}
+	const bufferMs = int64(15000)
+	failoverWindowMs := downAfterMs + failoverTimeoutMs + bufferMs
+	failureThreshold := int32((failoverWindowMs + periodSeconds*1000 - 1) / (periodSeconds * 1000))
+	if failureThreshold < 3 {
+		failureThreshold = 3
+	}
+
+	script := fmt.Sprintf(
+		`if [ -f /data/bootstrap-in-progress ]; then exit 0; fi
+AUTH=""; [ -n "$REDIS_PASSWORD" ] && AUTH="-a $REDIS_PASSWORD"
+info=$(redis-cli -h 127.0.0.1 $AUTH%s -t 2 info replication 2>/dev/null) || exit 1
+echo "$info" | grep -q "^role:master" && exit 0
+echo "$info" | grep -q "^master_link_status:up" && exit 0
+master_host=$(echo "$info" | grep "^master_host:" | cut -d: -f2 | tr -d "\r ")
+[ -z "$master_host" ] && exit 1
+redis-cli -h "$master_host" -p %d $AUTH%s -t 2 ping >/dev/null 2>&1 && exit 0
+exit 1`,
+		tlsFlags, littleredv1alpha1.RedisPort, tlsFlags)
+
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{
+				Command: []string{"sh", "-c", script},
+			},
+		},
+		InitialDelaySeconds: 15,
+		PeriodSeconds:       int32(periodSeconds),
+		TimeoutSeconds:      5,
+		FailureThreshold:    failureThreshold,
+	}
+}
+
+// buildSentinelReadinessProbe creates the readiness probe for the Redis container in sentinel mode.
+//
+// A replica is ready only when its replication link to the master is up.
+// This ensures that a zombie replica (link:down following a ghost master) stops receiving
+// traffic immediately, before the liveness probe eventually kills and replaces the pod.
+func buildSentinelReadinessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
+	tlsFlags := ""
+	if lr.Spec.TLS.Enabled {
+		tlsFlags = " --tls --insecure"
+	}
+
+	script := fmt.Sprintf(
+		`if [ -f /data/bootstrap-in-progress ]; then exit 1; fi
+AUTH=""; [ -n "$REDIS_PASSWORD" ] && AUTH="-a $REDIS_PASSWORD"
+info=$(redis-cli -h 127.0.0.1 $AUTH%s -t 2 info replication 2>/dev/null) || exit 1
+echo "$info" | grep -q "^role:master" && exit 0
+echo "$info" | grep -q "^master_link_status:up" && exit 0
+exit 1`,
+		tlsFlags)
+
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{
+				Command: []string{"sh", "-c", script},
+			},
+		},
+		InitialDelaySeconds: 5,
+		PeriodSeconds:       5,
+		TimeoutSeconds:      3,
+		FailureThreshold:    3,
+	}
+}
+
 // buildService creates the Service for Redis
 func buildService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 	labels := commonLabels(lr)
@@ -985,8 +1093,8 @@ done
 				},
 			},
 		},
-		LivenessProbe:  buildLivenessProbe(lr),
-		ReadinessProbe: buildReadinessProbe(lr),
+		LivenessProbe:  buildSentinelLivenessProbe(lr),
+		ReadinessProbe: buildSentinelReadinessProbe(lr),
 		Lifecycle: &corev1.Lifecycle{
 			PreStop: &corev1.LifecycleHandler{
 				Exec: &corev1.ExecAction{

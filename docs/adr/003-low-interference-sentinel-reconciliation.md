@@ -26,8 +26,40 @@ Revert the reconciliation behavior to a low-interference approach:
 
 6. **Simplify phase check**: `updateSentinelStatus` no longer polls Sentinel for replica count. The phase check uses only StatefulSet readiness and master pod presence.
 
+## Amendment (2026-02-19): Rule 0 and zombie-replica self-healing
+
+Two related problems were discovered and addressed, while preserving the low-interference principle:
+
+### Rule 0 — SENTINEL MONITOR for unconfigured sentinels (kept)
+
+A sentinel that restarts with no master config (empty `sentinel.conf`) cannot join gossip on its own: gossip requires an existing master config to subscribe to the pubsub channel — a circular dependency Sentinel cannot break itself. The operator issues `SENTINEL MONITOR` **only** to sentinels in this unconfigured state. This is not re-issuing MONITOR to functioning sentinels (the concern in Decision #2 above), but bootstrapping a fully blank sentinel. Without this, a restarted sentinel stays silent indefinitely.
+
+### Zombie replica problem
+
+A race condition was observed: a new Redis pod starts during a Sentinel failover transition, queries Sentinel and receives a ghost master IP (a pod being force-deleted whose network stack is still partially alive), successfully PINGs that IP in the brief window before the kernel tears down the connection, starts as `REPLICAOF <ghost>`, and then the ghost vanishes. Sentinel cannot self-heal this situation because:
+- The zombie never syncs to the real master, so the real master doesn't list it as a replica.
+- Sentinel only sends `SLAVEOF` to replicas it knows about (from its topology state), not to zombies pointing at ghost IPs.
+
+Adding a `SLAVEOF` fix in the operator reconciler was evaluated and explicitly rejected: it would violate this ADR by having the operator race with Sentinel's reconfiguration logic.
+
+### Self-healing via liveness and readiness probes
+
+The zombie problem is instead solved at the pod level, without operator involvement:
+
+**Liveness probe** (`buildSentinelLivenessProbe`): The probe inspects `INFO replication` and applies this logic:
+1. Bootstrap guard (`/data/bootstrap-in-progress` present) → pass immediately.
+2. `role:master` → pass.
+3. `master_link_status:up` → pass (replica is synced).
+4. `master_link_status:down` but the configured master IP is still reachable via `redis-cli PING` → pass (legitimate failover in progress; Sentinel will redirect the replica).
+5. `master_link_status:down` and master IP is unreachable → **fail** (zombie: following a ghost).
+
+The `failureThreshold` is computed from `downAfterMilliseconds + failoverTimeout + 15 s buffer` so that a healthy replica is never killed mid-failover. After the threshold is exceeded, Kubernetes restarts the pod, which runs the startup script fresh and joins the actual master.
+
+**Readiness probe** (`buildSentinelReadinessProbe`): Immediately removes a zombie from service endpoints by failing if `master_link_status` is not `up` (and the node is not master). This is faster than the liveness threshold and ensures clients are not routed to a zombie replica.
+
 ## Consequences
 - The operator is now a "setup and observe" controller for Sentinel mode: it creates resources, bootstraps Sentinel, prunes ghosts, and updates labels/status.
 - Sentinel is the sole authority for failover decisions and replica reconfiguration.
 - Recovery from complex failure scenarios (e.g., all pods restarting simultaneously) may take longer, as the operator no longer force-heals the topology. This is acceptable because Sentinel is designed to handle these scenarios.
+- Zombie replicas are self-healing: Kubernetes restarts them without operator involvement, within `downAfterMilliseconds + failoverTimeout + buffer` seconds of the ghost master disappearing.
 - The `GetHealActions()` method on `SentinelClusterState` remains for CLI diagnostic use but the operator does not act on its recommendations.

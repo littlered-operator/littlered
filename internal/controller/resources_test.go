@@ -683,6 +683,112 @@ func TestBuildLivenessProbeWithTLS(t *testing.T) {
 // Sentinel Mode Tests
 // ============================================================================
 
+func TestBuildSentinelLivenessProbe(t *testing.T) {
+	lr := newTestLittleRed("my-cache", "test-ns")
+	lr.Spec.Sentinel = &littleredv1alpha1.SentinelSpec{
+		Quorum:                2,
+		DownAfterMilliseconds: 5000,
+		FailoverTimeout:       10000,
+	}
+	probe := buildSentinelLivenessProbe(lr)
+
+	if probe.Exec == nil {
+		t.Fatal("sentinel liveness probe should use exec")
+	}
+
+	cmd := strings.Join(probe.Exec.Command, " ")
+	if !strings.Contains(cmd, "info replication") {
+		t.Errorf("probe command should query 'info replication', got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "role:master") {
+		t.Errorf("probe command should check role:master, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "master_link_status:up") {
+		t.Errorf("probe command should check master_link_status:up, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "master_host") {
+		t.Errorf("probe command should extract master_host for reachability check, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "bootstrap-in-progress") {
+		t.Errorf("probe command should skip check while bootstrap is in progress, got: %s", cmd)
+	}
+
+	// downAfterMs=5000 + failoverTimeout=10000 + buffer=15000 = 30000ms
+	// ceil(30000 / 10000ms-period) = 3 → hits the minimum
+	if probe.FailureThreshold != 3 {
+		t.Errorf("FailureThreshold = %d, want 3 for downAfter=5000 failoverTimeout=10000", probe.FailureThreshold)
+	}
+	if probe.InitialDelaySeconds != 15 {
+		t.Errorf("InitialDelaySeconds = %d, want 15", probe.InitialDelaySeconds)
+	}
+}
+
+func TestBuildSentinelLivenessProbeDefaultTimings(t *testing.T) {
+	// When Sentinel spec is nil, probe uses hardcoded defaults (30s + 180s + 15s buffer).
+	lr := newTestLittleRed("my-cache", "test-ns")
+	probe := buildSentinelLivenessProbe(lr)
+
+	// ceil((30000 + 180000 + 15000) / 10000) = ceil(22.5) = 23
+	if probe.FailureThreshold != 23 {
+		t.Errorf("FailureThreshold = %d, want 23 for default sentinel timings", probe.FailureThreshold)
+	}
+}
+
+func TestBuildSentinelLivenessProbeWithTLS(t *testing.T) {
+	lr := newTestLittleRed("my-cache", "test-ns")
+	lr.Spec.TLS.Enabled = true
+	probe := buildSentinelLivenessProbe(lr)
+
+	cmd := strings.Join(probe.Exec.Command, " ")
+	if !strings.Contains(cmd, "--tls") {
+		t.Errorf("sentinel liveness probe should include --tls flag, got: %s", cmd)
+	}
+}
+
+func TestBuildSentinelReadinessProbe(t *testing.T) {
+	lr := newTestLittleRed("my-cache", "test-ns")
+	probe := buildSentinelReadinessProbe(lr)
+
+	if probe.Exec == nil {
+		t.Fatal("sentinel readiness probe should use exec")
+	}
+
+	cmd := strings.Join(probe.Exec.Command, " ")
+	if !strings.Contains(cmd, "info replication") {
+		t.Errorf("probe command should query 'info replication', got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "role:master") {
+		t.Errorf("probe command should check role:master, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "master_link_status:up") {
+		t.Errorf("probe command should check master_link_status:up, got: %s", cmd)
+	}
+	// Readiness probe exits 1 during bootstrap (opposite of liveness probe)
+	if !strings.Contains(cmd, "exit 1") {
+		t.Errorf("readiness probe should fail (exit 1) while bootstrap is in progress, got: %s", cmd)
+	}
+	// Readiness probe should NOT perform master-reachability check — its only job is
+	// to remove traffic from a zombie replica quickly, not to keep the pod alive.
+	if strings.Contains(cmd, "redis-cli -h \"$master_host\"") {
+		t.Errorf("readiness probe should not check master reachability (that is the liveness probe's job), got: %s", cmd)
+	}
+
+	if probe.InitialDelaySeconds != 5 {
+		t.Errorf("InitialDelaySeconds = %d, want 5", probe.InitialDelaySeconds)
+	}
+}
+
+func TestBuildSentinelReadinessProbeWithTLS(t *testing.T) {
+	lr := newTestLittleRed("my-cache", "test-ns")
+	lr.Spec.TLS.Enabled = true
+	probe := buildSentinelReadinessProbe(lr)
+
+	cmd := strings.Join(probe.Exec.Command, " ")
+	if !strings.Contains(cmd, "--tls") {
+		t.Errorf("sentinel readiness probe should include --tls flag, got: %s", cmd)
+	}
+}
+
 func TestBuildSentinelConfig(t *testing.T) {
 	lr := newTestLittleRed("my-cache", "test-ns")
 	lr.Spec.Mode = "sentinel"
