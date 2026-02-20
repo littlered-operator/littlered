@@ -12,12 +12,9 @@ import (
 
 var inspectCmd = &cobra.Command{
 	Use:   "inspect [name]",
-	Short: "Perform a deep-dive diagnostic of a Redis cluster",
-	Args:  cobra.ExactArgs(1),
+	Short: "Perform a deep-dive diagnostic of a Redis cluster (omit name to inspect all in namespace)",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
-
-		// Setup clients
 		k8sClient, coreClient, config, defaultNS, err := k8s.NewClient(kubeconfig)
 		if err != nil {
 			return err
@@ -29,46 +26,62 @@ var inspectCmd = &cobra.Command{
 		}
 
 		ctx := context.Background()
-		cCtx, err := discovery.GetContext(ctx, k8sClient, targetNS, name, kind, unmanaged)
-		if err != nil {
-			return err
+
+		names := args
+		if len(names) == 0 {
+			if unmanaged {
+				return fmt.Errorf("a resource name is required when using --unmanaged")
+			}
+			names, err = listLittleRedNames(ctx, k8sClient, targetNS)
+			if err != nil {
+				return err
+			}
+			if len(names) == 0 {
+				fmt.Printf("No LittleRed resources found in namespace %q\n", targetNS)
+				return nil
+			}
 		}
 
-		fmt.Printf("Deep Inspect: %s/%s (Mode: %s)\n", cCtx.Namespace, cCtx.Name, cCtx.Mode)
-		fmt.Println(strings.Repeat("-", 40))
-
-		// Inspect Sentinels
-		for _, pod := range cCtx.SentinelPods {
-			fmt.Printf("Sentinel Pod: %s (IP: %s)\n", pod.Name, pod.Status.PodIP)
-			cmdArgs := []string{"redis-cli", "-p", "26379", "sentinel", "master", "mymaster"}
-
-			stdout, stderr, err := k8s.Exec(coreClient, config, cCtx.Namespace, pod.Name, cCtx.SentinelContainer, cmdArgs)
+		for i, name := range names {
+			if i > 0 {
+				fmt.Println(strings.Repeat("=", 40))
+			}
+			cCtx, err := discovery.GetContext(ctx, k8sClient, targetNS, name, kind, unmanaged)
 			if err != nil {
-				fmt.Printf("  [!] Error: %v (stderr: %q)\n", err, stderr)
-			} else {
-				printLines(stdout)
-			}
-			fmt.Println()
-		}
-
-		// Inspect Redis Nodes
-		for _, pod := range cCtx.RedisPods {
-			fmt.Printf("Redis Pod: %s (IP: %s)\n", pod.Name, pod.Status.PodIP)
-
-			var cmdArgs []string
-			if cCtx.Mode == "cluster" {
-				cmdArgs = []string{"sh", "-c", "redis-cli cluster nodes && echo --- && redis-cli cluster info"}
-			} else {
-				cmdArgs = []string{"redis-cli", "info", "replication"}
+				return err
 			}
 
-			stdout, stderr, err := k8s.Exec(coreClient, config, cCtx.Namespace, pod.Name, cCtx.RedisContainer, cmdArgs)
-			if err != nil {
-				fmt.Printf("  [!] Error: %v (stderr: %q)\n", err, stderr)
-			} else {
-				printLines(stdout)
+			fmt.Printf("Deep Inspect: %s/%s (Mode: %s)\n", cCtx.Namespace, cCtx.Name, cCtx.Mode)
+			fmt.Println(strings.Repeat("-", 40))
+
+			for _, pod := range cCtx.SentinelPods {
+				fmt.Printf("Sentinel Pod: %s (IP: %s)\n", pod.Name, pod.Status.PodIP)
+				cmdArgs := []string{"redis-cli", "-p", "26379", "sentinel", "master", "mymaster"}
+				stdout, stderr, err := k8s.Exec(coreClient, config, cCtx.Namespace, pod.Name, cCtx.SentinelContainer, cmdArgs)
+				if err != nil {
+					fmt.Printf("  [!] Error: %v (stderr: %q)\n", err, stderr)
+				} else {
+					printLines(stdout)
+				}
+				fmt.Println()
 			}
-			fmt.Println()
+
+			for _, pod := range cCtx.RedisPods {
+				fmt.Printf("Redis Pod: %s (IP: %s)\n", pod.Name, pod.Status.PodIP)
+				var cmdArgs []string
+				if cCtx.Mode == "cluster" {
+					cmdArgs = []string{"sh", "-c", "redis-cli cluster nodes && echo --- && redis-cli cluster info"}
+				} else {
+					cmdArgs = []string{"redis-cli", "info", "replication"}
+				}
+				stdout, stderr, err := k8s.Exec(coreClient, config, cCtx.Namespace, pod.Name, cCtx.RedisContainer, cmdArgs)
+				if err != nil {
+					fmt.Printf("  [!] Error: %v (stderr: %q)\n", err, stderr)
+				} else {
+					printLines(stdout)
+				}
+				fmt.Println()
+			}
 		}
 
 		return nil

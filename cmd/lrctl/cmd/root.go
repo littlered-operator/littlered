@@ -1,7 +1,12 @@
 package cmd
 
 import (
+	"context"
+	"fmt"
+
+	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 	"github.com/spf13/cobra"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var (
@@ -20,6 +25,19 @@ but also supports unmanaged clusters via heuristics.`,
 
 func Execute() error {
 	return rootCmd.Execute()
+}
+
+// listLittleRedNames returns the names of all LittleRed CRs in the namespace.
+func listLittleRedNames(ctx context.Context, k8sClient client.Client, namespace string) ([]string, error) {
+	lrList := &littleredv1alpha1.LittleRedList{}
+	if err := k8sClient.List(ctx, lrList, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("failed to list LittleRed resources: %w", err)
+	}
+	names := make([]string, len(lrList.Items))
+	for i, lr := range lrList.Items {
+		names[i] = lr.Name
+	}
+	return names, nil
 }
 
 func init() {

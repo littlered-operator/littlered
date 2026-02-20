@@ -12,33 +12,43 @@ import (
 
 var statusCmd = &cobra.Command{
 	Use:   "status [name]",
-	Short: "Show status of a LittleRed cluster",
-	Args:  cobra.ExactArgs(1),
+	Short: "Show status of a LittleRed cluster (omit name to list all in namespace)",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
-
-		// Setup client with automatic config discovery
 		k8sClient, _, _, defaultNS, err := k8s.NewClient(kubeconfig)
 		if err != nil {
 			return err
 		}
 
-		// Use provided namespace or fallback to context default
 		targetNS := namespace
 		if targetNS == "" {
 			targetNS = defaultNS
 		}
 
-		lr := &littleredv1alpha1.LittleRed{}
-		err = k8sClient.Get(context.Background(), client.ObjectKey{
-			Name:      name,
-			Namespace: targetNS,
-		}, lr)
-		if err != nil {
-			return fmt.Errorf("failed to get LittleRed %s/%s: %w", targetNS, name, err)
+		ctx := context.Background()
+
+		names := args
+		if len(names) == 0 {
+			names, err = listLittleRedNames(ctx, k8sClient, targetNS)
+			if err != nil {
+				return err
+			}
+			if len(names) == 0 {
+				fmt.Printf("No LittleRed resources found in namespace %q\n", targetNS)
+				return nil
+			}
 		}
 
-		printStatus(lr)
+		for i, name := range names {
+			if i > 0 {
+				fmt.Println()
+			}
+			lr := &littleredv1alpha1.LittleRed{}
+			if err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: targetNS}, lr); err != nil {
+				return fmt.Errorf("failed to get LittleRed %s/%s: %w", targetNS, name, err)
+			}
+			printStatus(lr)
+		}
 		return nil
 	},
 }

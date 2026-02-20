@@ -17,11 +17,9 @@ import (
 
 var verifyCmd = &cobra.Command{
 	Use:   "verify [name]",
-	Short: "Verify consistency of a Redis cluster",
-	Args:  cobra.ExactArgs(1),
+	Short: "Verify consistency of a Redis cluster (omit name to verify all in namespace)",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
-
 		k8sClient, coreClient, config, defaultNS, err := k8s.NewClient(kubeconfig)
 		if err != nil {
 			return err
@@ -33,21 +31,46 @@ var verifyCmd = &cobra.Command{
 		}
 
 		ctx := context.Background()
-		cCtx, err := discovery.GetContext(ctx, k8sClient, targetNS, name, kind, unmanaged)
-		if err != nil {
-			return err
+
+		names := args
+		if len(names) == 0 {
+			if unmanaged {
+				return fmt.Errorf("a resource name is required when using --unmanaged")
+			}
+			names, err = listLittleRedNames(ctx, k8sClient, targetNS)
+			if err != nil {
+				return err
+			}
+			if len(names) == 0 {
+				fmt.Printf("No LittleRed resources found in namespace %q\n", targetNS)
+				return nil
+			}
 		}
 
-		fmt.Printf("Verifying Cluster: %s/%s (Mode: %s)\n", cCtx.Namespace, cCtx.Name, cCtx.Mode)
+		for i, name := range names {
+			if i > 0 {
+				fmt.Println(strings.Repeat("=", 40))
+			}
+			cCtx, err := discovery.GetContext(ctx, k8sClient, targetNS, name, kind, unmanaged)
+			if err != nil {
+				return err
+			}
 
-		if cCtx.Mode == "sentinel" {
-			return verifySentinel(ctx, coreClient, config, cCtx)
-		} else if cCtx.Mode == "cluster" {
-			return verifyCluster(ctx, coreClient, config, cCtx)
-		} else {
-			fmt.Printf("Verification for mode %q not yet fully implemented\n", cCtx.Mode)
-			return nil
+			fmt.Printf("Verifying Cluster: %s/%s (Mode: %s)\n", cCtx.Namespace, cCtx.Name, cCtx.Mode)
+
+			if cCtx.Mode == "sentinel" {
+				if err := verifySentinel(ctx, coreClient, config, cCtx); err != nil {
+					return err
+				}
+			} else if cCtx.Mode == "cluster" {
+				if err := verifyCluster(ctx, coreClient, config, cCtx); err != nil {
+					return err
+				}
+			} else {
+				fmt.Printf("Verification for mode %q not yet fully implemented\n", cCtx.Mode)
+			}
 		}
+		return nil
 	},
 }
 
