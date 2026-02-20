@@ -15,6 +15,7 @@ var (
 	unmanaged     bool
 	kind          string
 	allNamespaces bool
+	jsonOutput    bool
 )
 
 var rootCmd = &cobra.Command{
@@ -69,4 +70,5 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&unmanaged, "unmanaged", false, "If true, skip looking for a LittleRed CR and use heuristics to find pods")
 	rootCmd.PersistentFlags().StringVar(&kind, "kind", "sentinel", "The cluster kind (sentinel|cluster) when using --unmanaged")
 	rootCmd.PersistentFlags().BoolVarP(&allNamespaces, "all-namespaces", "A", false, "If present, list resources across all namespaces")
+	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "If true, output as JSON")
 }

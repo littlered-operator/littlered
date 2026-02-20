@@ -44,32 +44,33 @@ var inspectCmd = &cobra.Command{
 			return nil
 		}
 
+		var jsonResults []inspectJSON
+
 		for i, key := range targets {
-			if i > 0 {
-				fmt.Println(strings.Repeat("=", 40))
-			}
 			cCtx, err := discovery.GetContext(ctx, k8sClient, key.Namespace, key.Name, kind, unmanaged)
 			if err != nil {
 				return err
 			}
 
-			fmt.Printf("Deep Inspect: %s/%s (Mode: %s)\n", cCtx.Namespace, cCtx.Name, cCtx.Mode)
-			fmt.Println(strings.Repeat("-", 40))
+			res := inspectJSON{Name: key.Name, Namespace: key.Namespace, Mode: cCtx.Mode}
 
+			// ── collect sentinel pods ───────────────────────────────────────
 			for _, pod := range cCtx.SentinelPods {
-				fmt.Printf("Sentinel Pod: %s (IP: %s)\n", pod.Name, pod.Status.PodIP)
+				entry := sentinelPodJSON{Pod: pod.Name, IP: pod.Status.PodIP}
 				cmdArgs := []string{"redis-cli", "-p", "26379", "sentinel", "master", "mymaster"}
 				stdout, stderr, err := k8s.Exec(coreClient, config, cCtx.Namespace, pod.Name, cCtx.SentinelContainer, cmdArgs)
 				if err != nil {
-					fmt.Printf("  [!] Error: %v (stderr: %q)\n", err, stderr)
+					entry.Error = fmt.Sprintf("%v (stderr: %q)", err, stderr)
 				} else {
-					printLines(stdout)
+					entry.raw = stdout
+					entry.MasterInfo = parseAlternatingKV(stdout)
 				}
-				fmt.Println()
+				res.Sentinels = append(res.Sentinels, entry)
 			}
 
+			// ── collect redis pods ──────────────────────────────────────────
 			for _, pod := range cCtx.RedisPods {
-				fmt.Printf("Redis Pod: %s (IP: %s)\n", pod.Name, pod.Status.PodIP)
+				entry := redisPodJSON{Pod: pod.Name, IP: pod.Status.PodIP}
 				var cmdArgs []string
 				if cCtx.Mode == "cluster" {
 					cmdArgs = []string{"sh", "-c", "redis-cli cluster nodes && echo --- && redis-cli cluster info"}
@@ -78,14 +79,57 @@ var inspectCmd = &cobra.Command{
 				}
 				stdout, stderr, err := k8s.Exec(coreClient, config, cCtx.Namespace, pod.Name, cCtx.RedisContainer, cmdArgs)
 				if err != nil {
-					fmt.Printf("  [!] Error: %v (stderr: %q)\n", err, stderr)
+					entry.Error = fmt.Sprintf("%v (stderr: %q)", err, stderr)
 				} else {
-					printLines(stdout)
+					entry.raw = stdout
+					if cCtx.Mode == "cluster" {
+						parts := strings.SplitN(stdout, "\n---\n", 2)
+						entry.ClusterNodes = parseClusterNodesJSON(parts[0])
+						if len(parts) > 1 {
+							entry.ClusterInfo = parseInfoKV(parts[1])
+						}
+					} else {
+						entry.Replication = parseInfoKV(stdout)
+					}
+				}
+				res.Redis = append(res.Redis, entry)
+			}
+
+			// ── render ──────────────────────────────────────────────────────
+			if jsonOutput {
+				jsonResults = append(jsonResults, res)
+				continue
+			}
+
+			if i > 0 {
+				fmt.Println(strings.Repeat("=", 40))
+			}
+			fmt.Printf("Deep Inspect: %s/%s (Mode: %s)\n", res.Namespace, res.Name, res.Mode)
+			fmt.Println(strings.Repeat("-", 40))
+
+			for _, s := range res.Sentinels {
+				fmt.Printf("Sentinel Pod: %s (IP: %s)\n", s.Pod, s.IP)
+				if s.Error != "" {
+					fmt.Printf("  [!] Error: %s\n", s.Error)
+				} else {
+					printLines(s.raw)
+				}
+				fmt.Println()
+			}
+			for _, r := range res.Redis {
+				fmt.Printf("Redis Pod: %s (IP: %s)\n", r.Pod, r.IP)
+				if r.Error != "" {
+					fmt.Printf("  [!] Error: %s\n", r.Error)
+				} else {
+					printLines(r.raw)
 				}
 				fmt.Println()
 			}
 		}
 
+		if jsonOutput {
+			return printJSON(jsonResults)
+		}
 		return nil
 	},
 }

@@ -39,15 +39,25 @@ var statusCmd = &cobra.Command{
 			return nil
 		}
 
+		var jsonResults []statusJSON
+
 		for i, key := range targets {
-			if i > 0 {
-				fmt.Println()
-			}
 			lr := &littleredv1alpha1.LittleRed{}
 			if err := k8sClient.Get(ctx, key, lr); err != nil {
 				return fmt.Errorf("failed to get LittleRed %s/%s: %w", key.Namespace, key.Name, err)
 			}
-			printStatus(lr)
+			if jsonOutput {
+				jsonResults = append(jsonResults, lrToStatusJSON(lr))
+			} else {
+				if i > 0 {
+					fmt.Println()
+				}
+				printStatus(lr)
+			}
+		}
+
+		if jsonOutput {
+			return printJSON(jsonResults)
 		}
 		return nil
 	},
