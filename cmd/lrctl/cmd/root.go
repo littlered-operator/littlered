@@ -10,10 +10,11 @@ import (
 )
 
 var (
-	namespace  string
-	kubeconfig string
-	unmanaged  bool
-	kind       string
+	namespace     string
+	kubeconfig    string
+	unmanaged     bool
+	kind          string
+	allNamespaces bool
 )
 
 var rootCmd = &cobra.Command{
@@ -27,17 +28,39 @@ func Execute() error {
 	return rootCmd.Execute()
 }
 
-// listLittleRedNames returns the names of all LittleRed CRs in the namespace.
-func listLittleRedNames(ctx context.Context, k8sClient client.Client, namespace string) ([]string, error) {
+// listLittleReds returns ObjectKeys for all LittleRed CRs.
+// Pass namespace="" to list across all namespaces.
+func listLittleReds(ctx context.Context, k8sClient client.Client, namespace string) ([]client.ObjectKey, error) {
 	lrList := &littleredv1alpha1.LittleRedList{}
-	if err := k8sClient.List(ctx, lrList, client.InNamespace(namespace)); err != nil {
+	opts := []client.ListOption{}
+	if namespace != "" {
+		opts = append(opts, client.InNamespace(namespace))
+	}
+	if err := k8sClient.List(ctx, lrList, opts...); err != nil {
 		return nil, fmt.Errorf("failed to list LittleRed resources: %w", err)
 	}
-	names := make([]string, len(lrList.Items))
+	keys := make([]client.ObjectKey, len(lrList.Items))
 	for i, lr := range lrList.Items {
-		names[i] = lr.Name
+		keys[i] = client.ObjectKey{Name: lr.Name, Namespace: lr.Namespace}
 	}
-	return names, nil
+	return keys, nil
+}
+
+// resolveTargets returns the set of (namespace, name) pairs a command should operate on.
+// It honours --all-namespaces / -A and the positional name argument.
+func resolveTargets(ctx context.Context, k8sClient client.Client, args []string, targetNS string) ([]client.ObjectKey, error) {
+	if allNamespaces && len(args) > 0 {
+		return nil, fmt.Errorf("a resource name may not be specified when --all-namespaces (-A) is set")
+	}
+	if len(args) == 1 {
+		return []client.ObjectKey{{Name: args[0], Namespace: targetNS}}, nil
+	}
+	// No name given: list all in the target namespace (or all namespaces).
+	listNS := targetNS
+	if allNamespaces {
+		listNS = ""
+	}
+	return listLittleReds(ctx, k8sClient, listNS)
 }
 
 func init() {
@@ -45,4 +68,5 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&kubeconfig, "kubeconfig", "", "Path to the kubeconfig file to use for CLI requests")
 	rootCmd.PersistentFlags().BoolVar(&unmanaged, "unmanaged", false, "If true, skip looking for a LittleRed CR and use heuristics to find pods")
 	rootCmd.PersistentFlags().StringVar(&kind, "kind", "sentinel", "The cluster kind (sentinel|cluster) when using --unmanaged")
+	rootCmd.PersistentFlags().BoolVarP(&allNamespaces, "all-namespaces", "A", false, "If present, list resources across all namespaces")
 }

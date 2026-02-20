@@ -32,26 +32,28 @@ var verifyCmd = &cobra.Command{
 
 		ctx := context.Background()
 
-		names := args
-		if len(names) == 0 {
-			if unmanaged {
-				return fmt.Errorf("a resource name is required when using --unmanaged")
-			}
-			names, err = listLittleRedNames(ctx, k8sClient, targetNS)
-			if err != nil {
-				return err
-			}
-			if len(names) == 0 {
-				fmt.Printf("No LittleRed resources found in namespace %q\n", targetNS)
-				return nil
-			}
+		if unmanaged && len(args) == 0 {
+			return fmt.Errorf("a resource name is required when using --unmanaged")
 		}
 
-		for i, name := range names {
+		targets, err := resolveTargets(ctx, k8sClient, args, targetNS)
+		if err != nil {
+			return err
+		}
+		if len(targets) == 0 {
+			if allNamespaces {
+				fmt.Println("No LittleRed resources found in any namespace")
+			} else {
+				fmt.Printf("No LittleRed resources found in namespace %q\n", targetNS)
+			}
+			return nil
+		}
+
+		for i, key := range targets {
 			if i > 0 {
 				fmt.Println(strings.Repeat("=", 40))
 			}
-			cCtx, err := discovery.GetContext(ctx, k8sClient, targetNS, name, kind, unmanaged)
+			cCtx, err := discovery.GetContext(ctx, k8sClient, key.Namespace, key.Name, kind, unmanaged)
 			if err != nil {
 				return err
 			}

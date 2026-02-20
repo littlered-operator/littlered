@@ -7,7 +7,6 @@ import (
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 	"github.com/littlered-operator/littlered-operator/internal/cli/k8s"
 	"github.com/spf13/cobra"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var statusCmd = &cobra.Command{
@@ -27,25 +26,26 @@ var statusCmd = &cobra.Command{
 
 		ctx := context.Background()
 
-		names := args
-		if len(names) == 0 {
-			names, err = listLittleRedNames(ctx, k8sClient, targetNS)
-			if err != nil {
-				return err
-			}
-			if len(names) == 0 {
+		targets, err := resolveTargets(ctx, k8sClient, args, targetNS)
+		if err != nil {
+			return err
+		}
+		if len(targets) == 0 {
+			if allNamespaces {
+				fmt.Println("No LittleRed resources found in any namespace")
+			} else {
 				fmt.Printf("No LittleRed resources found in namespace %q\n", targetNS)
-				return nil
 			}
+			return nil
 		}
 
-		for i, name := range names {
+		for i, key := range targets {
 			if i > 0 {
 				fmt.Println()
 			}
 			lr := &littleredv1alpha1.LittleRed{}
-			if err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: targetNS}, lr); err != nil {
-				return fmt.Errorf("failed to get LittleRed %s/%s: %w", targetNS, name, err)
+			if err := k8sClient.Get(ctx, key, lr); err != nil {
+				return fmt.Errorf("failed to get LittleRed %s/%s: %w", key.Namespace, key.Name, err)
 			}
 			printStatus(lr)
 		}
