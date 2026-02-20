@@ -659,15 +659,26 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 	}
 
 	// Ghost pruning: only safe if the master Sentinel reports is a living pod
+	ghostMasterFound := false
 	ghostFound := false
-	for _, sn := range state.SentinelNodes {
+	for ip, sn := range state.SentinelNodes {
 		if !sn.Reachable || !sn.Monitoring {
 			continue
 		}
-		// Safety: skip RESET if sentinel's master is itself a ghost
+		// A sentinel still pointing at a ghost master means it lost its failover
+		// notification (e.g. two sentinels raced to lead the failover and the
+		// "winner" superseded the elected leader before it could record the
+		// switch). Rule A above already ensured no pod is Terminating and no
+		// failover is active on any other sentinel, so it is safe to RESET this
+		// individual sentinel so it rediscovers the real master via gossip.
 		if state.IsGhost(sn.MasterIP) {
-			log.Info("Sentinel master is a ghost node, skipping RESET until failover completes", "ip", sn.MasterIP)
-			return nil
+			log.Info("Sentinel monitoring ghost master after failover completed; issuing targeted RESET to resync via gossip",
+				"pod", sn.PodName, "ghost_master", sn.MasterIP)
+			podAddr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.SentinelPort)
+			podSC := redisclient.NewSentinelClient([]string{podAddr}, password)
+			_ = podSC.Reset(ctx, redisclient.SentinelMasterName)
+			ghostMasterFound = true
+			continue // don't inspect this sentinel's replica list
 		}
 		// Check replicas for ghost IPs (IPs not belonging to any living pod).
 		// We accept s_down here — for ghost replicas, s_down is the correct
@@ -692,6 +703,11 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		if ghostFound {
 			break
 		}
+	}
+
+	if ghostMasterFound {
+		// Requeue so the next cycle can verify the sentinels have converged.
+		return nil
 	}
 
 	if ghostFound {

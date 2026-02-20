@@ -60,7 +60,8 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 ### 2.9 Ghost Node Removal (Sentinel Mode)
 - **Decision**: Proactively prune dead IPs from Sentinel's topology via `SENTINEL RESET`.
 - **Rationale**: To prevent Sentinel's state from being cluttered with "ghost" IPs from previous pod generations, the operator cross-references Sentinel's replica list with the Kubernetes Pod list.
-- **Safety**: Reset is only issued if the current master is a verified living Pod, ensuring Sentinel has a reliable source to re-discover the topology.
+- **Ghost replicas (Rule D)**: RESET is broadcast to all sentinels when ghost IPs are found in the *replica* list, but only after Rule A passes (no terminating pods, no active failover) and the sentinel's master is a verified living pod.
+- **Ghost master (Rule D extension, 2026-02-20)**: A dual-failover race can leave one sentinel permanently stuck monitoring a ghost master IP: two sentinels race to lead the failover, one supersedes the other before it records `+switch-master`, and the stuck sentinel cannot reach `o_down` alone to trigger a corrective failover. In this case the operator issues `SENTINEL RESET` targeted at **that specific pod's IP only** (not via the service). The sentinel discards its stale config and rediscovers the real master via gossip from the healthy sentinels. This is an extension of Rule D, not a reversion to the reverted MONITOR/SLAVEOF interference: RESET does not direct sentinel to any specific master IP. See ADR-003 (Amendment 2026-02-20) for the full analysis and forensic evidence.
 
 ---
 
@@ -140,25 +141,14 @@ Refer to:
 - `.gemini/GEMINI.md` or `.claud/CLAUDE.md`: (If they exist) for LLM-specific session notes and active task status.
 - `docs/DEBUG_CRASH_TEST_INVESTIGATION.md`: Detailed investigation of the failing "both mechanisms active (crash)" e2e test (open as of 2026-02-18, not yet resolved).
 
-### Active Investigation (2026-02-18)
-**Failing test:** `Sentinel Advanced Failover Hybrid (Production) Mode > should recover correctly with both mechanisms active (crash)`
+### Resolved Investigation (2026-02-20)
+**Test:** `Sentinel Advanced Failover Hybrid (Production) Mode > should recover correctly with both mechanisms active (crash)`
 
-**Symptom:** After crash-deleting the master pod, `verifySentinelTopologySync` times out with "Sentinel reports 1 up replicas, but expected 2". Two slaves go `sdown` after the failover.
+**Root cause (confirmed):** The hybrid test runs a graceful failover immediately followed by a crash failover on the same cluster. The crash kill of the second master triggers a second Sentinel failover while the restarted redis-0 pod (new IP) is still joining. Two sentinels race to lead the second failover. The elected leader (`sentinel-1`) is superseded by another sentinel's `+config-update-from` broadcast before it can record its own `+switch-master`. Sentinel-1 is left permanently monitoring the ghost master IP, stuck at `s_down`, unable to reach `o_down` alone (quorum = 2). Classic non-self-healing sentinel split-brain — caused entirely within Sentinel's own election mechanism, not by operator interference.
 
-**Root observation:** Sentinel log shows TWO successive `Executing user requested FAILOVER` events ~7 seconds apart. A "user requested" failover must come from an explicit `SENTINEL FAILOVER mymaster` command — the only code that issues this is the preStop hook.
+**Operator bug:** The ghost-master guard in `reconcileSentinelCluster` did `return nil` when any sentinel monitored a ghost master. This was correct during an in-progress failover but fired forever in the post-failover settled state, preventing the stuck sentinel from ever being healed.
 
-**Leading hypothesis (NOT YET CONFIRMED):** The preStop lifecycle hook fires briefly even during `--grace-period=0 --force` pod deletion on this Kubernetes version. The hook is a separate shell process; SIGKILL to redis-server doesn't kill it. It manages to send `SENTINEL FAILOVER mymaster` to Sentinel before being killed itself.
-
-**Counter-evidence pending:** The user added a mechanism to capture preStop hook stdout/stderr in debug artifacts. Check the next run's artifacts for `preStop` output before concluding the double-failover hypothesis is correct.
-
-**Other confirmed findings:**
-- `ghost_ip: 10.233.64.156` — the operator correctly identifies the crash-deleted master's IP as a ghost and skips SENTINEL RESET (the ghost-master safety guard works)
-- The operator's `anyTerminating` guard correctly suppresses healing during failover
-- The second failover leaves redis-2 (`sdown`) and the old deleted pod's IP (`sdown`) as two dead slaves, leaving only 1 live replica
-
-**Files examined:** `debug-artifacts-20260218-090058-should-recover-correctly-with-both-mechanisms-active-crash/`
-
-See `docs/DEBUG_CRASH_TEST_INVESTIGATION.md` for full timeline and operator/sentinel log excerpts.
+**Fix:** Extended Rule D (ghost pruning) to cover ghost *masters*: after Rule A passes (no terminating pods, no active failover), a targeted `SENTINEL RESET` is issued to the specific stuck sentinel pod IP. The sentinel rediscovers the real master via gossip. See ADR-003 (Amendment 2026-02-20) and forensic artifacts in `debug-artifacts-20260220-192511-should-recover-correctly-with-both-mechanisms-active-crash/`.
 
 ---
 *Generated by Gemini CLI - Feb 2026*
