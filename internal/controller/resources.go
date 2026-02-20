@@ -1714,10 +1714,11 @@ func buildClusterRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Containe
 	// 2. If it is a restart, it YIELDS startup by polling peers until they confirm
 	//    that a failover has occurred (i.e. this IP is no longer seen as master with SLOTS).
 	//    This prevents the "empty master" from wiping its promoted replicas.
-	// 3. If failover is not confirmed within 60s, it fails intentionally to let
-	//    Kubernetes recycle the Pod and assign a new IP.
-	// 4. Copies the read-only config to /data to allow for CONFIG REWRITE.
-	// 5. Always deletes nodes.conf before starting to ensure a fresh identity.
+	// 3. If failover is not confirmed within 30s, it actively attempts to find its
+	//    own replica and issues an aggressive CLUSTER FAILOVER TAKEOVER to break the deadlock.
+	// 4. If failover still fails after 60s, it yields to the K8s liveness probe.
+	// 5. Copies the read-only config to /data to allow for CONFIG REWRITE.
+	// 6. Always deletes nodes.conf before starting to ensure a fresh identity.
 	startupScript := `#!/bin/sh
 set -e
 
@@ -1757,22 +1758,34 @@ if [ "$RESTART_DETECTED" = "true" ]; then
     PEER_IPS=$(getent hosts "$PEER_SERVICE" | awk '{print $1}')
     STILL_OWN_SLOTS=false
     PEERS_CONTACTED=0
+    MY_NODE_ID=""
+    MY_REPLICA_IP=""
 
     for peer in $PEER_IPS; do
       [ "$peer" = "$POD_IP" ] && continue
       NODES_INFO=$(redis-cli -h "$peer" -p %d $AUTH_ARGS -t 2 CLUSTER NODES 2>/dev/null || true)
       if [ -n "$NODES_INFO" ]; then
         PEERS_CONTACTED=$((PEERS_CONTACTED + 1))
-        # Check if the cluster still sees my IP as a master THAT OWNS SLOTS.
-        # In Redis Cluster NODES format, slots start at the 9th field.
-        # If a failover occurred, my IP might still be tagged 'master,fail' but slots will be moved.
-        MY_NODE_LINE=$(echo "$NODES_INFO" | grep "$POD_IP:%d")
-        if [ -n "$MY_NODE_LINE" ]; then
-           IS_MASTER=$(echo "$MY_NODE_LINE" | awk '{print $3}' | grep -q "master" && echo "true" || echo "false")
-           HAS_SLOTS=$(echo "$MY_NODE_LINE" | awk '{print $9}')
+
+        # Identify myself in the peer's view
+        MY_LINE=$(echo "$NODES_INFO" | grep "$POD_IP:%d")
+        if [ -n "$MY_LINE" ]; then
+           MY_NODE_ID=$(echo "$MY_LINE" | awk '{print $1}')
+           IS_MASTER=$(echo "$MY_LINE" | awk '{print $3}' | grep -q "master" && echo "true" || echo "false")
+           HAS_SLOTS=$(echo "$MY_LINE" | awk '{print $9}')
+
            if [ "$IS_MASTER" = "true" ] && [ -n "$HAS_SLOTS" ]; then
              STILL_OWN_SLOTS=true
              log "Attempt $i/12: Peer $peer still sees me as master with slots assigned ($HAS_SLOTS). Waiting..."
+
+             # If we've waited > 30s (attempt 6), try to find a replica to force failover
+             if [ "$i" -ge 6 ]; then
+                MY_REPLICA_IP=$(echo "$NODES_INFO" | grep "slave $MY_NODE_ID" | grep -v "fail" | head -n 1 | awk '{print $2}' | cut -d: -f1 | cut -d@ -f1)
+                if [ -n "$MY_REPLICA_IP" ]; then
+                   log "Deadlock detected! Forcing replica $MY_REPLICA_IP to TAKEOVER slots for dead node $MY_NODE_ID..."
+                   redis-cli -h "$MY_REPLICA_IP" -p %d $AUTH_ARGS -t 2 CLUSTER FAILOVER TAKEOVER || true
+                fi
+             fi
              break
            fi
         fi
@@ -1814,6 +1827,7 @@ exec redis-server /data/redis.conf \
 	script := fmt.Sprintf(startupScript,
 		lr.Name,
 		lr.Namespace,
+		littleredv1alpha1.RedisPort,
 		littleredv1alpha1.RedisPort,
 		littleredv1alpha1.RedisPort,
 		littleredv1alpha1.RedisPort,
