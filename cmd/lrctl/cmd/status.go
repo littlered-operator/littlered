@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 	"github.com/littlered-operator/littlered-operator/internal/cli/k8s"
@@ -40,24 +41,34 @@ var statusCmd = &cobra.Command{
 		}
 
 		var jsonResults []statusJSON
+		errCount := 0
+		textIdx := 0
 
-		for i, key := range targets {
+		for _, key := range targets {
 			lr := &littleredv1alpha1.LittleRed{}
 			if err := k8sClient.Get(ctx, key, lr); err != nil {
-				return fmt.Errorf("failed to get LittleRed %s/%s: %w", key.Namespace, key.Name, err)
+				fmt.Fprintf(os.Stderr, "error: %s/%s: %v\n", key.Namespace, key.Name, err)
+				errCount++
+				continue
 			}
 			if jsonOutput {
 				jsonResults = append(jsonResults, lrToStatusJSON(lr))
 			} else {
-				if i > 0 {
+				if textIdx > 0 {
 					fmt.Println()
 				}
 				printStatus(lr)
+				textIdx++
 			}
 		}
 
 		if jsonOutput {
-			return printJSON(jsonResults)
+			if err := printJSON(jsonResults); err != nil {
+				return err
+			}
+		}
+		if errCount > 0 {
+			return fmt.Errorf("%d of %d resource(s) not found or inaccessible", errCount, len(targets))
 		}
 		return nil
 	},

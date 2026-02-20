@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/littlered-operator/littlered-operator/internal/cli/discovery"
@@ -45,11 +46,15 @@ var inspectCmd = &cobra.Command{
 		}
 
 		var jsonResults []inspectJSON
+		errCount := 0
+		textIdx := 0
 
-		for i, key := range targets {
+		for _, key := range targets {
 			cCtx, err := discovery.GetContext(ctx, k8sClient, key.Namespace, key.Name, kind, unmanaged)
 			if err != nil {
-				return err
+				fmt.Fprintf(os.Stderr, "error: %s/%s: %v\n", key.Namespace, key.Name, err)
+				errCount++
+				continue
 			}
 
 			res := inspectJSON{Name: key.Name, Namespace: key.Namespace, Mode: cCtx.Mode}
@@ -101,9 +106,10 @@ var inspectCmd = &cobra.Command{
 				continue
 			}
 
-			if i > 0 {
+			if textIdx > 0 {
 				fmt.Println(strings.Repeat("=", 40))
 			}
+			textIdx++
 			fmt.Printf("Deep Inspect: %s/%s (Mode: %s)\n", res.Namespace, res.Name, res.Mode)
 			fmt.Println(strings.Repeat("-", 40))
 
@@ -128,7 +134,12 @@ var inspectCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
-			return printJSON(jsonResults)
+			if err := printJSON(jsonResults); err != nil {
+				return err
+			}
+		}
+		if errCount > 0 {
+			return fmt.Errorf("%d of %d resource(s) not found or inaccessible", errCount, len(targets))
 		}
 		return nil
 	},

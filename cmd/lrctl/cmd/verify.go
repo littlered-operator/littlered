@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -50,11 +51,14 @@ var verifyCmd = &cobra.Command{
 		}
 
 		var jsonResults []interface{}
+		errCount := 0
 
 		for i, key := range targets {
 			cCtx, err := discovery.GetContext(ctx, k8sClient, key.Namespace, key.Name, kind, unmanaged)
 			if err != nil {
-				return err
+				fmt.Fprintf(os.Stderr, "error: %s/%s: %v\n", key.Namespace, key.Name, err)
+				errCount++
+				continue
 			}
 
 			if jsonOutput {
@@ -62,17 +66,18 @@ var verifyCmd = &cobra.Command{
 				case "sentinel":
 					r, err := verifySentinelJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace)
 					if err != nil {
-						return err
+						errCount++
 					}
 					jsonResults = append(jsonResults, r)
 				case "cluster":
 					r, err := verifyClusterJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace)
 					if err != nil {
-						return err
+						errCount++
 					}
 					jsonResults = append(jsonResults, r)
 				default:
-					return fmt.Errorf("JSON output for mode %q not yet implemented", cCtx.Mode)
+					fmt.Fprintf(os.Stderr, "error: %s/%s: JSON output for mode %q not yet implemented\n", key.Namespace, key.Name, cCtx.Mode)
+					errCount++
 				}
 				continue
 			}
@@ -82,21 +87,26 @@ var verifyCmd = &cobra.Command{
 			}
 			fmt.Printf("Verifying Cluster: %s/%s (Mode: %s)\n", cCtx.Namespace, cCtx.Name, cCtx.Mode)
 
+			var verifyErr error
 			if cCtx.Mode == "sentinel" {
-				if err := verifySentinel(ctx, coreClient, config, cCtx); err != nil {
-					return err
-				}
+				verifyErr = verifySentinel(ctx, coreClient, config, cCtx)
 			} else if cCtx.Mode == "cluster" {
-				if err := verifyCluster(ctx, coreClient, config, cCtx); err != nil {
-					return err
-				}
+				verifyErr = verifyCluster(ctx, coreClient, config, cCtx)
 			} else {
 				fmt.Printf("Verification for mode %q not yet fully implemented\n", cCtx.Mode)
+			}
+			if verifyErr != nil {
+				errCount++ // [FAIL] details already printed by verifySentinel / verifyCluster
 			}
 		}
 
 		if jsonOutput {
-			return printJSON(jsonResults)
+			if err := printJSON(jsonResults); err != nil {
+				return err
+			}
+		}
+		if errCount > 0 {
+			return fmt.Errorf("%d of %d resource(s) failed verification", errCount, len(targets))
 		}
 		return nil
 	},
@@ -182,11 +192,10 @@ func verifyCluster(ctx context.Context, coreClient *kubernetes.Clientset, config
 	expectedShards := int32(3) // Default, should ideally be pulled from CR if available
 	if gt.IsHealthy(expectedNodes, expectedShards) {
 		fmt.Println("  [OK] Cluster is healthy and consistent.")
-	} else {
-		fmt.Println("  [FAIL] Cluster has topology or health issues!")
+		return nil
 	}
-
-	return nil
+	fmt.Println("  [FAIL] Cluster has topology or health issues!")
+	return fmt.Errorf("cluster %s/%s has topology or health issues", cCtx.Namespace, cCtx.Name)
 }
 
 func verifySentinel(ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config, cCtx *types.ClusterContext) error {
@@ -257,6 +266,9 @@ func verifySentinel(ctx context.Context, coreClient *kubernetes.Clientset, confi
 		fmt.Println("\n[OK] Cluster configuration is consistent.")
 	}
 
+	if state.RealMasterIP == "" || len(actions) > 0 {
+		return fmt.Errorf("cluster %s/%s is not healthy or consistent", cCtx.Namespace, cCtx.Name)
+	}
 	return nil
 }
 
