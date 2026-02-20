@@ -1712,7 +1712,7 @@ func buildClusterRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Containe
 	// 1. Detects if this is a container restart (memory lost, IP same) by checking
 	//    for a surviving nodes.conf.
 	// 2. If it is a restart, it YIELDS startup by polling peers until they confirm
-	//    that a failover has occurred (i.e. this IP is no longer seen as master).
+	//    that a failover has occurred (i.e. this IP is no longer seen as master with SLOTS).
 	//    This prevents the "empty master" from wiping its promoted replicas.
 	// 3. If failover is not confirmed within 60s, it fails intentionally to let
 	//    Kubernetes recycle the Pod and assign a new IP.
@@ -1720,7 +1720,6 @@ func buildClusterRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Containe
 	// 5. Always deletes nodes.conf before starting to ensure a fresh identity.
 	startupScript := `#!/bin/sh
 set -e
-set -x
 
 # Helper to log with timestamp
 log() {
@@ -1751,12 +1750,12 @@ if [ "$RESTART_DETECTED" = "true" ]; then
   # Configuration from environment
   AUTH_ARGS=""
   [ -n "$REDIS_PASSWORD" ] && AUTH_ARGS="-a $REDIS_PASSWORD"
-  PEER_SERVICE="${CLUSTER_NAME}-cluster.${NAMESPACE}.svc"
+  PEER_SERVICE="%s-cluster.%s.svc"
 
   # Wait up to 60s for peers to confirm failover
   for i in $(seq 1 12); do
     PEER_IPS=$(getent hosts "$PEER_SERVICE" | awk '{print $1}')
-    STILL_MASTER=false
+    STILL_OWN_SLOTS=false
     PEERS_CONTACTED=0
 
     for peer in $PEER_IPS; do
@@ -1764,22 +1763,31 @@ if [ "$RESTART_DETECTED" = "true" ]; then
       NODES_INFO=$(redis-cli -h "$peer" -p %d $AUTH_ARGS -t 2 CLUSTER NODES 2>/dev/null || true)
       if [ -n "$NODES_INFO" ]; then
         PEERS_CONTACTED=$((PEERS_CONTACTED + 1))
-        if echo "$NODES_INFO" | grep -q "$POD_IP:%d.*master"; then
-          STILL_MASTER=true; break
+        # Check if the cluster still sees my IP as a master THAT OWNS SLOTS.
+        # In Redis Cluster NODES format, slots start at the 9th field.
+        # If a failover occurred, my IP might still be tagged 'master,fail' but slots will be moved.
+        MY_NODE_LINE=$(echo "$NODES_INFO" | grep "$POD_IP:%d")
+        if [ -n "$MY_NODE_LINE" ]; then
+           IS_MASTER=$(echo "$MY_NODE_LINE" | awk '{print $3}' | grep -q "master" && echo "true" || echo "false")
+           HAS_SLOTS=$(echo "$MY_NODE_LINE" | awk '{print $9}')
+           if [ "$IS_MASTER" = "true" ] && [ -n "$HAS_SLOTS" ]; then
+             STILL_OWN_SLOTS=true
+             log "Attempt $i/12: Peer $peer still sees me as master with slots assigned ($HAS_SLOTS). Waiting..."
+             break
+           fi
         fi
       fi
     done
 
-    if [ "$STILL_MASTER" = "false" ] && [ "$PEERS_CONTACTED" -gt 0 ]; then
-      log "Verified: Peers no longer see $POD_IP as master. Safe to start."
+    if [ "$STILL_OWN_SLOTS" = "false" ] && [ "$PEERS_CONTACTED" -gt 0 ]; then
+      log "Verified: Failover confirmed (I no longer own slots). Safe to start."
       break
     fi
-    log "Attempt $i/12: Still seen as master. Waiting for failover..."
-    sleep 5
+    [ "$i" -lt 12 ] && sleep 5
   done
 
-  if [ "$STILL_MASTER" = "true" ]; then
-    log "FATAL: Failover timeout. Yielding to Kubernetes liveness probe..."
+  if [ "$STILL_OWN_SLOTS" = "true" ]; then
+    log "FATAL: Failover timeout. I still own slots in the cluster map. Yielding to Kubernetes liveness probe..."
     rm -f /data/bootstrap-in-progress
     while true; do sleep 3600; done
   fi
@@ -1799,19 +1807,18 @@ exec redis-server /data/redis.conf \
   --cluster-config-file /data/nodes.conf \
   --cluster-announce-ip ${POD_IP} \
   --cluster-announce-port %d \
-  --cluster-announce-bus-port %d %s
+  --cluster-announce-bus-port %d \
+  --requirepass "${REDIS_PASSWORD}" \
+  --masterauth "${REDIS_PASSWORD}"
 `
-	authArgs := ""
-	if lr.Spec.Auth.Enabled {
-		authArgs = "--requirepass $(REDIS_PASSWORD) --masterauth $(REDIS_PASSWORD)"
-	}
-
 	script := fmt.Sprintf(startupScript,
+		lr.Name,
+		lr.Namespace,
 		littleredv1alpha1.RedisPort,
 		littleredv1alpha1.RedisPort,
 		littleredv1alpha1.RedisPort,
-		littleredv1alpha1.ClusterBusPort,
-		authArgs)
+		littleredv1alpha1.RedisPort,
+		littleredv1alpha1.ClusterBusPort)
 
 	container := corev1.Container{
 		Name:            "redis",
