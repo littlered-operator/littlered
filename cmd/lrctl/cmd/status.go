@@ -83,4 +83,5 @@ func printStatus(lr *littleredv1alpha1.LittleRed) {
 
 func init() {
 	rootCmd.AddCommand(statusCmd)
+	statusCmd.ValidArgsFunction = completeLittleRedNames
 }

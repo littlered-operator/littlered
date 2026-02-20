@@ -318,12 +318,31 @@ make images
 LittleRed comes with a dedicated CLI tool `lrctl` for diagnostics and cluster verification. It can be used as a standalone binary or a `kubectl` plugin.
 
 ```bash
+# Build and install lrctl
+make install   # builds and installs to /usr/local/bin/lrctl
+
 # Get high-level status
-bin/lrctl status my-cache
+lrctl status my-cache
 
 # Perform deep-dive consistency verification
-bin/lrctl verify my-cache
+lrctl verify my-cache
 ```
+
+### Shell Completion
+
+`lrctl` supports tab completion for resource names and namespaces. Load it in your current shell with:
+
+```bash
+# zsh
+source <(lrctl completion zsh)
+
+# bash
+source <(lrctl completion bash)
+```
+
+To make it permanent, add the line to your shell's rc file (`~/.zshrc` or `~/.bashrc`).
+
+> **Note:** Use `source <(...)` rather than `eval $(...)` — the latter strips newlines and can break the generated completion script.
 
 See [docs/LRCTL.md](docs/LRCTL.md) for full documentation and use cases.
 

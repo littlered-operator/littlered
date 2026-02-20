@@ -190,8 +190,8 @@ type sentinelVerifyJSON struct {
 	RealMasterIP      string                   `json:"realMasterIP,omitempty"`
 	RealMasterPodName string                   `json:"realMasterPodName,omitempty"`
 	FailoverActive    bool                     `json:"failoverActive"`
-	Sentinels         []sentinelNodeVerifyJSON  `json:"sentinels"`
-	Redis             []redisNodeVerifyJSON     `json:"redis"`
+	Sentinels         []sentinelNodeVerifyJSON `json:"sentinels"`
+	Redis             []redisNodeVerifyJSON    `json:"redis"`
 	HealActions       []string                 `json:"healActions"`
 	Healthy           bool                     `json:"healthy"`
 }

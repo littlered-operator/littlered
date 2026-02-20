@@ -262,6 +262,7 @@ func verifySentinel(ctx context.Context, coreClient *kubernetes.Clientset, confi
 
 func init() {
 	rootCmd.AddCommand(verifyCmd)
+	verifyCmd.ValidArgsFunction = completeLittleRedNames
 }
 
 // verifySentinelJSON gathers sentinel cluster state and returns it as a

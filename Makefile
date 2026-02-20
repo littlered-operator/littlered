@@ -231,7 +231,7 @@ redeploy-all: undeploy ## Full reset: uninstall helm chart, delete CRDs, and dep
 pipeline: images deploy install
 
 .PHONY: install
-install: bin/lrctl
+install: lrctl
 	sudo install -o root -g root -m 0755 bin/lrctl /usr/local/bin/lrctl
 
 ##@ Dependencies

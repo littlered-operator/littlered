@@ -143,4 +143,5 @@ func printLines(stdout string) {
 
 func init() {
 	rootCmd.AddCommand(inspectCmd)
+	inspectCmd.ValidArgsFunction = completeLittleRedNames
 }

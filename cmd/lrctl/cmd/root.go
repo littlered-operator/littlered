@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
+
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
+	"github.com/littlered-operator/littlered-operator/internal/cli/k8s"
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -23,6 +26,8 @@ var rootCmd = &cobra.Command{
 	Short: "lrctl is a CLI tool for managing LittleRed and foreign Redis clusters",
 	Long: `lrctl provides syntactic sugar for interacting with LittleRed resources,
 but also supports unmanaged clusters via heuristics.`,
+	SilenceUsage:  true, // don't print usage on RunE errors
+	SilenceErrors: true, // main.go prints the error; avoid double-printing
 }
 
 func Execute() error {
@@ -64,6 +69,50 @@ func resolveTargets(ctx context.Context, k8sClient client.Client, args []string,
 	return listLittleReds(ctx, k8sClient, listNS)
 }
 
+// completeLittleRedNames is used as ValidArgsFunction on commands that accept an
+// optional LittleRed resource name. It queries the API for names in the currently
+// selected namespace so that <tab> completes resource names rather than filenames.
+func completeLittleRedNames(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	if len(args) >= 1 {
+		// Already have a name — suppress all further completions.
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	k8sClient, _, _, defaultNS, err := k8s.NewClient(kubeconfig)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	targetNS := namespace
+	if targetNS == "" {
+		targetNS = defaultNS
+	}
+	keys, err := listLittleReds(context.Background(), k8sClient, targetNS)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	names := make([]string, len(keys))
+	for i, key := range keys {
+		names[i] = key.Name
+	}
+	return names, cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeNamespaces is used as the completion function for the --namespace / -n flag.
+func completeNamespaces(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+	k8sClient, _, _, _, err := k8s.NewClient(kubeconfig)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	nsList := &corev1.NamespaceList{}
+	if err := k8sClient.List(context.Background(), nsList); err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	names := make([]string, len(nsList.Items))
+	for i, ns := range nsList.Items {
+		names[i] = ns.Name
+	}
+	return names, cobra.ShellCompDirectiveNoFileComp
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "", "If present, the namespace scope for this CLI request")
 	rootCmd.PersistentFlags().StringVar(&kubeconfig, "kubeconfig", "", "Path to the kubeconfig file to use for CLI requests")
@@ -71,4 +120,15 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&kind, "kind", "sentinel", "The cluster kind (sentinel|cluster) when using --unmanaged")
 	rootCmd.PersistentFlags().BoolVarP(&allNamespaces, "all-namespaces", "A", false, "If present, list resources across all namespaces")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "If true, output as JSON")
+
+	// Register completions for persistent flags defined here.
+	// Cobra propagates these to all subcommands that inherit the flags.
+	if err := rootCmd.RegisterFlagCompletionFunc("namespace", completeNamespaces); err != nil {
+		panic(err)
+	}
+	if err := rootCmd.RegisterFlagCompletionFunc("kind", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"sentinel", "cluster"}, cobra.ShellCompDirectiveNoFileComp
+	}); err != nil {
+		panic(err)
+	}
 }
