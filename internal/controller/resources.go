@@ -1707,35 +1707,96 @@ func buildClusterStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSe
 
 // buildClusterRedisContainer creates the Redis container for cluster mode
 func buildClusterRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
-	// Startup script that announces pod IP.
+	// Startup script that implements "Kill-9 / Crash Protection" (see ADR-001 amendment):
 	//
-	// nodes.conf is always deleted before starting Redis to guarantee a fresh node ID
-	// on every process start — including in-pod container restarts (kill -9, OOM kill,
-	// Redis crash) where the emptyDir volume survives the container restart.
-	//
-	// Without this deletion, a restarted Redis process would read the surviving
-	// nodes.conf, restore its old node ID and slot assignments, and re-announce itself
-	// as the same cluster member — but with no data (save "" / appendonly no).
-	// The cluster would not trigger failover (restart < cluster-node-timeout), replicas
-	// would perform a FULLRESYNC from the empty master, and all shard data would be
-	// silently lost.
-	//
-	// With deletion, the restarted process gets a fresh node ID and joins as a
-	// stranger. The cluster-node-timeout window elapses, the replica is promoted, and
-	// the operator reconciles the stranger into the shard as a new replica — the same
-	// path as a normal pod deletion. This trades ~cluster-node-timeout of slot
-	// unavailability for guaranteed data safety.
-	//
-	// On normal pod deletion the emptyDir is already gone, so the rm is a no-op there.
+	// 1. Detects if this is a container restart (memory lost, IP same) by checking
+	//    for a surviving nodes.conf.
+	// 2. If it is a restart, it YIELDS startup by polling peers until they confirm
+	//    that a failover has occurred (i.e. this IP is no longer seen as master).
+	//    This prevents the "empty master" from wiping its promoted replicas.
+	// 3. If failover is not confirmed within 60s, it fails intentionally to let
+	//    Kubernetes recycle the Pod and assign a new IP.
+	// 4. Copies the read-only config to /data to allow for CONFIG REWRITE.
+	// 5. Always deletes nodes.conf before starting to ensure a fresh identity.
 	startupScript := `#!/bin/sh
 set -e
+set -x
 
-echo "Starting Redis cluster node ${POD_NAME} with IP: ${POD_IP}"
+# Helper to log with timestamp
+log() {
+  echo "$(date '+%%Y-%%m-%%dT%%H:%%M:%%SZ') [Startup] $1"
+}
 
-# Guarantee a fresh node ID on every process start (see comment in resources.go).
-rm -f /data/nodes.conf
+log "Starting Redis cluster node ${POD_NAME} with IP: ${POD_IP}"
 
-exec redis-server /etc/redis/redis.conf \
+# Create marker file to tell liveness probe we are starting up
+touch /data/bootstrap-in-progress
+
+# STEP 1: Detect if this is a container restart (Dangerous) or a fresh Pod (Safe)
+RESTART_DETECTED=false
+if [ -f /data/nodes.conf ]; then
+  log "Marker nodes.conf found. This is a container restart (memory lost, IP same). Data loss risk is HIGH."
+  RESTART_DETECTED=true
+else
+  log "No nodes.conf found. This is a fresh Pod start or bootstrap. Safe to proceed."
+fi
+
+# STEP 2: Copy config to writable /data to support CONFIG REWRITE
+cp /etc/redis/redis.conf /data/redis.conf
+
+# STEP 3: Yield Loop (Only for restarts)
+if [ "$RESTART_DETECTED" = "true" ]; then
+  log "Safety Check: Verifying failover state on peers..."
+
+  # Configuration from environment
+  AUTH_ARGS=""
+  [ -n "$REDIS_PASSWORD" ] && AUTH_ARGS="-a $REDIS_PASSWORD"
+  PEER_SERVICE="${CLUSTER_NAME}-cluster.${NAMESPACE}.svc"
+
+  # Wait up to 60s for peers to confirm failover
+  for i in $(seq 1 12); do
+    PEER_IPS=$(getent hosts "$PEER_SERVICE" | awk '{print $1}')
+    STILL_MASTER=false
+    PEERS_CONTACTED=0
+
+    for peer in $PEER_IPS; do
+      [ "$peer" = "$POD_IP" ] && continue
+      NODES_INFO=$(redis-cli -h "$peer" -p %d $AUTH_ARGS -t 2 CLUSTER NODES 2>/dev/null || true)
+      if [ -n "$NODES_INFO" ]; then
+        PEERS_CONTACTED=$((PEERS_CONTACTED + 1))
+        if echo "$NODES_INFO" | grep -q "$POD_IP:%d.*master"; then
+          STILL_MASTER=true; break
+        fi
+      fi
+    done
+
+    if [ "$STILL_MASTER" = "false" ] && [ "$PEERS_CONTACTED" -gt 0 ]; then
+      log "Verified: Peers no longer see $POD_IP as master. Safe to start."
+      break
+    fi
+    log "Attempt $i/12: Still seen as master. Waiting for failover..."
+    sleep 5
+  done
+
+  if [ "$STILL_MASTER" = "true" ]; then
+    log "FATAL: Failover timeout. Yielding to Kubernetes liveness probe..."
+    rm -f /data/bootstrap-in-progress
+    while true; do sleep 3600; done
+  fi
+fi
+
+# STEP 4: Guarantee a fresh node ID on every process start
+if [ -f /data/nodes.conf ]; then
+  log "Removing stale nodes.conf"
+  rm -f /data/nodes.conf
+fi
+
+# STEP 5: Start Redis
+log "Final launch..."
+rm -f /data/bootstrap-in-progress
+exec redis-server /data/redis.conf \
+  --cluster-enabled yes \
+  --cluster-config-file /data/nodes.conf \
   --cluster-announce-ip ${POD_IP} \
   --cluster-announce-port %d \
   --cluster-announce-bus-port %d %s
@@ -1746,6 +1807,8 @@ exec redis-server /etc/redis/redis.conf \
 	}
 
 	script := fmt.Sprintf(startupScript,
+		littleredv1alpha1.RedisPort,
+		littleredv1alpha1.RedisPort,
 		littleredv1alpha1.RedisPort,
 		littleredv1alpha1.ClusterBusPort,
 		authArgs)
@@ -1866,6 +1929,22 @@ done`},
 				FieldPath: "metadata.name",
 			},
 		},
+	})
+
+	// Add NAMESPACE env var
+	container.Env = append(container.Env, corev1.EnvVar{
+		Name: "NAMESPACE",
+		ValueFrom: &corev1.EnvVarSource{
+			FieldRef: &corev1.ObjectFieldSelector{
+				FieldPath: "metadata.namespace",
+			},
+		},
+	})
+
+	// Add CLUSTER_NAME env var
+	container.Env = append(container.Env, corev1.EnvVar{
+		Name:  "CLUSTER_NAME",
+		Value: lr.Name,
 	})
 
 	// Add auth env var
