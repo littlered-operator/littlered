@@ -51,5 +51,12 @@ This document tracks significant changes to the LittleRed reconciliation logic. 
 - **Date:** 2026-02-21
 - **Commit:** <current>
 - **Problem:** During failover (leaderless period), the operator would relabel all living pods as 'orphan'. This caused massive K8s churn and triggered new reconciliation loops that could interfere with Sentinel's convergence.
-- **Fix:** Refactored `updateMasterLabel` to be surgical. If no living master is known, the operator only ensures that the 'master' label is removed from whoever held it, leaving other pods untouched. Labels are only fully synchronized once a living master is confirmed by Sentinel.
+- **Fix:** Refactored `updateMasterLabel` to be surgical. If no living master is known, the operator only ensures that the 'master' label is removed from whoever held it, leaving other pods untouched. Once a master is elected, ALL pods are reconciled to their correct labels (Master/Replica).
 - **Impacts:** Cluster stability during failover.
+
+## [LR-007] Sentinel Failover Blocked by Reset (Regression Fix)
+- **Date:** 2026-02-21
+- **Commit:** <current>
+- **Problem:** An earlier attempt to allow ghost-master pruning during leaderless periods caused a regression. If a master died, its IP became a ghost. The operator would then issue `SENTINEL RESET` every 2 seconds. Because `RESET` wipes Sentinel's internal state, it reset the `down-after-milliseconds` timer, preventing failover from ever triggering.
+- **Fix:** Re-instated the hard gate: NO `SENTINEL RESET` (for master or replicas) is allowed if the cluster is leaderless (`RealMasterIP == ""`). The operator must remain passive and allow Sentinel to complete its built-in failure detection and election.
+- **Impacts:** Sentinel failover reliability.

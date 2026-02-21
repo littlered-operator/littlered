@@ -674,17 +674,19 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 	}
 
 	// Rule A: Guardrails
-	// We skip healing if:
+	// We skip ALL healing if:
 	// 1. Any pod is terminating (K8s is already working).
 	// 2. Sentinel reports an active failover (Sentinel is already working).
-	// 3. No living master is known (we must wait for Sentinel to elect one).
-	if anyTerminating || state.FailoverActive || state.RealMasterIP == "" {
-		log.Info("Cluster transition in progress or no living master. Skipping non-essential healing.",
+	if anyTerminating || state.FailoverActive {
+		log.Info("Cluster transition in progress. Skipping healing.",
 			"anyTerminating", anyTerminating,
-			"failoverActive", state.FailoverActive,
-			"realMasterIP", state.RealMasterIP)
+			"failoverActive", state.FailoverActive)
 		return nil
 	}
+
+	// Note: state.RealMasterIP == "" (leaderless) used to be a hard blocker here.
+	// We now allow reconciliation to proceed so that Rule A+ (ghost pruning)
+	// can clear stuck sentinels even during leaderless periods.
 
 	// Ghost pruning: only safe if the master Sentinel reports is a living pod
 	ghostMasterFound := false
@@ -697,13 +699,17 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		// A sentinel still pointing at a ghost master means it lost its failover
 		// notification (e.g. two sentinels raced to lead the failover and the
 		// "winner" superseded the elected leader before it could record the
-		// switch). Rule A above already ensured no pod is Terminating, no
-		// failover is active on any other sentinel, and a living master
-		// consensus exists, so it is safe to RESET this individual sentinel
-		// so it rediscovers the real master via gossip.
-		if state.IsGhost(sn.MasterIP) {
-			auditLog.Info("Sentinel monitoring ghost master after failover completed; issuing targeted RESET to resync via gossip",
-				"pod", sn.PodName, "ghost_master", sn.MasterIP)
+		// switch).
+		//
+		// We RESET this individual sentinel so it rediscovers the real master via gossip.
+		// Safety: We ONLY do this if a living master consensus exists. If the cluster
+		// is currently leaderless (RealMasterIP == ""), we MUST NOT RESET sentinels
+		// that are monitoring ghosts, because they might be correctly timing out
+		// a recently-deceased master. RESETting them would wipe their failure
+		// detection timers and block failover.
+		if state.RealMasterIP != "" && state.IsGhost(sn.MasterIP) {
+			auditLog.Info("Sentinel monitoring ghost master; issuing targeted RESET to resync via gossip",
+				"pod", sn.PodName, "ghost_master", sn.MasterIP, "correct_master", state.RealMasterIP)
 			podAddr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.SentinelPort)
 			podSC := redisclient.NewSentinelClient([]string{podAddr}, password)
 			_ = podSC.Reset(ctx, redisclient.SentinelMasterName)
@@ -712,10 +718,8 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		}
 
 		// A sentinel monitoring a LIVING but WRONG master must also be reset.
-		// This can happen if a sentinel misses a failover event but the IP
-		// it's monitoring still exists (e.g. it was the previous master and is
-		// now a replica).
-		if sn.MasterIP != state.RealMasterIP {
+		// This requires a consensus on the RealMasterIP.
+		if state.RealMasterIP != "" && sn.MasterIP != state.RealMasterIP {
 			auditLog.Info("Sentinel monitoring wrong master IP; issuing targeted RESET to resync via gossip",
 				"pod", sn.PodName, "monitored_master", sn.MasterIP, "correct_master", state.RealMasterIP)
 			podAddr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.SentinelPort)
@@ -731,10 +735,6 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		// it only applies to the master and requires a quorum vote. Requiring
 		// o_down for replicas means the condition is permanently dead.
 		//
-		// The original concern about premature RESET during failover no longer
-		// applies here because we already check IsGhost: a replica with a ghost
-		// IP is one whose pod is truly gone from the cluster (not in ValidIPs),
-		// so it will never come back or participate in Sentinel reconfiguration.
 		// Rule A above ensures we skip this block entirely while any pod is
 		// Terminating or a failover is active, giving Sentinel time to finish
 		// sending REPLICAOF to surviving replicas before we issue RESET.
@@ -752,6 +752,11 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 
 	if ghostMasterFound {
 		// Requeue so the next cycle can verify the sentinels have converged.
+		return nil
+	}
+
+	// If no master is known yet, we can't do any more healing beyond ghost pruning.
+	if state.RealMasterIP == "" {
 		return nil
 	}
 
@@ -878,7 +883,6 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 
 	stateLog := r.getLogger(ctx, littleRed, LogCategoryState)
 	masterPodName, err := r.getMasterPodName(ctx, littleRed, podList)
-	defaultRole := RoleReplica
 	if err != nil {
 		var sErr *SentinelError
 		if errors.As(err, &sErr) {
@@ -889,11 +893,9 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 			case SentinelNoMaster:
 				stateLog.Info("Sentinel confirms no master is currently monitored. Ensuring no pod is labeled as master.")
 				masterPodName = ""
-				defaultRole = "" // Don't force a default role, just ensure no Master
 			case SentinelGhostMaster:
 				stateLog.Info("Sentinel reported a ghost master. Ensuring no pod is labeled as master.", "ghost_ip", sErr.IP)
 				masterPodName = ""
-				defaultRole = "" // Don't force a default role, just ensure no Master
 			}
 		} else {
 			log.Error(err, "Unexpected error identifying master pod, skipping label update")
@@ -915,21 +917,21 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 		expectedRole := currentRole // default: stay as you are
 
 		if masterPodName != "" {
+			// We have a consensus master. Ensure ALL pods have correct labels.
 			if pod.Name == masterPodName {
 				expectedRole = RoleMaster
-			} else if currentRole == RoleMaster {
-				// This pod was master but no longer is
+			} else {
 				expectedRole = RoleReplica
 			}
 		} else {
-			// No master identified by Sentinel.
+			// No master identified by Sentinel (failover in progress).
+			// Be surgical: only strip the Master label if someone has it.
 			if currentRole == RoleMaster {
-				// Strip Master label if someone has it
 				expectedRole = RoleReplica // downgrade to replica while waiting
 			}
 		}
 
-		if currentRole != expectedRole && expectedRole != "" {
+		if currentRole != expectedRole {
 			auditLog.Info("Updating pod role label", "pod", pod.Name, "old_role", currentRole, "new_role", expectedRole)
 			if pod.Labels == nil {
 				pod.Labels = make(map[string]string)
