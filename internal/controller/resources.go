@@ -17,11 +17,13 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
+	"text/template"
 
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -599,17 +601,28 @@ func buildSentinelLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 		failureThreshold = 3
 	}
 
-	script := fmt.Sprintf(
+	tmpl := template.Must(template.New("sentinel-liveness").Delims("[[", "]]").Parse(
 		`if [ -f /data/bootstrap-in-progress ]; then exit 0; fi
 AUTH=""; [ -n "$REDIS_PASSWORD" ] && AUTH="-a $REDIS_PASSWORD"
-info=$(redis-cli -h 127.0.0.1 $AUTH%s -t 2 info replication 2>/dev/null) || exit 1
+info=$(redis-cli -h 127.0.0.1 $AUTH[[.TLSFlags]] -t 2 info replication 2>/dev/null) || exit 1
 echo "$info" | grep -q "^role:master" && exit 0
 echo "$info" | grep -q "^master_link_status:up" && exit 0
 master_host=$(echo "$info" | grep "^master_host:" | cut -d: -f2 | tr -d "\r ")
 [ -z "$master_host" ] && exit 1
-redis-cli -h "$master_host" -p %d $AUTH%s -t 2 ping >/dev/null 2>&1 && exit 0
-exit 1`,
-		tlsFlags, littleredv1alpha1.RedisPort, tlsFlags)
+redis-cli -h "$master_host" -p [[.RedisPort]] $AUTH[[.TLSFlags]] -t 2 ping >/dev/null 2>&1 && exit 0
+exit 1`))
+	var buf bytes.Buffer
+	err := tmpl.Execute(&buf, struct {
+		TLSFlags  string
+		RedisPort int
+	}{
+		TLSFlags:  tlsFlags,
+		RedisPort: littleredv1alpha1.RedisPort,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("failed to execute sentinel liveness template: %v", err))
+	}
+	script := buf.String()
 
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
@@ -635,14 +648,23 @@ func buildSentinelReadinessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe 
 		tlsFlags = " --tls --insecure"
 	}
 
-	script := fmt.Sprintf(
+	tmpl := template.Must(template.New("sentinel-readiness").Delims("[[", "]]").Parse(
 		`if [ -f /data/bootstrap-in-progress ]; then exit 1; fi
 AUTH=""; [ -n "$REDIS_PASSWORD" ] && AUTH="-a $REDIS_PASSWORD"
-info=$(redis-cli -h 127.0.0.1 $AUTH%s -t 2 info replication 2>/dev/null) || exit 1
+info=$(redis-cli -h 127.0.0.1 $AUTH[[.TLSFlags]] -t 2 info replication 2>/dev/null) || exit 1
 echo "$info" | grep -q "^role:master" && exit 0
 echo "$info" | grep -q "^master_link_status:up" && exit 0
-exit 1`,
-		tlsFlags)
+exit 1`))
+	var buf bytes.Buffer
+	err := tmpl.Execute(&buf, struct {
+		TLSFlags string
+	}{
+		TLSFlags: tlsFlags,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("failed to execute sentinel readiness template: %v", err))
+	}
+	script := buf.String()
 
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
@@ -965,13 +987,13 @@ func buildRedisContainerSentinel(lr *littleredv1alpha1.LittleRed) corev1.Contain
 	// Script to configure replication strictly based on Sentinel state.
 	// This is "Operator-Authorized" startup: no pod assumes mastership
 	// unless Sentinel (configured by the Operator) says so.
-	script := fmt.Sprintf(`#!/bin/sh
+	script := `#!/bin/sh
 set -e
 set -x
 
 # Helper to log with timestamp
 log() {
-  echo "$(date '+%%Y-%%m-%%d %%H:%%M:%%S') [Startup] $1"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') [Startup] $1"
 }
 
 # Create marker file to tell liveness probe we are starting up
@@ -980,7 +1002,7 @@ touch /data/bootstrap-in-progress
 cp /etc/redis/redis.conf /data/redis.conf
 
 HOSTNAME=$(hostname)
-SENTINEL_SVC="%s-sentinel.%s.svc"
+SENTINEL_SVC="[[.Name]]-sentinel.[[.Namespace]].svc"
 
 log "Starting Redis node $HOSTNAME. Waiting for Sentinel authorization..."
 
@@ -1078,14 +1100,85 @@ while true; do
 
   log "Sentinel has no master info. Waiting..."
   sleep 2
-done
-`, lr.Name, lr.Namespace)
+done`
+	tmpl := template.Must(template.New("sentinel-startup").Delims("[[", "]]").Parse(script))
+	var buf bytes.Buffer
+	err := tmpl.Execute(&buf, struct {
+		Name      string
+		Namespace string
+	}{
+		Name:      lr.Name,
+		Namespace: lr.Namespace,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("failed to execute sentinel startup template: %v", err))
+	}
+	finalScript := buf.String()
+
+	preStopTmpl := template.Must(template.New("sentinel-prestop").Delims("[[", "]]").Parse(`
+# Redirect all output from this point forward
+exec >/proc/1/fd/1 2>&1
+
+export PS4='preStop + '
+set -x
+
+echo "preStop hook starting at $(date), PID $$"
+
+ROLE=$(redis-cli info replication | grep role | cut -d: -f2 | tr -d '\r')
+if [ "$ROLE" = "master" ]; then
+  echo "I am the master. Proactively failing over..."
+  AUTH_ARGS=""
+  if [ -n "$REDIS_PASSWORD" ]; then
+    AUTH_ARGS="-a $REDIS_PASSWORD"
+  fi
+  SENTINEL_SVC="[[.Name]]-sentinel.[[.Namespace]].svc"
+  # Wait until Sentinel has discovered all expected replicas before forcing a
+  # failover. If the master was just restarted, Sentinel may not yet know about
+  # replicas that connected within the last polling cycle (~1 s). Triggering
+  # SENTINEL FAILOVER too early means those replicas miss the REPLICAOF
+  # reconfiguration step and get stuck pointing at the dead master IP.
+  EXPECTED_SLAVES=2
+  for i in $(seq 1 10); do
+    SLAVE_COUNT=$(redis-cli --raw -h $SENTINEL_SVC -p 26379 $AUTH_ARGS SENTINEL SLAVES mymaster 2>/dev/null | grep -c "^name$" || echo 0)
+    if [ "$SLAVE_COUNT" -ge "$EXPECTED_SLAVES" ]; then
+      echo "Sentinel knows $SLAVE_COUNT/$EXPECTED_SLAVES replicas. Proceeding with failover."
+      break
+    fi
+    echo "Waiting for Sentinel to discover replicas ($SLAVE_COUNT/$EXPECTED_SLAVES)..."
+    sleep 1
+  done
+  # Pause writes for 30s to ensure a clean handover
+  redis-cli $AUTH_ARGS CLIENT PAUSE 30000 WRITE || true
+  # Trigger failover
+  redis-cli -h $SENTINEL_SVC -p 26379 $AUTH_ARGS SENTINEL failover mymaster || true
+  # Wait for Sentinel to acknowledge the new master
+  for i in $(seq 1 10); do
+    MASTER_IP=$(redis-cli -h $SENTINEL_SVC -p 26379 $AUTH_ARGS -t 2 --raw sentinel get-master-addr-by-name mymaster | head -n 1 || true)
+    if [ -n "$MASTER_IP" ] && [ "$MASTER_IP" != "$POD_IP" ]; then
+       echo "Failover confirmed. New master: $MASTER_IP"
+       exit 0
+    fi
+    sleep 1
+  done
+fi`))
+	var preStopBuf bytes.Buffer
+	err = preStopTmpl.Execute(&preStopBuf, struct {
+		Name      string
+		Namespace string
+	}{
+		Name:      lr.Name,
+		Namespace: lr.Namespace,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("failed to execute sentinel prestop template: %v", err))
+	}
+	preStopScript := preStopBuf.String()
 
 	container := corev1.Container{
 		Name:            "redis",
 		Image:           lr.Spec.Image.FullImage(),
 		ImagePullPolicy: lr.Spec.Image.PullPolicy,
-		Command:         []string{"sh", "-c", script},
+		Command:         []string{"sh", "-c", finalScript},
 		Ports: []corev1.ContainerPort{
 			{
 				Name:          "redis",
@@ -1136,52 +1229,7 @@ done
 		Lifecycle: &corev1.Lifecycle{
 			PreStop: &corev1.LifecycleHandler{
 				Exec: &corev1.ExecAction{
-					Command: []string{"sh", "-c", fmt.Sprintf(`
-# Redirect all output from this point forward
-exec >/proc/1/fd/1 2>&1
-
-export PS4='preStop + '
-set -x
-
-echo "preStop hook starting at $(date), PID $$"
-
-ROLE=$(redis-cli info replication | grep role | cut -d: -f2 | tr -d '\r')
-if [ "$ROLE" = "master" ]; then
-  echo "I am the master. Proactively failing over..."
-  AUTH_ARGS=""
-  if [ -n "$REDIS_PASSWORD" ]; then
-    AUTH_ARGS="-a $REDIS_PASSWORD"
-  fi
-  SENTINEL_SVC="%s-sentinel.%s.svc"
-  # Wait until Sentinel has discovered all expected replicas before forcing a
-  # failover. If the master was just restarted, Sentinel may not yet know about
-  # replicas that connected within the last polling cycle (~1 s). Triggering
-  # SENTINEL FAILOVER too early means those replicas miss the REPLICAOF
-  # reconfiguration step and get stuck pointing at the dead master IP.
-  EXPECTED_SLAVES=2
-  for i in $(seq 1 10); do
-    SLAVE_COUNT=$(redis-cli --raw -h $SENTINEL_SVC -p 26379 $AUTH_ARGS SENTINEL SLAVES mymaster 2>/dev/null | grep -c "^name$" || echo 0)
-    if [ "$SLAVE_COUNT" -ge "$EXPECTED_SLAVES" ]; then
-      echo "Sentinel knows $SLAVE_COUNT/$EXPECTED_SLAVES replicas. Proceeding with failover."
-      break
-    fi
-    echo "Waiting for Sentinel to discover replicas ($SLAVE_COUNT/$EXPECTED_SLAVES)..."
-    sleep 1
-  done
-  # Pause writes for 30s to ensure a clean handover
-  redis-cli $AUTH_ARGS CLIENT PAUSE 30000 WRITE || true
-  # Trigger failover
-  redis-cli -h $SENTINEL_SVC -p 26379 $AUTH_ARGS SENTINEL failover mymaster || true
-  # Wait for Sentinel to acknowledge the new master
-  for i in $(seq 1 10); do
-    MASTER_IP=$(redis-cli -h $SENTINEL_SVC -p 26379 $AUTH_ARGS -t 2 --raw sentinel get-master-addr-by-name mymaster | head -n 1 || true)
-    if [ -n "$MASTER_IP" ] && [ "$MASTER_IP" != "$POD_IP" ]; then
-       echo "Failover confirmed. New master: $MASTER_IP"
-       exit 0
-    fi
-    sleep 1
-  done
-fi`, lr.Name, lr.Namespace)},
+					Command: []string{"sh", "-c", preStopScript},
 				},
 			},
 		},
@@ -1307,14 +1355,14 @@ func buildSentinelContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 		sentinel = &littleredv1alpha1.SentinelSpec{}
 	}
 
-	// Use shell variables directly to avoid fmt.Sprintf placeholder hell
-	script := `#!/bin/sh
+	// Use text/template for consistency across all startup scripts
+	scriptTmpl := template.Must(template.New("sentinel-startup").Delims("[[", "]]").Parse(`#!/bin/sh
 set -e
 set -x
 
 # Helper to log with timestamp
 log() {
-  echo "$(date '+%%Y-%%m-%%d %%H:%%M:%%S') [Startup] $1"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') [Startup] $1"
 }
 
 cp /etc/sentinel/sentinel.conf /data/sentinel.conf
@@ -1326,7 +1374,13 @@ fi
 
 log "Starting Sentinel node with IP ${POD_IP}..."
 exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_ARGS
-`
+`))
+	var buf bytes.Buffer
+	err := scriptTmpl.Execute(&buf, struct{}{})
+	if err != nil {
+		panic(fmt.Sprintf("failed to execute sentinel container template: %v", err))
+	}
+	script := buf.String()
 
 	container := corev1.Container{
 		Name:            "sentinel",
@@ -1724,7 +1778,7 @@ set -e
 
 # Helper to log with timestamp
 log() {
-  echo "$(date '+%%Y-%%m-%%dT%%H:%%M:%%SZ') [Startup] $1"
+  echo "$(date '+%Y-%m-%dT%H:%M:%SZ') [Startup] $1"
 }
 
 log "Starting Redis cluster node ${POD_NAME} with IP: ${POD_IP}"
@@ -1751,7 +1805,7 @@ if [ "$RESTART_DETECTED" = "true" ]; then
   # Configuration from environment
   AUTH_ARGS=""
   [ -n "$REDIS_PASSWORD" ] && AUTH_ARGS="-a $REDIS_PASSWORD"
-  PEER_SERVICE="%s-cluster.%s.svc"
+  PEER_SERVICE="[[.Name]]-cluster.[[.Namespace]].svc"
 
   # Wait up to 60s for peers to confirm failover
   for i in $(seq 1 12); do
@@ -1763,12 +1817,12 @@ if [ "$RESTART_DETECTED" = "true" ]; then
 
     for peer in $PEER_IPS; do
       [ "$peer" = "$POD_IP" ] && continue
-      NODES_INFO=$(redis-cli -h "$peer" -p %d $AUTH_ARGS -t 2 CLUSTER NODES 2>/dev/null || true)
+      NODES_INFO=$(redis-cli -h "$peer" -p [[.RedisPort]] $AUTH_ARGS -t 2 CLUSTER NODES 2>/dev/null || true)
       if [ -n "$NODES_INFO" ]; then
         PEERS_CONTACTED=$((PEERS_CONTACTED + 1))
 
         # Identify myself in the peer's view
-        MY_LINE=$(echo "$NODES_INFO" | grep "$POD_IP:%d")
+        MY_LINE=$(echo "$NODES_INFO" | grep "$POD_IP:[[.RedisPort]]")
         if [ -n "$MY_LINE" ]; then
            MY_NODE_ID=$(echo "$MY_LINE" | awk '{print $1}')
            IS_MASTER=$(echo "$MY_LINE" | awk '{print $3}' | grep -q "master" && echo "true" || echo "false")
@@ -1783,7 +1837,7 @@ if [ "$RESTART_DETECTED" = "true" ]; then
                 MY_REPLICA_IP=$(echo "$NODES_INFO" | grep "slave $MY_NODE_ID" | grep -v "fail" | head -n 1 | awk '{print $2}' | cut -d: -f1 | cut -d@ -f1)
                 if [ -n "$MY_REPLICA_IP" ]; then
                    log "Deadlock detected! Forcing replica $MY_REPLICA_IP to TAKEOVER slots for dead node $MY_NODE_ID..."
-                   redis-cli -h "$MY_REPLICA_IP" -p %d $AUTH_ARGS -t 2 CLUSTER FAILOVER TAKEOVER || true
+                   redis-cli -h "$MY_REPLICA_IP" -p [[.RedisPort]] $AUTH_ARGS -t 2 CLUSTER FAILOVER TAKEOVER || true
                 fi
              fi
              break
@@ -1807,7 +1861,7 @@ if [ "$RESTART_DETECTED" = "true" ]; then
 fi
 
 # STEP 4: Guarantee a fresh node ID on every process start
-if [ -f /data/nodes.conf ]; then
+if [ "$RESTART_DETECTED" = "true" ]; then
   log "Removing stale nodes.conf"
   rm -f /data/nodes.conf
 fi
@@ -1819,56 +1873,31 @@ exec redis-server /data/redis.conf \
   --cluster-enabled yes \
   --cluster-config-file /data/nodes.conf \
   --cluster-announce-ip ${POD_IP} \
-  --cluster-announce-port %d \
-  --cluster-announce-bus-port %d \
+  --cluster-announce-port [[.RedisPort]] \
+  --cluster-announce-bus-port [[.ClusterBusPort]] \
   --requirepass "${REDIS_PASSWORD}" \
   --masterauth "${REDIS_PASSWORD}"
 `
-	script := fmt.Sprintf(startupScript,
-		lr.Name,
-		lr.Namespace,
-		littleredv1alpha1.RedisPort,
-		littleredv1alpha1.RedisPort,
-		littleredv1alpha1.RedisPort,
-		littleredv1alpha1.RedisPort,
-		littleredv1alpha1.RedisPort,
-		littleredv1alpha1.ClusterBusPort)
+	tmpl := template.Must(template.New("startup").Delims("[[", "]]").Parse(startupScript))
+	var buf bytes.Buffer
+	err := tmpl.Execute(&buf, struct {
+		Name           string
+		Namespace      string
+		RedisPort      int
+		ClusterBusPort int
+	}{
+		Name:           lr.Name,
+		Namespace:      lr.Namespace,
+		RedisPort:      littleredv1alpha1.RedisPort,
+		ClusterBusPort: littleredv1alpha1.ClusterBusPort,
+	})
+	if err != nil {
+		// This should never happen with Must() and valid data
+		panic(fmt.Sprintf("failed to execute cluster startup template: %v", err))
+	}
+	script := buf.String()
 
-	container := corev1.Container{
-		Name:            "redis",
-		Image:           lr.Spec.Image.FullImage(),
-		ImagePullPolicy: lr.Spec.Image.PullPolicy,
-		Command:         []string{"sh", "-c", script},
-		Ports: []corev1.ContainerPort{
-			{
-				Name:          "redis",
-				ContainerPort: int32(littleredv1alpha1.RedisPort),
-				Protocol:      corev1.ProtocolTCP,
-			},
-			{
-				Name:          "cluster-bus",
-				ContainerPort: int32(littleredv1alpha1.ClusterBusPort),
-				Protocol:      corev1.ProtocolTCP,
-			},
-		},
-		Resources: lr.Spec.Resources,
-		VolumeMounts: []corev1.VolumeMount{
-			{
-				Name:      "config",
-				MountPath: "/etc/redis",
-				ReadOnly:  true,
-			},
-			{
-				Name:      "data",
-				MountPath: "/data",
-			},
-		},
-		LivenessProbe:  buildClusterLivenessProbe(lr),
-		ReadinessProbe: buildClusterReadinessProbe(lr),
-		Lifecycle: &corev1.Lifecycle{
-			PreStop: &corev1.LifecycleHandler{
-				Exec: &corev1.ExecAction{
-					Command: []string{"sh", "-c", `
+	preStopTmpl := template.Must(template.New("cluster-prestop").Delims("[[", "]]").Parse(`
 # Redirect all output from this point forward
 exec >/proc/1/fd/1 2>&1
 
@@ -1910,7 +1939,49 @@ for i in $(seq 1 10); do
     exit 0
   fi
   sleep 1
-done`},
+done`))
+	var preStopBuf bytes.Buffer
+	err = preStopTmpl.Execute(&preStopBuf, struct{}{})
+	if err != nil {
+		panic(fmt.Sprintf("failed to execute cluster prestop template: %v", err))
+	}
+	preStopScript := preStopBuf.String()
+
+	container := corev1.Container{
+		Name:            "redis",
+		Image:           lr.Spec.Image.FullImage(),
+		ImagePullPolicy: lr.Spec.Image.PullPolicy,
+		Command:         []string{"sh", "-c", script},
+		Ports: []corev1.ContainerPort{
+			{
+				Name:          "redis",
+				ContainerPort: int32(littleredv1alpha1.RedisPort),
+				Protocol:      corev1.ProtocolTCP,
+			},
+			{
+				Name:          "cluster-bus",
+				ContainerPort: int32(littleredv1alpha1.ClusterBusPort),
+				Protocol:      corev1.ProtocolTCP,
+			},
+		},
+		Resources: lr.Spec.Resources,
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      "config",
+				MountPath: "/etc/redis",
+				ReadOnly:  true,
+			},
+			{
+				Name:      "data",
+				MountPath: "/data",
+			},
+		},
+		LivenessProbe:  buildClusterLivenessProbe(lr),
+		ReadinessProbe: buildClusterReadinessProbe(lr),
+		Lifecycle: &corev1.Lifecycle{
+			PreStop: &corev1.LifecycleHandler{
+				Exec: &corev1.ExecAction{
+					Command: []string{"sh", "-c", preStopScript},
 				},
 			},
 		},
