@@ -24,7 +24,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/event"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 	"github.com/littlered-operator/littlered-operator/internal/redis"
@@ -32,7 +31,7 @@ import (
 
 // ensureSentinelMonitor ensures that a background monitor is running for the given LittleRed instance
 func (r *LittleRedReconciler) ensureSentinelMonitor(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) {
-	log := logf.FromContext(ctx)
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 	nn := types.NamespacedName{Name: littleRed.Name, Namespace: littleRed.Namespace}
 
 	if littleRed.Annotations[AnnotationDisableEventMonitoring] == "true" {
@@ -72,7 +71,8 @@ func (r *LittleRedReconciler) stopSentinelMonitor(nn types.NamespacedName) {
 
 // monitorSentinel runs the main loop for monitoring Sentinel events
 func (r *LittleRedReconciler) monitorSentinel(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) {
-	log := logf.Log.WithName("sentinel-monitor").WithValues("littlered", littleRed.Name, "namespace", littleRed.Namespace)
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
+	stateLog := r.getLogger(ctx, littleRed, LogCategoryState)
 
 	// Get password if auth is enabled
 	password := ""
@@ -130,7 +130,7 @@ func (r *LittleRedReconciler) monitorSentinel(ctx context.Context, littleRed *li
 
 			// Process messages
 			for msg := range msgChan {
-				log.Info("Received Sentinel event", "channel", msg.Channel, "payload", msg.Payload)
+				stateLog.Info("Received Sentinel event", "channel", msg.Channel, "payload", msg.Payload)
 
 				// Trigger reconciliation
 				log.Info("Triggering reconciliation via Sentinel event")

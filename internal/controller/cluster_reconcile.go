@@ -30,7 +30,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 	redisclient "github.com/littlered-operator/littlered-operator/internal/redis"
@@ -38,7 +37,7 @@ import (
 
 // reconcileCluster reconciles cluster mode
 func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 	log.Info("Reconciling cluster mode")
 
 	// Set initial phase
@@ -101,7 +100,7 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 
 	// If cluster is not fully healthy or has topology issues, run repair loop
 	if !isHealthy || gt.HasPartitions() || gt.HasGhostNodes() || gt.HasOrphanedSlots() || gt.HasEmptyMasters() {
-		log.Info("Cluster not healthy or topology issues detected, running repair",
+		r.getLogger(ctx, littleRed, LogCategoryState).Info("Cluster not healthy or topology issues detected, running repair",
 			"partitions", len(gt.Partitions),
 			"ghosts", len(gt.GhostNodes),
 			"orphanedSlots", gt.HasOrphanedSlots(),
@@ -117,11 +116,14 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 
 // repairCluster handles healing: partitions, ghost nodes, slot restoration, and replication topology
 func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, gt *redisclient.ClusterGroundTruth) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 	fast, _ := littleRed.GetRequeueIntervals()
 
 	password := r.getRedisPassword(ctx, littleRed)
 	clusterClient := redisclient.NewClusterClient(password)
+
+	stateLog := r.getLogger(ctx, littleRed, LogCategoryState)
+	auditLog := r.getLogger(ctx, littleRed, LogCategoryAudit)
 
 	// 0. Quorum Recovery (High Priority)
 	// If we have lost quorum (majority of masters), the cluster cannot heal itself.
@@ -131,7 +133,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 
 	// Quorum is lost if available voting masters are <= shards / 2
 	if votingMasters <= shards/2 {
-		log.Info("Quorum loss detected", "votingMasters", votingMasters, "targetShards", shards)
+		stateLog.Info("Quorum loss detected", "votingMasters", votingMasters, "targetShards", shards)
 
 		// Build set of live node IDs for fast lookup
 		liveNodes := make(map[string]bool)
@@ -147,13 +149,13 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 					continue
 				}
 
-				log.Info("Promoting orphan replica during quorum loss",
+				auditLog.Info("Promoting orphan replica during quorum loss",
 					"pod", node.PodName,
 					"missingMaster", node.MasterNodeID)
 
 				addr := fmt.Sprintf("%s:%d", node.PodIP, littleredv1alpha1.RedisPort)
 				if err := clusterClient.ClusterFailoverTakeover(ctx, addr); err != nil {
-					log.Error(err, "Failed to force takeover", "pod", node.PodName)
+					auditLog.Error(err, "Failed to force takeover", "pod", node.PodName)
 				} else {
 					promotedCount++
 				}
@@ -161,7 +163,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		}
 
 		if promotedCount > 0 {
-			log.Info("Promoted replicas to restore quorum", "count", promotedCount)
+			auditLog.Info("Promoted replicas to restore quorum", "count", promotedCount)
 			// Wait for cluster state to settle
 			return ctrl.Result{RequeueAfter: fast}, nil
 		}
@@ -228,11 +230,11 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 			age := now.Time.Sub(orphanInfo.DetectedAt.Time)
 			if age >= orphanTimeout {
 				// Timeout exceeded — force-promote
-				log.Info("Force-promoting stuck orphan replica",
+				auditLog.Info("Force-promoting stuck orphan replica",
 					"pod", node.PodName, "orphanAge", age, "timeout", orphanTimeout)
 				addr := fmt.Sprintf("%s:%d", node.PodIP, littleredv1alpha1.RedisPort)
 				if err := clusterClient.ClusterFailoverTakeover(ctx, addr); err != nil {
-					log.Error(err, "Failed to force takeover", "pod", node.PodName)
+					auditLog.Error(err, "Failed to force takeover", "pod", node.PodName)
 				} else {
 					promotedCount++
 				}
@@ -265,7 +267,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 			return ctrl.Result{RequeueAfter: fast}, nil
 		}
 
-		log.Info("Healing partitions", "count", len(gt.Partitions))
+		auditLog.Info("Healing partitions", "count", len(gt.Partitions))
 		seedNode := gt.GetLargestPartitionSeed()
 		if seedNode != nil {
 			seedAddr := fmt.Sprintf("%s:%d", seedNode.PodIP, littleredv1alpha1.RedisPort)
@@ -277,7 +279,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 				if targetIP == "" {
 					continue
 				}
-				log.Info("Meeting node", "seed", seedAddr, "target", targetIP)
+				auditLog.Info("Meeting node", "seed", seedAddr, "target", targetIP)
 				_ = clusterClient.ClusterMeet(ctx, seedAddr, targetIP, littleredv1alpha1.RedisPort)
 			}
 		}
@@ -298,16 +300,16 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		ghostsToRemove := make([]string, 0)
 		for _, ghostID := range gt.GhostNodes {
 			if protectedMasters[ghostID] {
-				log.Info("Skipping removal of ghost node because it is still a master of a live replica", "ghost", ghostID)
+				stateLog.Info("Skipping removal of ghost node because it is still a master of a live replica", "ghost", ghostID)
 				continue
 			}
 			ghostsToRemove = append(ghostsToRemove, ghostID)
 		}
 
 		if len(ghostsToRemove) > 0 {
-			log.Info("Removing ghost nodes", "count", len(ghostsToRemove))
+			stateLog.Info("Removing ghost nodes", "count", len(ghostsToRemove))
 			for _, ghostID := range ghostsToRemove {
-				log.Info("Forgetting ghost node", "id", ghostID)
+				auditLog.Info("Forgetting ghost node", "id", ghostID)
 				for _, node := range gt.Nodes {
 					addr := fmt.Sprintf("%s:%d", node.PodIP, littleredv1alpha1.RedisPort)
 					if err := clusterClient.ClusterForget(ctx, addr, ghostID); err != nil {
@@ -331,7 +333,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		for _, slotStr := range node.Slots {
 			start, end, err := redisclient.ParseSlotRange(slotStr)
 			if err != nil {
-				log.Error(err, "Failed to parse slot range", "node", node.PodName, "range", slotStr)
+				stateLog.Error(err, "Failed to parse slot range", "node", node.PodName, "range", slotStr)
 				continue
 			}
 
@@ -347,7 +349,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 			if matchedShardIdx == -1 {
 				// Mismatch! Found a slot range that doesn't align with our shard definition.
 				// This implies fragmentation or external manipulation.
-				log.Error(nil, "Cluster slot topology mismatch detected. Found fragmented or non-aligned slot range. Refusing to reconcile to avoid data loss.",
+				stateLog.Error(nil, "Cluster slot topology mismatch detected. Found fragmented or non-aligned slot range. Refusing to reconcile to avoid data loss.",
 					"node", node.PodName,
 					"foundRange", fmt.Sprintf("%d-%d", start, end),
 					"expectedShards", shards)
@@ -368,7 +370,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 	}
 
 	if len(missingShardIndices) > 0 {
-		log.Info("Detected missing shards", "count", len(missingShardIndices), "indices", missingShardIndices)
+		stateLog.Info("Detected missing shards", "count", len(missingShardIndices), "indices", missingShardIndices)
 
 		// Find the intended master for each missing shard (strict: pod N owns shard N).
 		// Never assign a shard to a different master — that causes split-ownership
@@ -394,14 +396,14 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 			targetRange := expectedRanges[shardIdx]
 			addr := fmt.Sprintf("%s:%d", targetNode.PodIP, littleredv1alpha1.RedisPort)
 
-			log.Info("Assigning missing shard to master",
+			auditLog.Info("Assigning missing shard to master",
 				"shardIdx", shardIdx,
 				"range", fmt.Sprintf("%d-%d", targetRange.Start, targetRange.End),
 				"target", targetNode.PodName)
 
 			slots, _ := redisclient.ExpandSlotRange(redisclient.FormatSlotRange(targetRange.Start, targetRange.End))
 			if err := clusterClient.ClusterAddSlots(ctx, addr, slots...); err != nil {
-				log.Error(err, "Failed to assign shard", "shardIdx", shardIdx)
+				auditLog.Error(err, "Failed to assign shard", "shardIdx", shardIdx)
 			} else {
 				ops++
 			}
@@ -423,7 +425,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		shardsWithReplicas := gt.GetMastersWithReplicas()
 
 		if len(emptyMasters) > 0 {
-			log.Info("Detected masters with no slots in replication mode, attempting to assign as replicas")
+			stateLog.Info("Detected masters with no slots in replication mode, attempting to assign as replicas")
 
 			expectedReplicas := 1
 			if littleRed.Spec.Cluster.ReplicasPerShard != nil {
@@ -442,10 +444,10 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 				}
 
 				if targetMaster != nil {
-					log.Info("Assigning empty master as replica", "pod", em.PodName, "masterNodeID", targetMaster.NodeID)
+					auditLog.Info("Assigning empty master as replica", "pod", em.PodName, "masterNodeID", targetMaster.NodeID)
 					addr := fmt.Sprintf("%s:%d", em.PodIP, littleredv1alpha1.RedisPort)
 					if err := clusterClient.ClusterReplicate(ctx, addr, targetMaster.NodeID); err != nil {
-						log.Error(err, "Failed to replicate", "pod", em.PodName)
+						auditLog.Error(err, "Failed to replicate", "pod", em.PodName)
 					} else {
 						return ctrl.Result{RequeueAfter: fast}, nil
 					}
@@ -469,7 +471,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 			return r.bootstrapCluster(ctx, littleRed)
 		}
 
-		log.Info("Cluster has 0 slots but contains replicas. Refusing to bootstrap to avoid data loss.", "replicas_detected", true)
+		stateLog.Info("Cluster has 0 slots but contains replicas. Refusing to bootstrap to avoid data loss.", "replicas_detected", true)
 		// Fall through to update status (will likely show as unhealthy/initializing)
 	}
 
@@ -497,8 +499,9 @@ func (r *LittleRedReconciler) gatherGroundTruth(ctx context.Context, littleRed *
 
 // bootstrapCluster initializes a new Redis Cluster
 func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-	log.Info("Bootstrapping/Healing cluster")
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
+	auditLog := r.getLogger(ctx, littleRed, LogCategoryAudit)
+	auditLog.Info("Bootstrapping/Healing cluster")
 
 	cluster := littleRed.Spec.Cluster
 	if cluster == nil {
@@ -528,7 +531,7 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 		addr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
 		id, err := clusterClient.GetMyID(ctx, addr)
 		if err != nil {
-			log.Error(err, "Failed to get Node ID", "pod", podName)
+			auditLog.Error(err, "Failed to get Node ID", "pod", podName)
 			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 		nodeIDs[i] = id
@@ -537,9 +540,9 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 	// 1. CLUSTER MEET: Everyone meets Node 0
 	seedAddr := fmt.Sprintf("%s:%d", podIPs[0], littleredv1alpha1.RedisPort)
 	for i := 1; i < totalNodes; i++ {
-		log.Info("Meeting node", "node", i, "target", 0)
+		auditLog.Info("Meeting node", "node", i, "target", 0)
 		if err := clusterClient.ClusterMeet(ctx, seedAddr, podIPs[i], littleredv1alpha1.RedisPort); err != nil {
-			log.Error(err, "Failed to meet node", "node", i)
+			auditLog.Error(err, "Failed to meet node", "node", i)
 		}
 	}
 
@@ -548,7 +551,7 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 
 	// 2. Assign Slots to Masters
 	if littleRed.Annotations[AnnotationDebugSkipSlotAssignment] == "true" {
-		log.Info("DEBUG: Skipping slot assignment due to annotation")
+		auditLog.Info("DEBUG: Skipping slot assignment due to annotation")
 	} else {
 		slotRanges := redisclient.GenerateSlotRanges(cluster.Shards)
 
@@ -570,10 +573,10 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 				}
 			}
 
-			log.Info("Assigning slots to master", "node", i, "slots", fmt.Sprintf("%d-%d", slotRanges[i].Start, slotRanges[i].End))
+			auditLog.Info("Assigning slots to master", "node", i, "slots", fmt.Sprintf("%d-%d", slotRanges[i].Start, slotRanges[i].End))
 			slots, _ := redisclient.ExpandSlotRange(redisclient.FormatSlotRange(slotRanges[i].Start, slotRanges[i].End))
 			if err := clusterClient.ClusterAddSlots(ctx, masterAddr, slots...); err != nil {
-				log.Error(err, "Failed to add slots", "node", i)
+				auditLog.Error(err, "Failed to add slots", "node", i)
 			}
 		}
 	}
@@ -597,9 +600,9 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 		}
 
 		if !alreadyCorrect {
-			log.Info("Assigning replica to master", "replicaNode", i, "masterNode", masterIndex)
+			auditLog.Info("Assigning replica to master", "replicaNode", i, "masterNode", masterIndex)
 			if err := clusterClient.ClusterReplicate(ctx, replicaAddr, masterID); err != nil {
-				log.Error(err, "Failed to replicate", "replica", i, "master", masterIndex)
+				auditLog.Error(err, "Failed to replicate", "replica", i, "master", masterIndex)
 			}
 		}
 	}
@@ -609,7 +612,7 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 
 // updateClusterStatus updates the LittleRed status for cluster mode
 func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 	oldStatus := littleRed.Status.DeepCopy()
 	// Get StatefulSet status
 	sts := &appsv1.StatefulSet{}

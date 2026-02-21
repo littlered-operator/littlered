@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -49,6 +50,13 @@ import (
 const (
 	finalizerName = "chuck-chuck-chuck.net/finalizer"
 	fieldManager  = "littlered-operator"
+)
+
+// Logging categories
+const (
+	LogCategoryRecon = "recon" // Steady-state reconciliation
+	LogCategoryState = "state" // Observations about cluster state
+	LogCategoryAudit = "audit" // Cluster interference actions
 )
 
 type SentinelErrorCode int
@@ -96,18 +104,18 @@ type LittleRedReconciler struct {
 
 // Reconcile is the main reconciliation loop
 func (r *LittleRedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
 	// Fetch the LittleRed instance
 	littleRed := &littleredv1alpha1.LittleRed{}
 	if err := r.Get(ctx, req.NamespacedName, littleRed); err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Info("LittleRed resource not found, ignoring")
+			logf.FromContext(ctx).Info("LittleRed resource not found, ignoring", "category", LogCategoryRecon)
 			return ctrl.Result{}, nil
 		}
-		log.Error(err, "Failed to get LittleRed")
+		logf.FromContext(ctx).Error(err, "Failed to get LittleRed", "category", LogCategoryRecon)
 		return ctrl.Result{}, err
 	}
+
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 
 	// Apply defaults
 	littleRed.SetDefaults()
@@ -180,9 +188,22 @@ func (r *LittleRedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 }
 
+// getLogger returns a logger with standard fields and stripped redundancies
+func (r *LittleRedReconciler) getLogger(ctx context.Context, lr *littleredv1alpha1.LittleRed, category string) logr.Logger {
+	log := logf.FromContext(ctx).
+		WithValues(
+			"category", category,
+		)
+
+	// Note: name and namespace are already included in context by controller-runtime
+	// as top-level fields. We add 'category' to enable filtering.
+
+	return log
+}
+
 // reconcileDelete handles cleanup when the resource is deleted
 func (r *LittleRedReconciler) reconcileDelete(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 	log.Info("Reconciling delete")
 
 	// Update phase
@@ -287,7 +308,7 @@ func (r *LittleRedReconciler) validateSpec(ctx context.Context, littleRed *littl
 
 // reconcileStandalone reconciles standalone mode
 func (r *LittleRedReconciler) reconcileStandalone(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 	log.Info("Reconciling standalone mode")
 
 	// Set initial phase
@@ -347,7 +368,7 @@ func (r *LittleRedReconciler) reconcileServiceMonitor(ctx context.Context, littl
 
 // updateStatus updates the LittleRed status based on current state
 func (r *LittleRedReconciler) updateStatus(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 	oldStatus := littleRed.Status.DeepCopy()
 
 	// Get StatefulSet status
@@ -439,7 +460,7 @@ func (r *LittleRedReconciler) updateStatus(ctx context.Context, littleRed *littl
 
 // reconcileSentinel reconciles sentinel mode
 func (r *LittleRedReconciler) reconcileSentinel(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 	log.Info("Reconciling sentinel mode")
 
 	// Set initial phase
@@ -560,7 +581,7 @@ func (r *LittleRedReconciler) reconcileMasterService(ctx context.Context, little
 // reconcileSentinelCluster gathers ground truth from all pods (Redis and Sentinel)
 // and performs atomic healing of the entire cluster state.
 func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	log := logf.FromContext(ctx)
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 
 	// Skip if we haven't bootstrapped yet
 	if littleRed.Status.BootstrapRequired {
@@ -619,6 +640,7 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 	// reason as bootstrap: the Service load-balances to a single backend).
 	// This action is safe during any transition because adding a monitor to an
 	// unconfigured sentinel is non-disruptive to the running cluster.
+	auditLog := r.getLogger(ctx, littleRed, LogCategoryAudit)
 	if state.RealMasterIP != "" {
 		quorum := 2
 		if littleRed.Spec.Sentinel != nil && littleRed.Spec.Sentinel.Quorum > 0 {
@@ -628,12 +650,12 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 			if !sn.Reachable || sn.Monitoring {
 				continue
 			}
-			log.Info("Sentinel pod has no master configured, re-registering",
+			auditLog.Info("Sentinel pod has no master configured, re-registering",
 				"pod", sn.PodName, "ip", ip, "master", state.RealMasterIP)
 			podAddr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.SentinelPort)
 			podSC := redisclient.NewSentinelClient([]string{podAddr}, password)
 			if err := podSC.Monitor(ctx, redisclient.SentinelMasterName, state.RealMasterIP, littleredv1alpha1.RedisPort, quorum); err != nil {
-				log.Error(err, "Failed to re-register sentinel pod", "pod", sn.PodName)
+				auditLog.Error(err, "Failed to re-register sentinel pod", "pod", sn.PodName)
 				continue
 			}
 			if littleRed.Spec.Sentinel != nil {
@@ -667,6 +689,7 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 	// Ghost pruning: only safe if the master Sentinel reports is a living pod
 	ghostMasterFound := false
 	ghostFound := false
+	stateLog := r.getLogger(ctx, littleRed, LogCategoryState)
 	for ip, sn := range state.SentinelNodes {
 		if !sn.Reachable || !sn.Monitoring {
 			continue
@@ -679,7 +702,7 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		// consensus exists, so it is safe to RESET this individual sentinel
 		// so it rediscovers the real master via gossip.
 		if state.IsGhost(sn.MasterIP) {
-			log.Info("Sentinel monitoring ghost master after failover completed; issuing targeted RESET to resync via gossip",
+			auditLog.Info("Sentinel monitoring ghost master after failover completed; issuing targeted RESET to resync via gossip",
 				"pod", sn.PodName, "ghost_master", sn.MasterIP)
 			podAddr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.SentinelPort)
 			podSC := redisclient.NewSentinelClient([]string{podAddr}, password)
@@ -702,7 +725,7 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		// sending REPLICAOF to surviving replicas before we issue RESET.
 		for _, replica := range sn.Replicas {
 			if state.IsGhost(replica.IP) && (strings.Contains(replica.Flags, "s_down") || strings.Contains(replica.Flags, "o_down")) {
-				log.Info("Ghost node detected in Sentinel topology", "ip", replica.IP, "flags", replica.Flags, "sentinel", sn.PodName)
+				stateLog.Info("Ghost node detected in Sentinel topology", "ip", replica.IP, "flags", replica.Flags, "sentinel", sn.PodName)
 				ghostFound = true
 				break
 			}
@@ -718,7 +741,7 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 	}
 
 	if ghostFound {
-		log.Info("Issuing SENTINEL RESET to clear ghost nodes", "master", redisclient.SentinelMasterName)
+		auditLog.Info("Issuing SENTINEL RESET to clear ghost nodes", "master", redisclient.SentinelMasterName)
 		sentinelAddresses := r.getSentinelAddresses(ctx, littleRed)
 		sc := redisclient.NewSentinelClient(sentinelAddresses, password)
 		_ = sc.Reset(ctx, redisclient.SentinelMasterName)
@@ -814,7 +837,7 @@ func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *l
 
 // updateMasterLabel updates the role labels on Redis pods based on current master
 func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	log := logf.FromContext(ctx)
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 
 	// List all Redis pods
 	podList := &corev1.PodList{}
@@ -838,6 +861,7 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 		}
 	}
 
+	stateLog := r.getLogger(ctx, littleRed, LogCategoryState)
 	masterPodName, err := r.getMasterPodName(ctx, littleRed, podList)
 	defaultRole := RoleReplica
 	if err != nil {
@@ -848,11 +872,11 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 				log.Info("Sentinel unreachable, skipping label update to avoid churn", "error", sErr.Err)
 				return nil
 			case SentinelNoMaster:
-				log.Info("Sentinel confirms no master is currently monitored. Proceeding to relabel all as undefined.")
+				stateLog.Info("Sentinel confirms no master is currently monitored. Proceeding to relabel all as undefined.")
 				masterPodName = ""
 				defaultRole = RoleUndefined
 			case SentinelGhostMaster:
-				log.Info("Sentinel reported a ghost master. Proceeding to relabel all living pods as orphans.", "ghost_ip", sErr.IP)
+				stateLog.Info("Sentinel reported a ghost master. Proceeding to relabel all living pods as orphans.", "ghost_ip", sErr.IP)
 				masterPodName = ""
 				defaultRole = RoleOrphan
 			}
@@ -873,11 +897,12 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 	}
 
 	if lastKnownMaster != "" && masterPodName != "" && lastKnownMaster != masterPodName {
-		log.Info("Master switch detected", "oldMaster", lastKnownMaster, "newMaster", masterPodName)
+		stateLog.Info("Master switch detected", "oldMaster", lastKnownMaster, "newMaster", masterPodName)
 	} else if lastKnownMaster != "" && masterPodName == "" {
-		log.Info("Master lost: no living master reported by Sentinel", "lastKnownMaster", lastKnownMaster)
+		stateLog.Info("Master lost: no living master reported by Sentinel", "lastKnownMaster", lastKnownMaster)
 	}
 
+	auditLog := r.getLogger(ctx, littleRed, LogCategoryAudit)
 	for i := range podList.Items {
 		pod := &podList.Items[i]
 		currentRole := pod.Labels[LabelRole]
@@ -888,7 +913,7 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 		}
 
 		if currentRole != expectedRole {
-			log.Info("Updating pod role label", "pod", pod.Name, "role", expectedRole)
+			auditLog.Info("Updating pod role label", "pod", pod.Name, "role", expectedRole)
 			if pod.Labels == nil {
 				pod.Labels = make(map[string]string)
 			}
@@ -903,7 +928,8 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 
 // updateSentinelStatus updates the LittleRed status for sentinel mode
 func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := r.getLogger(ctx, lr, LogCategoryRecon)
+	stateLog := r.getLogger(ctx, lr, LogCategoryState)
 
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &littleredv1alpha1.LittleRed{}
@@ -976,7 +1002,7 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *litt
 
 		masterPodName, err := r.getMasterPodName(ctx, latest, podList)
 		if err != nil {
-			log.Info("Sentinel unreachable or master unknown, reporting no master in status", "error", err)
+			stateLog.Info("Sentinel unreachable or master unknown, reporting no master in status", "error", err)
 			masterPodName = ""
 		}
 		latest.Status.Master.PodName = masterPodName
@@ -1123,7 +1149,7 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *litt
 
 // setFailedStatus sets the LittleRed status to Failed
 func (r *LittleRedReconciler) setFailedStatus(ctx context.Context, lr *littleredv1alpha1.LittleRed, reason, message string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := r.getLogger(ctx, lr, LogCategoryRecon)
 	log.Error(fmt.Errorf("%s", message), "Validation failed", "reason", reason)
 
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -1227,7 +1253,7 @@ func (r *LittleRedReconciler) validateClusterSpec(littleRed *littleredv1alpha1.L
 
 // bootstrapSentinel configures Sentinels to monitor the initial master
 func (r *LittleRedReconciler) bootstrapSentinel(ctx context.Context, lr *littleredv1alpha1.LittleRed) error {
-	log := logf.FromContext(ctx)
+	log := r.getLogger(ctx, lr, LogCategoryRecon)
 
 	// 1. Just-in-Time API Check: Re-fetch the object to ensure another worker hasn't already bootstrapped
 	latest := &littleredv1alpha1.LittleRed{}
@@ -1275,6 +1301,7 @@ func (r *LittleRedReconciler) bootstrapSentinel(ctx context.Context, lr *littler
 		return fmt.Errorf("failed to list sentinel pods: %w", err)
 	}
 
+	auditLog := r.getLogger(ctx, lr, LogCategoryAudit)
 	configuredCount := 0
 	for i := range sentinelPods.Items {
 		pod := &sentinelPods.Items[i]
@@ -1291,9 +1318,9 @@ func (r *LittleRedReconciler) bootstrapSentinel(ctx context.Context, lr *littler
 			continue
 		}
 
-		log.Info("Bootstrap: issuing SENTINEL MONITOR to pod", "sentinel", pod.Name, "master", masterAddr)
+		auditLog.Info("Bootstrap: issuing SENTINEL MONITOR to pod", "sentinel", pod.Name, "master", masterAddr)
 		if err := podSC.Monitor(ctx, "mymaster", masterAddr, littleredv1alpha1.RedisPort, quorum); err != nil {
-			log.Error(err, "Bootstrap: failed to configure sentinel", "sentinel", pod.Name)
+			auditLog.Error(err, "Bootstrap: failed to configure sentinel", "sentinel", pod.Name)
 			continue // best-effort; don't abort the whole bootstrap
 		}
 
@@ -1323,7 +1350,7 @@ func (r *LittleRedReconciler) bootstrapSentinel(ctx context.Context, lr *littler
 	}
 
 	// 5. Clear bootstrap flag with retry on conflict
-	log.Info("Bootstrap: initial master registered, clearing bootstrapRequired flag")
+	auditLog.Info("Bootstrap: initial master registered, clearing bootstrapRequired flag")
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latestUpdate := &littleredv1alpha1.LittleRed{}
 		if err := r.Get(ctx, types.NamespacedName{Name: lr.Name, Namespace: lr.Namespace}, latestUpdate); err != nil {
