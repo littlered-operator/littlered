@@ -32,3 +32,10 @@ This document tracks significant changes to the LittleRed reconciliation logic. 
 - **Problem:** A restarted master pod (same IP, lost memory) could observe its replicas still seeing it as master, leading to a deadlock where the master waits for failover and replicas wait for the master.
 - **Fix:** Added a yield loop to the cluster startup script. If failover isn't detected via peers within 30s, the starting pod issues an aggressive `CLUSTER FAILOVER TAKEOVER` to its own best-known replica.
 - **Impacts:** Cluster Mode Data Safety.
+
+## [LR-004] Sentinel Ghost Master Fallback Race
+- **Date:** 2026-02-21
+- **Commit:** <current>
+- **Problem:** If a master pod crashes and restarts quickly with a new IP, it starts as a "master" by default. The operator's master identification logic (fallback mode) would pick this new IP as the authoritative master, bypassing the "leaderless" guardrail. This would then trigger Rule A+ (Ghost pruning) which would RESET Sentinels still monitoring the old (dead) IP, blocking their failover.
+- **Fix:** Hardened `DetermineRealMaster` to ignore ghost IPs when counting Sentinel votes, and specifically to DISALLOW fallback to Redis-only master identification if a majority of Sentinels are still monitoring a ghost IP.
+- **Impacts:** LR-001 (further hardening). Ensures the operator remains passive while Sentinel is timing out a dead master.

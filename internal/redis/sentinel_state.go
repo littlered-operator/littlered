@@ -86,15 +86,26 @@ func (s *SentinelClusterState) DetermineRealMaster() {
 	}
 
 	// 3. Majority of Sentinels wins (if IP is still valid)
+	ghostMasterCount := 0
 	for ip, count := range masterCounts {
+		if s.IsGhost(ip) {
+			ghostMasterCount += count
+		}
 		if count >= (reachableSentinels/2)+1 && s.ValidIPs[ip] {
 			s.RealMasterIP = ip
 			return
 		}
 	}
 
-	// 4. If Sentinels are idle/split, fallback to identifying the one Redis master
-	if !s.FailoverActive {
+	// 4. If Sentinels are idle/split, fallback to identifying the one Redis master.
+	// Safety: We ONLY fallback to the Redis-only view if Sentinels are NOT
+	// unanimous (majority) about a ghost master. If a majority of Sentinels
+	// see a master but that IP is a ghost, it strongly implies a recent pod
+	// death and we MUST wait for Sentinel's down-after-milliseconds timeout
+	// and subsequent failover. Falling back here would cause us to identify
+	// a "stale" or "default" master (like a restarting pod) and potentially
+	// issue RESETs that wipe Sentinel's failover state.
+	if !s.FailoverActive && ghostMasterCount < (reachableSentinels/2)+1 {
 		for _, rn := range s.RedisNodes {
 			if rn.Reachable && rn.Role == "master" {
 				s.RealMasterIP = rn.IP
