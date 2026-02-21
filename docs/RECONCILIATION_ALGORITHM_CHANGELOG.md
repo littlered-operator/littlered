@@ -46,3 +46,10 @@ This document tracks significant changes to the LittleRed reconciliation logic. 
 - **Problem:** A sentinel could miss a failover event and remain stuck monitoring a previous master IP. If that IP was still "living" (e.g. the old master restarted and became a replica), the operator's ghost pruning logic wouldn't trigger, and the sentinel would never converge with the majority.
 - **Fix:** Added a new healing rule to `reconcileSentinelCluster`: if a sentinel is monitoring a living but incorrect master (divergent from the majority consensus), it is force-reset to rediscover the real master via gossip.
 - **Impacts:** Sentinel convergence safety.
+
+## [LR-006] Surgical Pod Relabeling
+- **Date:** 2026-02-21
+- **Commit:** <current>
+- **Problem:** During failover (leaderless period), the operator would relabel all living pods as 'orphan'. This caused massive K8s churn and triggered new reconciliation loops that could interfere with Sentinel's convergence.
+- **Fix:** Refactored `updateMasterLabel` to be surgical. If no living master is known, the operator only ensures that the 'master' label is removed from whoever held it, leaving other pods untouched. Labels are only fully synchronized once a living master is confirmed by Sentinel.
+- **Impacts:** Cluster stability during failover.

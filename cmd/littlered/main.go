@@ -27,13 +27,13 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"github.com/go-logr/logr"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	"github.com/redis/go-redis/v9"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/klog/v2"
-	"github.com/go-logr/logr"
-	"github.com/redis/go-redis/v9"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -224,4 +224,3 @@ func newRedisLogger(log logr.Logger) *redisLogger {
 func (l *redisLogger) Printf(ctx context.Context, format string, v ...interface{}) {
 	l.log.Info(fmt.Sprintf(format, v...))
 }
-

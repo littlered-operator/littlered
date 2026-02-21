@@ -887,13 +887,13 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 				log.Info("Sentinel unreachable, skipping label update to avoid churn", "error", sErr.Err)
 				return nil
 			case SentinelNoMaster:
-				stateLog.Info("Sentinel confirms no master is currently monitored. Proceeding to relabel all as undefined.")
+				stateLog.Info("Sentinel confirms no master is currently monitored. Ensuring no pod is labeled as master.")
 				masterPodName = ""
-				defaultRole = RoleUndefined
+				defaultRole = "" // Don't force a default role, just ensure no Master
 			case SentinelGhostMaster:
-				stateLog.Info("Sentinel reported a ghost master. Proceeding to relabel all living pods as orphans.", "ghost_ip", sErr.IP)
+				stateLog.Info("Sentinel reported a ghost master. Ensuring no pod is labeled as master.", "ghost_ip", sErr.IP)
 				masterPodName = ""
-				defaultRole = RoleOrphan
+				defaultRole = "" // Don't force a default role, just ensure no Master
 			}
 		} else {
 			log.Error(err, "Unexpected error identifying master pod, skipping label update")
@@ -901,34 +901,36 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 		}
 	}
 
-	// Safety: if masterPodName is empty here, it means we talked to Sentinel
-	// and it definitively has no LIVING master. We proceed to ensure all
-	// living pods are labeled according to defaultRole (orphan or undefined).
-
-	// Log master change if detected.
-	lastKnownMaster := ""
-	if littleRed.Status.Master != nil {
-		lastKnownMaster = littleRed.Status.Master.PodName
-	}
-
-	if lastKnownMaster != "" && masterPodName != "" && lastKnownMaster != masterPodName {
-		stateLog.Info("Master switch detected", "oldMaster", lastKnownMaster, "newMaster", masterPodName)
-	} else if lastKnownMaster != "" && masterPodName == "" {
-		stateLog.Info("Master lost: no living master reported by Sentinel", "lastKnownMaster", lastKnownMaster)
-	}
+	// surgical role updates:
+	// 1. If we have a masterPodName, ensure ONLY that pod is labeled Master.
+	// 2. If we DON'T have a masterPodName, ensure NO pod is labeled Master.
+	// 3. We only change Replica/Orphan labels if we are sure of the state.
+	//    During failover (masterPodName == ""), we just strip the Master label
+	//    from whoever had it and leave others alone.
 
 	auditLog := r.getLogger(ctx, littleRed, LogCategoryAudit)
 	for i := range podList.Items {
 		pod := &podList.Items[i]
 		currentRole := pod.Labels[LabelRole]
-		expectedRole := defaultRole
+		expectedRole := currentRole // default: stay as you are
 
-		if pod.Name == masterPodName && masterPodName != "" {
-			expectedRole = RoleMaster
+		if masterPodName != "" {
+			if pod.Name == masterPodName {
+				expectedRole = RoleMaster
+			} else if currentRole == RoleMaster {
+				// This pod was master but no longer is
+				expectedRole = RoleReplica
+			}
+		} else {
+			// No master identified by Sentinel.
+			if currentRole == RoleMaster {
+				// Strip Master label if someone has it
+				expectedRole = RoleReplica // downgrade to replica while waiting
+			}
 		}
 
-		if currentRole != expectedRole {
-			auditLog.Info("Updating pod role label", "pod", pod.Name, "role", expectedRole)
+		if currentRole != expectedRole && expectedRole != "" {
+			auditLog.Info("Updating pod role label", "pod", pod.Name, "old_role", currentRole, "new_role", expectedRole)
 			if pod.Labels == nil {
 				pod.Labels = make(map[string]string)
 			}
