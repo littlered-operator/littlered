@@ -652,9 +652,15 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 	}
 
 	// Rule A: Guardrails
-	if anyTerminating || state.FailoverActive {
-		log.Info("Cluster transition in progress (Terminating pods or Active Failover). Skipping non-essential healing.",
-			"anyTerminating", anyTerminating, "failoverActive", state.FailoverActive)
+	// We skip healing if:
+	// 1. Any pod is terminating (K8s is already working).
+	// 2. Sentinel reports an active failover (Sentinel is already working).
+	// 3. No living master is known (we must wait for Sentinel to elect one).
+	if anyTerminating || state.FailoverActive || state.RealMasterIP == "" {
+		log.Info("Cluster transition in progress or no living master. Skipping non-essential healing.",
+			"anyTerminating", anyTerminating,
+			"failoverActive", state.FailoverActive,
+			"realMasterIP", state.RealMasterIP)
 		return nil
 	}
 
@@ -668,9 +674,10 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		// A sentinel still pointing at a ghost master means it lost its failover
 		// notification (e.g. two sentinels raced to lead the failover and the
 		// "winner" superseded the elected leader before it could record the
-		// switch). Rule A above already ensured no pod is Terminating and no
-		// failover is active on any other sentinel, so it is safe to RESET this
-		// individual sentinel so it rediscovers the real master via gossip.
+		// switch). Rule A above already ensured no pod is Terminating, no
+		// failover is active on any other sentinel, and a living master
+		// consensus exists, so it is safe to RESET this individual sentinel
+		// so it rediscovers the real master via gossip.
 		if state.IsGhost(sn.MasterIP) {
 			log.Info("Sentinel monitoring ghost master after failover completed; issuing targeted RESET to resync via gossip",
 				"pod", sn.PodName, "ghost_master", sn.MasterIP)
