@@ -39,3 +39,10 @@ This document tracks significant changes to the LittleRed reconciliation logic. 
 - **Problem:** If a master pod crashes and restarts quickly with a new IP, it starts as a "master" by default. The operator's master identification logic (fallback mode) would pick this new IP as the authoritative master, bypassing the "leaderless" guardrail. This would then trigger Rule A+ (Ghost pruning) which would RESET Sentinels still monitoring the old (dead) IP, blocking their failover.
 - **Fix:** Hardened `DetermineRealMaster` to ignore ghost IPs when counting Sentinel votes, and specifically to DISALLOW fallback to Redis-only master identification if a majority of Sentinels are still monitoring a ghost IP.
 - **Impacts:** LR-001 (further hardening). Ensures the operator remains passive while Sentinel is timing out a dead master.
+
+## [LR-005] Sentinel Divergent Master Deadlock
+- **Date:** 2026-02-21
+- **Commit:** <current>
+- **Problem:** A sentinel could miss a failover event and remain stuck monitoring a previous master IP. If that IP was still "living" (e.g. the old master restarted and became a replica), the operator's ghost pruning logic wouldn't trigger, and the sentinel would never converge with the majority.
+- **Fix:** Added a new healing rule to `reconcileSentinelCluster`: if a sentinel is monitoring a living but incorrect master (divergent from the majority consensus), it is force-reset to rediscover the real master via gossip.
+- **Impacts:** Sentinel convergence safety.

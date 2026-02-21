@@ -710,6 +710,21 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 			ghostMasterFound = true
 			continue // don't inspect this sentinel's replica list
 		}
+
+		// A sentinel monitoring a LIVING but WRONG master must also be reset.
+		// This can happen if a sentinel misses a failover event but the IP
+		// it's monitoring still exists (e.g. it was the previous master and is
+		// now a replica).
+		if sn.MasterIP != state.RealMasterIP {
+			auditLog.Info("Sentinel monitoring wrong master IP; issuing targeted RESET to resync via gossip",
+				"pod", sn.PodName, "monitored_master", sn.MasterIP, "correct_master", state.RealMasterIP)
+			podAddr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.SentinelPort)
+			podSC := redisclient.NewSentinelClient([]string{podAddr}, password)
+			_ = podSC.Reset(ctx, redisclient.SentinelMasterName)
+			ghostMasterFound = true // using this flag to trigger requeue
+			continue
+		}
+
 		// Check replicas for ghost IPs (IPs not belonging to any living pod).
 		// We accept s_down here — for ghost replicas, s_down is the correct
 		// signal. o_down (objectively down) is never set on replicas by Sentinel;
