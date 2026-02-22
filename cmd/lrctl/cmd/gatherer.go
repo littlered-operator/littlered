@@ -45,6 +45,11 @@ func (g *cliGatherer) GetRedisState(ctx context.Context, podName, ip string) (*r
 	mHost := redisclient.ParseInfoField(stdout, "master_host")
 	link := redisclient.ParseInfoField(stdout, "master_link_status")
 
+	// If mHost is a hostname, resolve it to an IP using K8s API info
+	if mHost != "" {
+		mHost = g.resolveIdentityToIP(mHost)
+	}
+
 	offsetStr := ""
 	if role == "master" {
 		offsetStr = redisclient.ParseInfoField(stdout, "master_repl_offset")
@@ -94,7 +99,9 @@ func (g *cliGatherer) GetSentinelState(ctx context.Context, podName, ip string) 
 	for i := 0; i < len(lines)-1; i++ {
 		line := strings.TrimSpace(lines[i])
 		if line == "ip" {
-			state.MasterIP = strings.TrimSpace(lines[i+1])
+			mIP := strings.TrimSpace(lines[i+1])
+			// Resolve hostname to IP
+			state.MasterIP = g.resolveIdentityToIP(mIP)
 		}
 		if line == "failover-status" {
 			state.FailoverStatus = strings.TrimSpace(lines[i+1])
@@ -115,21 +122,73 @@ func (g *cliGatherer) GetSentinelState(ctx context.Context, podName, ip string) 
 		for idx, l := range allLines {
 			if strings.Contains(l, "ip") && idx+1 < len(allLines) {
 				potentialIP := strings.TrimSpace(allLines[idx+1])
+				// Resolve hostname to IP if needed
+				resolvedIP := g.resolveIdentityToIP(potentialIP)
+
 				isValid := false
 				for _, rip := range redisIPs {
-					if rip == potentialIP {
+					if rip == resolvedIP {
 						isValid = true
 						break
 					}
 				}
 				if !isValid {
-					state.Replicas = append(state.Replicas, redisclient.ReplicaInfo{IP: potentialIP, Flags: "s_down,ghost"})
+					state.Replicas = append(state.Replicas, redisclient.ReplicaInfo{IP: resolvedIP, Flags: "s_down,ghost"})
 				}
 			}
 		}
 	}
 
 	return state, nil
+}
+
+// resolveIdentityToIP takes an identity (IP, pod name, or FQDN) and tries to resolve it to a Pod IP
+// using the pods already discovered in ClusterContext.
+func (g *cliGatherer) resolveIdentityToIP(identity string) string {
+	if identity == "" {
+		return ""
+	}
+
+	// If it's already an IP, return it
+	if isIP(identity) {
+		return identity
+	}
+
+	// For hostnames (pod-0.headless-svc.namespace.svc.cluster.local),
+	// the first segment is usually the pod name.
+	podNameCandidate := identity
+	if idx := strings.Index(identity, "."); idx != -1 {
+		podNameCandidate = identity[:idx]
+	}
+
+	// Look up in Redis pods
+	for _, p := range g.cCtx.RedisPods {
+		if p.Name == podNameCandidate && p.Status.PodIP != "" {
+			return p.Status.PodIP
+		}
+	}
+
+	// Look up in Sentinel pods
+	for _, p := range g.cCtx.SentinelPods {
+		if p.Name == podNameCandidate && p.Status.PodIP != "" {
+			return p.Status.PodIP
+		}
+	}
+
+	return identity // Fallback to original if not found
+}
+
+func isIP(s string) bool {
+	// Simple IP check: contains 3 dots and only digits/dots
+	dots := 0
+	for _, c := range s {
+		if c == '.' {
+			dots++
+		} else if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return dots == 3
 }
 
 func (g *cliGatherer) GetClusterID(ctx context.Context, podName, ip string) (string, error) {
