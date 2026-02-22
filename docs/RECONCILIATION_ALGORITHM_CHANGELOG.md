@@ -71,3 +71,10 @@ This document tracks significant changes to the LittleRed reconciliation logic. 
     1. Replaced `SENTINEL RESET` with a `SENTINEL REMOVE` + `SENTINEL MONITOR` sequence for correcting stuck sentinels. This forces the sentinel to immediately point to the correct, living consensus master IP.
     2. Hardened Rule D (ghost pruning): `SENTINEL RESET` is now only issued if the consensus master is confirmed to be a living AND reachable pod. This ensures the operator remains passive during any period where failure detection might be in progress.
 - **Impacts:** LR-001, LR-007 (further hardening). Ensures failover reliability and guaranteed convergence.
+
+## [LR-009] Missing Replica Rescue (Rule R)
+- **Date:** 2026-02-22
+- **Commit:** <current>
+- **Problem:** A Redis pod could remain in "master" mode (e.g., after a restart or crash) even if a different consensus master was already established by Sentinel. The operator was missing the logic to force these rogue pods back into "replica" mode, leaving Sentinel with an incomplete replica count and preventing the cluster from reaching "Running" phase.
+- **Fix:** Implemented **Rule R (Replica Rescue)** in `reconcileSentinelCluster`. The operator now iterates over all Redis pods and issues `SLAVEOF <RealMasterIP>` to any pod that is not the consensus master and is not correctly following it.
+- **Impacts:** Cluster convergence to "Running" phase.

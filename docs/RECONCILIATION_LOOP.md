@@ -43,10 +43,11 @@ graph TD
         --> RuleA{Rule A: Guardrails: Any terminating pods or active failover?}
         RuleA -- Yes --> SkipHealing[Skip healing until settled]
         RuleA -- No --> RuleD[Rule D: Prune Ghost Nodes: IPs not in K8s Pod list]
+        RuleD --> RuleR[Rule R: Replica Rescue: Ensure all non-master pods follow the RealMasterIP]
     end
     
     ReconcileSentinelCluster --> SentinelHealing
-    RuleD --> EnsureMonitor[Ensure Background Sentinel Monitor]
+    RuleR --> EnsureMonitor[Ensure Background Sentinel Monitor]
     SkipHealing --> EnsureMonitor
     EnsureMonitor --> UpdateSentinelStatus[Update Sentinel Status & Phase]
     

@@ -808,6 +808,23 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		_ = sc.Reset(ctx, redisclient.SentinelMasterName)
 	}
 
+	// Rule R: Replica Rescue
+	// Ensure all living Redis pods that are not the consensus master are actually
+	// configured as replicas.
+	for ip, rn := range state.RedisNodes {
+		if !rn.Reachable || ip == state.RealMasterIP {
+			continue
+		}
+		// If the pod thinks it's a master, or is following the wrong master, or the link is down
+		if rn.Role == "master" || rn.MasterHost != state.RealMasterIP || rn.LinkStatus == "down" {
+			auditLog.Info("Redis pod is not following the consensus master, issuing SLAVEOF",
+				"pod", rn.PodName, "current_role", rn.Role, "target_master", state.RealMasterIP)
+			if err := redisclient.SlaveOf(ctx, fmt.Sprintf("%s:%d", ip, littleredv1alpha1.RedisPort), password, state.RealMasterIP, fmt.Sprintf("%d", littleredv1alpha1.RedisPort)); err != nil {
+				auditLog.Error(err, "Failed to rescue replica", "pod", rn.PodName)
+			}
+		}
+	}
+
 	return nil
 }
 
