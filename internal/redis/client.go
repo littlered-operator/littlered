@@ -366,6 +366,33 @@ func (c *SentinelClient) Reset(ctx context.Context, masterName string) error {
 	return nil
 }
 
+// Remove tells the sentinels to stop monitoring a master
+func (c *SentinelClient) Remove(ctx context.Context, masterName string) error {
+	var errors []string
+	for _, addr := range c.addresses {
+		client := redis.NewSentinelClient(&redis.Options{
+			Addr:        addr,
+			Password:    c.password,
+			DialTimeout: DefaultTimeout,
+			ReadTimeout: DefaultTimeout,
+		})
+		// SENTINEL REMOVE masterName
+		err := client.Process(ctx, redis.NewStatusCmd(ctx, "SENTINEL", "REMOVE", masterName))
+		client.Close()
+		if err != nil {
+			// If it's already removed, that's fine
+			if strings.Contains(err.Error(), "ERR No such master") {
+				continue
+			}
+			errors = append(errors, fmt.Sprintf("%s: %v", addr, err))
+		}
+	}
+	if len(errors) == len(c.addresses) && len(c.addresses) > 0 {
+		return fmt.Errorf("failed to issue REMOVE command to all sentinels: %s", strings.Join(errors, "; "))
+	}
+	return nil
+}
+
 // IsMonitoring checks if a specific sentinel address is monitoring the given master
 func (c *SentinelClient) IsMonitoring(ctx context.Context, sentinelAddr, masterName string) (bool, error) {
 	client := redis.NewSentinelClient(&redis.Options{

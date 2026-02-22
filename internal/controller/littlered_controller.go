@@ -692,6 +692,12 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 	ghostMasterFound := false
 	ghostFound := false
 	stateLog := r.getLogger(ctx, littleRed, LogCategoryState)
+
+	quorum := 2
+	if littleRed.Spec.Sentinel != nil && littleRed.Spec.Sentinel.Quorum > 0 {
+		quorum = littleRed.Spec.Sentinel.Quorum
+	}
+
 	for ip, sn := range state.SentinelNodes {
 		if !sn.Reachable || !sn.Monitoring {
 			continue
@@ -701,30 +707,61 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		// "winner" superseded the elected leader before it could record the
 		// switch).
 		//
-		// We RESET this individual sentinel so it rediscovers the real master via gossip.
+		// We REMOVE and re-MONITOR this individual sentinel so it points to the correct
+		// master IP.
 		// Safety: We ONLY do this if a living master consensus exists. If the cluster
-		// is currently leaderless (RealMasterIP == ""), we MUST NOT RESET sentinels
-		// that are monitoring ghosts, because they might be correctly timing out
-		// a recently-deceased master. RESETting them would wipe their failure
-		// detection timers and block failover.
-		if state.RealMasterIP != "" && state.IsGhost(sn.MasterIP) {
-			auditLog.Info("Sentinel monitoring ghost master; issuing targeted RESET to resync via gossip",
+		// is currently leaderless (RealMasterIP == ""), we MUST NOT intervene,
+		// because sentinels might be correctly timing out a recently-deceased master.
+		if state.RealMasterIP != "" && state.IsGhost(sn.MasterIP) && !state.IsGhost(state.RealMasterIP) && state.RedisNodes[state.RealMasterIP] != nil && state.RedisNodes[state.RealMasterIP].Reachable {
+			auditLog.Info("Sentinel monitoring ghost master; re-registering correct master",
 				"pod", sn.PodName, "ghost_master", sn.MasterIP, "correct_master", state.RealMasterIP)
 			podAddr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.SentinelPort)
 			podSC := redisclient.NewSentinelClient([]string{podAddr}, password)
-			_ = podSC.Reset(ctx, redisclient.SentinelMasterName)
+
+			_ = podSC.Remove(ctx, redisclient.SentinelMasterName)
+			if err := podSC.Monitor(ctx, redisclient.SentinelMasterName, state.RealMasterIP, littleredv1alpha1.RedisPort, quorum); err == nil {
+				if littleRed.Spec.Sentinel != nil {
+					s := littleRed.Spec.Sentinel
+					if s.DownAfterMilliseconds > 0 {
+						_ = podSC.Set(ctx, redisclient.SentinelMasterName, "down-after-milliseconds", fmt.Sprintf("%d", s.DownAfterMilliseconds))
+					}
+					if s.FailoverTimeout > 0 {
+						_ = podSC.Set(ctx, redisclient.SentinelMasterName, "failover-timeout", fmt.Sprintf("%d", s.FailoverTimeout))
+					}
+					if s.ParallelSyncs > 0 {
+						_ = podSC.Set(ctx, redisclient.SentinelMasterName, "parallel-syncs", fmt.Sprintf("%d", s.ParallelSyncs))
+					}
+				}
+			}
+
 			ghostMasterFound = true
 			continue // don't inspect this sentinel's replica list
 		}
 
-		// A sentinel monitoring a LIVING but WRONG master must also be reset.
+		// A sentinel monitoring a LIVING but WRONG master must also be re-registered.
 		// This requires a consensus on the RealMasterIP.
-		if state.RealMasterIP != "" && sn.MasterIP != state.RealMasterIP {
-			auditLog.Info("Sentinel monitoring wrong master IP; issuing targeted RESET to resync via gossip",
+		if state.RealMasterIP != "" && sn.MasterIP != state.RealMasterIP && !state.IsGhost(state.RealMasterIP) && state.RedisNodes[state.RealMasterIP] != nil && state.RedisNodes[state.RealMasterIP].Reachable {
+			auditLog.Info("Sentinel monitoring wrong master IP; re-registering correct master",
 				"pod", sn.PodName, "monitored_master", sn.MasterIP, "correct_master", state.RealMasterIP)
 			podAddr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.SentinelPort)
 			podSC := redisclient.NewSentinelClient([]string{podAddr}, password)
-			_ = podSC.Reset(ctx, redisclient.SentinelMasterName)
+
+			_ = podSC.Remove(ctx, redisclient.SentinelMasterName)
+			if err := podSC.Monitor(ctx, redisclient.SentinelMasterName, state.RealMasterIP, littleredv1alpha1.RedisPort, quorum); err == nil {
+				if littleRed.Spec.Sentinel != nil {
+					s := littleRed.Spec.Sentinel
+					if s.DownAfterMilliseconds > 0 {
+						_ = podSC.Set(ctx, redisclient.SentinelMasterName, "down-after-milliseconds", fmt.Sprintf("%d", s.DownAfterMilliseconds))
+					}
+					if s.FailoverTimeout > 0 {
+						_ = podSC.Set(ctx, redisclient.SentinelMasterName, "failover-timeout", fmt.Sprintf("%d", s.FailoverTimeout))
+					}
+					if s.ParallelSyncs > 0 {
+						_ = podSC.Set(ctx, redisclient.SentinelMasterName, "parallel-syncs", fmt.Sprintf("%d", s.ParallelSyncs))
+					}
+				}
+			}
+
 			ghostMasterFound = true // using this flag to trigger requeue
 			continue
 		}
@@ -760,8 +797,12 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		return nil
 	}
 
-	if ghostFound {
-		auditLog.Info("Issuing SENTINEL RESET to clear ghost nodes", "master", redisclient.SentinelMasterName)
+	// Rule D (continued): Prune ghost replicas.
+	// Safety: We ONLY issue a global RESET if we have consensus on a living, reachable master.
+	// If the master is unreachable or a ghost IP, we MUST NOT issue RESET because it would
+	// wipe the Sentinels' failure detection timers (s_down) and block failover.
+	if ghostFound && !state.IsGhost(state.RealMasterIP) && state.RedisNodes[state.RealMasterIP] != nil && state.RedisNodes[state.RealMasterIP].Reachable {
+		auditLog.Info("Issuing SENTINEL RESET to clear ghost nodes from topology", "master", redisclient.SentinelMasterName)
 		sentinelAddresses := r.getSentinelAddresses(ctx, littleRed)
 		sc := redisclient.NewSentinelClient(sentinelAddresses, password)
 		_ = sc.Reset(ctx, redisclient.SentinelMasterName)

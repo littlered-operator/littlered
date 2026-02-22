@@ -60,3 +60,14 @@ This document tracks significant changes to the LittleRed reconciliation logic. 
 - **Problem:** An earlier attempt to allow ghost-master pruning during leaderless periods caused a regression. If a master died, its IP became a ghost. The operator would then issue `SENTINEL RESET` every 2 seconds. Because `RESET` wipes Sentinel's internal state, it reset the `down-after-milliseconds` timer, preventing failover from ever triggering.
 - **Fix:** Re-instated the hard gate: NO `SENTINEL RESET` (for master or replicas) is allowed if the cluster is leaderless (`RealMasterIP == ""`). The operator must remain passive and allow Sentinel to complete its built-in failure detection and election.
 - **Impacts:** Sentinel failover reliability.
+
+## [LR-008] Sentinel Ghost Master RESET Ineffectiveness & Failure Detection Suppression
+- **Date:** 2026-02-22
+- **Commit:** <current>
+- **Problem:**
+    1. `SENTINEL RESET` does not change the master IP monitored by Sentinel; it only clears state like replicas and other sentinels. Stuck sentinels monitoring ghost IPs remained stuck even after a reset.
+    2. Frequent `SENTINEL RESET` (every 2s) reset the `s_down` timer (5s), preventing failover detection for crashed masters when Rule A was bypassed (e.g. by a fast-restarting pod masquerading as a master).
+- **Fix:**
+    1. Replaced `SENTINEL RESET` with a `SENTINEL REMOVE` + `SENTINEL MONITOR` sequence for correcting stuck sentinels. This forces the sentinel to immediately point to the correct, living consensus master IP.
+    2. Hardened Rule D (ghost pruning): `SENTINEL RESET` is now only issued if the consensus master is confirmed to be a living AND reachable pod. This ensures the operator remains passive during any period where failure detection might be in progress.
+- **Impacts:** LR-001, LR-007 (further hardening). Ensures failover reliability and guaranteed convergence.
