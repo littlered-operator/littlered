@@ -78,3 +78,14 @@ This document tracks significant changes to the LittleRed reconciliation logic. 
 - **Problem:** A Redis pod could remain in "master" mode (e.g., after a restart or crash) even if a different consensus master was already established by Sentinel. The operator was missing the logic to force these rogue pods back into "replica" mode, leaving Sentinel with an incomplete replica count and preventing the cluster from reaching "Running" phase.
 - **Fix:** Implemented **Rule R (Replica Rescue)** in `reconcileSentinelCluster`. The operator now iterates over all Redis pods and issues `SLAVEOF <RealMasterIP>` to any pod that is not the consensus master and is not correctly following it.
 - **Impacts:** Cluster convergence to "Running" phase.
+
+## [LR-010] Redundant Reconciliation & Aggressive Rule R
+- **Date:** 2026-02-22
+- **Commit:** <current>
+- **Problem:**
+    1. The operator often issued duplicate `SLAVEOF` commands for the same pod within milliseconds. This was caused by status updates triggering immediate reconciliations that collided with the periodic requeue timer.
+    2. Rule R was too aggressive, triggering `SLAVEOF` if `LinkStatus == "down"`. Since the replica handshake takes time, a second reconciliation would often trigger and interrupt an ongoing successful handshake.
+- **Fix:**
+    1. Added `GenerationChangedPredicate` to the `For` watch to ignore status-only updates, ensuring the 2-second timer remains the primary source of truth for periodic healing.
+    2. Refined Rule R to only trigger on incorrect `Role` or `MasterHost`. It no longer triggers on `LinkStatus` alone, allowing transient handshakes to complete.
+- **Impacts:** Reduction in audit log noise and faster cluster convergence.

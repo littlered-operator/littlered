@@ -35,12 +35,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
@@ -815,8 +817,10 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		if !rn.Reachable || ip == state.RealMasterIP {
 			continue
 		}
-		// If the pod thinks it's a master, or is following the wrong master, or the link is down
-		if rn.Role == "master" || rn.MasterHost != state.RealMasterIP || rn.LinkStatus == "down" {
+		// If the pod thinks it's a master, or is following the wrong master.
+		// We DON'T trigger on LinkStatus == "down" alone, because that could be a
+		// transient state during a handshake, and re-issuing SLAVEOF would interrupt it.
+		if rn.Role == "master" || rn.MasterHost != state.RealMasterIP {
 			auditLog.Info("Redis pod is not following the consensus master, issuing SLAVEOF",
 				"pod", rn.PodName, "current_role", rn.Role, "target_master", state.RealMasterIP)
 			if err := redisclient.SlaveOf(ctx, fmt.Sprintf("%s:%d", ip, littleredv1alpha1.RedisPort), password, state.RealMasterIP, fmt.Sprintf("%d", littleredv1alpha1.RedisPort)); err != nil {
@@ -1269,7 +1273,7 @@ func (r *LittleRedReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.monitors = make(map[types.NamespacedName]func())
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&littleredv1alpha1.LittleRed{}).
+		For(&littleredv1alpha1.LittleRed{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Service{}).
 		Owns(&appsv1.StatefulSet{}).
