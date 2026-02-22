@@ -28,15 +28,28 @@ graph TD
     %% Sentinel Mode
     ModeSwitch -- sentinel --> SentinelFlow[Reconcile Sentinel Resources: Redis/Sentinel CMs, STS, SVCs]
     SentinelFlow --> BootstrapSentinel{bootstrapRequired == true?}
+    
     BootstrapSentinel -- Yes --> WaitPodIP{redis-0 has PodIP?}
-    WaitPodIP -- Yes --> RegisterMaster[Register master in Sentinel]
+    WaitPodIP -- Yes --> RegisterMaster[Register master in Sentinel pods]
     WaitPodIP -- No --> UpdateSentinelStatus
     RegisterMaster --> UpdateSentinelStatus
-    BootstrapSentinel -- No --> UpdateMasterLabel[Update Pod Role Labels: master/replica/orphan/undefined]
-    UpdateMasterLabel --> TopologySync[Topology Sync: Introduction of idle Sentinels & Ghost Removal]
-    TopologySync --> ReplicaRescue[Replica Rescue: Fix zombie replicas pointing to ghost IPs]
-    ReplicaRescue --> StartMonitor[Ensure Background Sentinel Monitor]
-    StartMonitor --> UpdateSentinelStatus[Update Sentinel Status]
+    
+    BootstrapSentinel -- No --> UpdateMasterLabel[Update Pod Role Labels: master/replica]
+    UpdateMasterLabel --> ReconcileSentinelCluster[Reconcile Sentinel Cluster: Ground Truth & Healing]
+    
+    subgraph SentinelHealing [Sentinel Healing Rules]
+        direction TB
+        Rule0[Rule 0: Re-register unconfigured Sentinels]
+        --> RuleA{Rule A: Guardrails: Any terminating pods or active failover?}
+        RuleA -- Yes --> SkipHealing[Skip healing until settled]
+        RuleA -- No --> RuleD[Rule D: Prune Ghost Nodes: IPs not in K8s Pod list]
+    end
+    
+    ReconcileSentinelCluster --> SentinelHealing
+    RuleD --> EnsureMonitor[Ensure Background Sentinel Monitor]
+    SkipHealing --> EnsureMonitor
+    EnsureMonitor --> UpdateSentinelStatus[Update Sentinel Status & Phase]
+    
     UpdateSentinelStatus --> IsRunning{Phase == Running?}
     IsRunning -- Yes --> ClearBootstrap[Set status.bootstrapRequired=false]
     IsRunning -- No --> RequeueSentinel[Requeue]
