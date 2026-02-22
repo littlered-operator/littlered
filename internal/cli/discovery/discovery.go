@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -58,11 +59,9 @@ func getFromCR(ctx context.Context, k8sClient client.Client, namespace, name str
 
 func discoverUnmanaged(ctx context.Context, k8sClient client.Client, namespace, name, mode string) (*types.ClusterContext, error) {
 	cCtx := &types.ClusterContext{
-		Name:              name,
-		Namespace:         namespace,
-		Mode:              mode,
-		RedisContainer:    "redis",
-		SentinelContainer: "sentinel",
+		Name:      name,
+		Namespace: namespace,
+		Mode:      mode,
 	}
 
 	podList := &corev1.PodList{}
@@ -74,14 +73,17 @@ func discoverUnmanaged(ctx context.Context, k8sClient client.Client, namespace, 
 	// Define heuristics as regex patterns
 	// 1. CloudPirates: <name>-redis-<digit>
 	cpRegex := regexp.MustCompile(fmt.Sprintf("^%s-redis-[0-9]+$", regexp.QuoteMeta(name)))
-	// 2. Bitnami: <name>-redis-node-<digit>
-	bitnamiRegex := regexp.MustCompile(fmt.Sprintf("^%s-redis-node-[0-9]+$", regexp.QuoteMeta(name)))
+	// 2. Bitnami: <name>-redis-node-<digit> or <name>-redis-cluster-<digit>
+	bitnamiRegex := regexp.MustCompile(fmt.Sprintf("^%s-redis-(node|cluster)-[0-9]+$", regexp.QuoteMeta(name)))
 	// 3. Generic Cluster: <name>-cluster-[0-9]+
 	clusterRegex := regexp.MustCompile(fmt.Sprintf("^%s-cluster-[0-9]+$", regexp.QuoteMeta(name)))
 	// 4. Spotahome Redis: rfr-<name>-<digit>
 	shRedisRegex := regexp.MustCompile(fmt.Sprintf("^rfr-%s-[0-9]+$", regexp.QuoteMeta(name)))
 	// 5. Spotahome Sentinel: rfs-<name>-...
 	shSentinelRegex := regexp.MustCompile(fmt.Sprintf("^rfs-%s-[a-z0-9]+(-[a-z0-9]+)?$", regexp.QuoteMeta(name)))
+
+	foundRedis := false
+	foundSentinel := false
 
 	for _, pod := range podList.Items {
 		isRedis := cpRegex.MatchString(pod.Name) || bitnamiRegex.MatchString(pod.Name) ||
@@ -91,11 +93,20 @@ func discoverUnmanaged(ctx context.Context, k8sClient client.Client, namespace, 
 
 		if isRedis {
 			cCtx.RedisPods = append(cCtx.RedisPods, pod)
+			if !foundRedis {
+				cCtx.RedisContainer = detectContainer(pod, []string{"redis", "valkey", "cluster"}, "redis")
+				foundRedis = true
+			}
+
 			// In sidecar mode (CP/Bitnami), the sentinel is in the same pod
 			if !isSentinel {
 				for _, container := range pod.Spec.Containers {
-					if container.Name == "sentinel" {
+					if strings.Contains(strings.ToLower(container.Name), "sentinel") {
 						cCtx.SentinelPods = append(cCtx.SentinelPods, pod)
+						if !foundSentinel {
+							cCtx.SentinelContainer = container.Name
+							foundSentinel = true
+						}
 						break
 					}
 				}
@@ -104,7 +115,19 @@ func discoverUnmanaged(ctx context.Context, k8sClient client.Client, namespace, 
 
 		if isSentinel {
 			cCtx.SentinelPods = append(cCtx.SentinelPods, pod)
+			if !foundSentinel {
+				cCtx.SentinelContainer = detectContainer(pod, []string{"sentinel"}, "sentinel")
+				foundSentinel = true
+			}
 		}
+	}
+
+	// Final defaults if nothing detected
+	if cCtx.RedisContainer == "" {
+		cCtx.RedisContainer = "redis"
+	}
+	if cCtx.SentinelContainer == "" {
+		cCtx.SentinelContainer = "sentinel"
 	}
 
 	if len(cCtx.RedisPods) == 0 && len(cCtx.SentinelPods) == 0 {
@@ -112,4 +135,24 @@ func discoverUnmanaged(ctx context.Context, k8sClient client.Client, namespace, 
 	}
 
 	return cCtx, nil
+}
+
+// detectContainer tries to find a container matching keywords, otherwise returns the first container or fallback
+func detectContainer(pod corev1.Pod, keywords []string, fallback string) string {
+	if len(pod.Spec.Containers) == 0 {
+		return fallback
+	}
+	if len(pod.Spec.Containers) == 1 {
+		return pod.Spec.Containers[0].Name
+	}
+
+	for _, container := range pod.Spec.Containers {
+		for _, kw := range keywords {
+			if strings.Contains(strings.ToLower(container.Name), kw) {
+				return container.Name
+			}
+		}
+	}
+
+	return pod.Spec.Containers[0].Name
 }
