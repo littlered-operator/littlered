@@ -44,6 +44,9 @@ var (
 	// skipOperatorDeploy skips operator deployment (use existing deployment).
 	skipOperatorDeploy = false
 
+	// skipKindSetup skips kind setup and assumes non-kind environment for images.
+	skipKindSetup = false
+
 	// debugOnFailure skips cleanup on failure.
 	debugOnFailure = false
 
@@ -65,6 +68,7 @@ func suiteOrSpecFailed() bool {
 //
 // Environment variables:
 //   - SKIP_OPERATOR_DEPLOY: Set to "true" to skip operator deployment
+//   - SKIP_KIND_SETUP: Set to "true" to skip cluster creation and assume non-Kind (registry-push) deployment
 //   - DEBUG_ON_FAILURE: Set to "true" to skip cleanup on failure
 //   - TEST_NAMESPACE: Namespace for test resources (default: "littlered-e2e"); must not be "default"
 //   - KIND_CLUSTER: Kind cluster name (default: kind)
@@ -89,12 +93,16 @@ var _ = BeforeSuite(func() {
 	if os.Getenv("SKIP_OPERATOR_DEPLOY") == "true" {
 		skipOperatorDeploy = true
 	}
+	if os.Getenv("SKIP_KIND_SETUP") == "true" {
+		skipKindSetup = true
+	}
 	if os.Getenv("DEBUG_ON_FAILURE") == "true" {
 		debugOnFailure = true
 	}
 
 	_, _ = fmt.Fprintf(GinkgoWriter, "Test namespace: %s\n", testNamespace)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Skip operator deploy: %v\n", skipOperatorDeploy)
+	_, _ = fmt.Fprintf(GinkgoWriter, "Skip Kind setup: %v\n", skipKindSetup)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Debug on failure: %v\n", debugOnFailure)
 
 	// Require a dedicated namespace — "default" is not safe for e2e tests.
@@ -196,21 +204,34 @@ var _ = AfterSuite(func() {
 })
 
 func deployOperator() {
-	By("building the operator image")
-	cmd := exec.Command("make", "images")
+	By("building the operator images")
+	cmd := exec.Command("make", "build-images")
 	_, err := utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the operator images")
 
-	By("loading images into Kind")
-	cmd = exec.Command("make", "kind-load")
-	_, err = utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load images into Kind")
+	if !skipKindSetup {
+		By("loading images into Kind")
+		cmd = exec.Command("make", "kind-load")
+		_, err = utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load images into Kind")
 
-	By("deploying the operator via Helm")
-	// We use PULL_POLICY=Never to ensure Kind uses the local image we just loaded
-	cmd = exec.Command("make", "deploy", "PULL_POLICY=Never")
-	_, err = utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the operator via Helm")
+		By("deploying the operator via Helm (Kind mode)")
+		// We use PULL_POLICY=Never to ensure Kind uses the local image we just loaded
+		cmd = exec.Command("make", "deploy", "PULL_POLICY=Never")
+		_, err = utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the operator via Helm")
+	} else {
+		By("pushing images to registry")
+		cmd = exec.Command("make", "push-images")
+		_, err = utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to push images to registry")
+
+		By("deploying the operator via Helm (Registry mode)")
+		// Use default PULL_POLICY (Always) from Makefile for generic clusters
+		cmd = exec.Command("make", "deploy")
+		_, err = utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the operator via Helm")
+	}
 
 	By("waiting for operator to be ready")
 	waitForOperator()
