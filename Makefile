@@ -135,11 +135,18 @@ test-e2e: $(E2E_SETUP_DEP) run-test-e2e $(E2E_CLEANUP_DEP) ## Run the e2e tests.
 
 .PHONY: run-test-e2e
 run-test-e2e: manifests generate fmt vet
-	$(E2E_VARS) CHAOS_CLIENT_IMAGE=$(CHAOS_CLIENT_IMAGE) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 60m $(FAIL_FAST) $(E2E_FOCUS) $(ARGS)
+	$(E2E_VARS) OPERATOR_IMAGE=$(OPERATOR_IMAGE) CHAOS_CLIENT_IMAGE=$(CHAOS_CLIENT_IMAGE) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 60m $(FAIL_FAST) $(E2E_FOCUS) $(ARGS)
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+
+.PHONY: kind-load
+kind-load: ## Load built images into the Kind cluster.
+	@echo "Loading operator image into Kind cluster $(KIND_CLUSTER)..."
+	$(CONTAINER_TOOL) save $(OPERATOR_IMAGE) | $(KIND) load image-archive /dev/stdin --name $(KIND_CLUSTER)
+	@echo "Loading chaos client image into Kind cluster $(KIND_CLUSTER)..."
+	$(CONTAINER_TOOL) save $(CHAOS_CLIENT_IMAGE) | $(KIND) load image-archive /dev/stdin --name $(KIND_CLUSTER)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -214,9 +221,14 @@ ifndef ignore-not-found
 endif
 
 # deploy using helm is installing the CRDs as well
+PULL_POLICY ?= Always
 .PHONY: deploy
 deploy: manifests
-	helm upgrade --install littlered ./charts/littlered-operator -n littlered-system --create-namespace --set image.repository=$(LITTLERED_REGISTRY)/littlered --set image.tag=$(GIT_TAG) --set image.pullPolicy=Always
+	helm upgrade --install littlered ./charts/littlered-operator \
+		-n littlered-system --create-namespace \
+		--set image.repository=$(LITTLERED_REGISTRY)/littlered \
+		--set image.tag=$(GIT_TAG) \
+		--set image.pullPolicy=$(PULL_POLICY)
 
 .PHONY: undeploy
 undeploy:
