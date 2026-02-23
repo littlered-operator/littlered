@@ -34,10 +34,6 @@ import (
 )
 
 var (
-	// operatorImage is the operator image to use for testing.
-	// Override with OPERATOR_IMAGE env var.
-	operatorImage = "ghcr.io/littlered-operator/littlered-operator:latest"
-
 	// operatorNamespace is where the operator is deployed.
 	operatorNamespace = "littlered-system"
 
@@ -47,9 +43,6 @@ var (
 
 	// skipOperatorDeploy skips operator deployment (use existing deployment).
 	skipOperatorDeploy = false
-
-	// useHelm deploys operator via Helm instead of make deploy.
-	useHelm = false
 
 	// debugOnFailure skips cleanup on failure.
 	debugOnFailure = false
@@ -71,9 +64,7 @@ func suiteOrSpecFailed() bool {
 // TestE2E runs the e2e test suite.
 //
 // Environment variables:
-//   - OPERATOR_IMAGE: Operator image to use (default: ghcr.io/littlered-operator/littlered-operator:latest)
 //   - SKIP_OPERATOR_DEPLOY: Set to "true" to skip operator deployment
-//   - USE_HELM: Set to "true" to deploy via Helm instead of make deploy
 //   - DEBUG_ON_FAILURE: Set to "true" to skip cleanup on failure
 //   - TEST_NAMESPACE: Namespace for test resources (default: "littlered-e2e"); must not be "default"
 //   - KIND_CLUSTER: Kind cluster name (default: kind)
@@ -92,26 +83,18 @@ var _ = BeforeSuite(func() {
 	initE2ETmpDir()
 
 	// Load configuration from environment
-	if img := os.Getenv("OPERATOR_IMAGE"); img != "" {
-		operatorImage = img
-	}
 	if ns := os.Getenv("TEST_NAMESPACE"); ns != "" {
 		testNamespace = ns
 	}
 	if os.Getenv("SKIP_OPERATOR_DEPLOY") == "true" {
 		skipOperatorDeploy = true
 	}
-	if os.Getenv("USE_HELM") == "true" {
-		useHelm = true
-	}
 	if os.Getenv("DEBUG_ON_FAILURE") == "true" {
 		debugOnFailure = true
 	}
 
-	_, _ = fmt.Fprintf(GinkgoWriter, "Operator image: %s\n", operatorImage)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Test namespace: %s\n", testNamespace)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Skip operator deploy: %v\n", skipOperatorDeploy)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Use Helm: %v\n", useHelm)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Debug on failure: %v\n", debugOnFailure)
 
 	// Require a dedicated namespace — "default" is not safe for e2e tests.
@@ -138,11 +121,7 @@ var _ = BeforeSuite(func() {
 		return
 	}
 
-	if useHelm {
-		deployWithHelm()
-	} else {
-		deployWithMake()
-	}
+	deployOperator()
 })
 
 var _ = BeforeEach(func() {
@@ -213,83 +192,33 @@ var _ = AfterSuite(func() {
 		return
 	}
 
-	if useHelm {
-		undeployWithHelm()
-	} else {
-		undeployWithMake()
-	}
+	undeployOperator()
 })
 
-func deployWithMake() {
+func deployOperator() {
 	By("building the operator image")
-	cmd := exec.Command("make", "img-build", fmt.Sprintf("IMG=%s", operatorImage))
+	cmd := exec.Command("make", "images")
 	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the operator image")
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the operator images")
 
-	By("loading the operator image to Kind")
-	err = utils.LoadImageToKindClusterWithName(operatorImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the operator image into Kind")
-
-	By("installing CRDs")
-	cmd = exec.Command("make", "install")
+	By("loading images into Kind")
+	cmd = exec.Command("make", "kind-load")
 	_, err = utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to install CRDs")
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load images into Kind")
 
-	By("deploying the operator")
-	cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", operatorImage))
+	By("deploying the operator via Helm")
+	// We use PULL_POLICY=Never to ensure Kind uses the local image we just loaded
+	cmd = exec.Command("make", "deploy", "PULL_POLICY=Never")
 	_, err = utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the operator")
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the operator via Helm")
 
 	By("waiting for operator to be ready")
 	waitForOperator()
 }
 
-func undeployWithMake() {
+func undeployOperator() {
 	By("undeploying the operator")
 	cmd := exec.Command("make", "undeploy")
-	_, _ = utils.Run(cmd)
-
-	By("uninstalling CRDs")
-	cmd = exec.Command("make", "uninstall")
-	_, _ = utils.Run(cmd)
-}
-
-func deployWithHelm() {
-	By("loading the operator image to Kind")
-	err := utils.LoadImageToKindClusterWithName(operatorImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the operator image into Kind")
-
-	By("installing operator with Helm")
-	cmd := exec.Command("helm", "install", "littlered", "charts/littlered-operator",
-		"--namespace", operatorNamespace,
-		"--create-namespace",
-		"--set", fmt.Sprintf("image.repository=%s", getImageRepository(operatorImage)),
-		"--set", fmt.Sprintf("image.tag=%s", getImageTag(operatorImage)),
-		"--set", "image.pullPolicy=Never",
-		"--wait",
-		"--timeout", "2m",
-	)
-	_, err = utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to install operator with Helm")
-
-	By("waiting for operator to be ready")
-	waitForOperator()
-}
-
-func undeployWithHelm() {
-	By("uninstalling operator with Helm")
-	cmd := exec.Command("helm", "uninstall", "littlered",
-		"--namespace", operatorNamespace,
-		"--ignore-not-found",
-	)
-	_, _ = utils.Run(cmd)
-
-	By("deleting operator namespace")
-	cmd = exec.Command("kubectl", "delete", "namespace", operatorNamespace, "--ignore-not-found")
-	_, _ = utils.Run(cmd)
-
-	By("deleting CRDs")
-	cmd = exec.Command("kubectl", "delete", "crd", "littlereds.chuck-chuck-chuck.net", "--ignore-not-found")
 	_, _ = utils.Run(cmd)
 }
 
@@ -302,37 +231,4 @@ func waitForOperator() {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(output).To(Equal("1"))
 	}, "2m", "5s").Should(Succeed())
-}
-
-func getImageRepository(image string) string {
-	// Split image:tag and return the repository part
-	parts := splitImageTag(image)
-	return parts[0]
-}
-
-func getImageTag(image string) string {
-	// Split image:tag and return the tag part
-	parts := splitImageTag(image)
-	if len(parts) > 1 {
-		return parts[1]
-	}
-	return "latest"
-}
-
-func splitImageTag(image string) []string {
-	// Handle images with registry port (e.g., localhost:5000/image:tag)
-	lastColon := -1
-	for i := len(image) - 1; i >= 0; i-- {
-		if image[i] == ':' {
-			lastColon = i
-			break
-		}
-		if image[i] == '/' {
-			break
-		}
-	}
-	if lastColon > 0 {
-		return []string{image[:lastColon], image[lastColon+1:]}
-	}
-	return []string{image}
 }
