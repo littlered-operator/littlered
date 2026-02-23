@@ -260,8 +260,14 @@ redeploy-all: undeploy ## Full reset: uninstall helm chart, delete CRDs, and dep
 pipeline: images deploy install
 
 .PHONY: install
-install: lrctl
+install: lrctl ## Install lrctl binary to /usr/local/bin.
 	sudo install -o root -g root -m 0755 bin/lrctl /usr/local/bin/lrctl
+
+.PHONY: install-plugin
+install-plugin: install ## Install lrctl as a kubectl plugin (requires kubectl).
+	@sudo ln -sf /usr/local/bin/lrctl /usr/local/bin/kubectl-lr
+	@sudo ln -sf /usr/local/bin/lrctl /usr/local/bin/kubectl_complete-lr
+	@echo "Plugin installed: you can now use 'kubectl lr ...' with shell completion."
 
 ##@ Dependencies
 
