@@ -84,6 +84,8 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
 KIND_CLUSTER ?= littlered-test-e2e
+SKIP_KIND_SETUP ?= false
+SKIP_OPERATOR_DEPLOY ?= false
 
 .PHONY: setup-test-e2e
 setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
@@ -100,16 +102,15 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 	esac
 
 # E2E_SETUP_DEP defines the dependency for setting up the E2E environment.
-# If SKIP_OPERATOR_DEPLOY is true, we assume an existing cluster and skip Kind setup.
-ifeq ($(SKIP_OPERATOR_DEPLOY),true)
+ifeq ($(SKIP_KIND_SETUP),true)
 E2E_SETUP_DEP =
 E2E_CLEANUP_DEP =
-E2E_VARS =
 else
 E2E_SETUP_DEP = setup-test-e2e
 E2E_CLEANUP_DEP = cleanup-test-e2e
-E2E_VARS = KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER)
 endif
+
+E2E_VARS = KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) SKIP_OPERATOR_DEPLOY=$(SKIP_OPERATOR_DEPLOY)
 
 # FOCUS allows running specific tests by name.
 # Example: make test-e2e FOCUS="Standalone"
