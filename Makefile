@@ -83,9 +83,19 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
+## Tool Binaries
+KUBECTL ?= kubectl
+KIND ?= kind
+
 KIND_CLUSTER ?= littlered-test-e2e
 SKIP_KIND_SETUP ?= false
 SKIP_OPERATOR_DEPLOY ?= false
+
+# Determine if the cluster already exists at parse-time (only if running e2e targets)
+ifneq ($(filter test-e2e setup-test-e2e cleanup-test-e2e,$(MAKECMDGOALS)),)
+# We use grep -xc to get an exact count of matching lines, stripping any noise.
+CLUSTER_EXISTS := $(shell $(KIND) get clusters 2>/dev/null | grep -xc "$(KIND_CLUSTER)" | grep -q "^1$$" && echo true || echo false)
+endif
 
 .PHONY: setup-test-e2e
 setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
@@ -93,24 +103,29 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
-	@case "$$($(KIND) get clusters)" in \
-		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
-	esac
+	@if [ "$(CLUSTER_EXISTS)" = "false" ]; then \
+		echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
+		$(KIND) create cluster --name $(KIND_CLUSTER); \
+	else \
+		echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation."; \
+	fi
 
 # E2E_SETUP_DEP defines the dependency for setting up the E2E environment.
+# E2E_CLEANUP_DEP defines the dependency for cleaning up.
+# We only cleanup if we are not skipping setup AND the cluster didn't exist before we started.
 ifeq ($(SKIP_KIND_SETUP),true)
-E2E_SETUP_DEP =
-E2E_CLEANUP_DEP =
+  E2E_SETUP_DEP =
+  E2E_CLEANUP_DEP =
 else
-E2E_SETUP_DEP = setup-test-e2e
-E2E_CLEANUP_DEP = cleanup-test-e2e
+  E2E_SETUP_DEP = setup-test-e2e
+  ifeq ($(CLUSTER_EXISTS),true)
+    E2E_CLEANUP_DEP =
+  else
+    E2E_CLEANUP_DEP = cleanup-test-e2e
+  endif
 endif
 
-E2E_VARS = KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) SKIP_OPERATOR_DEPLOY=$(SKIP_OPERATOR_DEPLOY)
+E2E_VARS = KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) SKIP_OPERATOR_DEPLOY=$(SKIP_OPERATOR_DEPLOY) SKIP_KIND_SETUP=$(SKIP_KIND_SETUP)
 
 # FOCUS allows running specific tests by name.
 # Example: make test-e2e FOCUS="Standalone"
@@ -140,6 +155,7 @@ run-test-e2e: manifests generate fmt vet
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
+	@echo "Deleting Kind cluster '$(KIND_CLUSTER)'..."
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
 .PHONY: kind-load
@@ -255,8 +271,6 @@ $(LOCALBIN):
 	mkdir -p "$(LOCALBIN)"
 
 ## Tool Binaries
-KUBECTL ?= kubectl
-KIND ?= kind
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
