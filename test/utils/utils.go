@@ -19,13 +19,95 @@ package utils
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2" // nolint:revive,staticcheck
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// ... (existing code)
+
+// CreateTLSSecret generates a self-signed CA and a server certificate,
+// then creates a K8s secret containing tls.crt, tls.key, and ca.crt.
+func CreateTLSSecret(ctx context.Context, k8sClient client.Client, name, namespace, commonName string) error {
+	// 1. Generate CA
+	caPrivKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return err
+	}
+	caTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2026),
+		Subject: pkix.Name{
+			Organization: []string{"LittleRed Testing CA"},
+			CommonName:   "LittleRed Root CA",
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().AddDate(1, 0, 0),
+		IsCA:                  true,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+	}
+	caBytes, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caPrivKey.PublicKey, caPrivKey)
+	if err != nil {
+		return err
+	}
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caBytes})
+
+	// 2. Generate Server Cert
+	certPrivKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return err
+	}
+	certTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2027),
+		Subject: pkix.Name{
+			Organization: []string{"LittleRed Testing"},
+			CommonName:   commonName,
+		},
+		DNSNames:     []string{commonName, fmt.Sprintf("%s.%s.svc", commonName, namespace)},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().AddDate(1, 0, 0),
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		SubjectKeyId: []byte{1, 2, 3, 4, 6},
+	}
+	certBytes, err := x509.CreateCertificate(rand.Reader, certTmpl, caTmpl, &certPrivKey.PublicKey, caPrivKey)
+	if err != nil {
+		return err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certBytes})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(certPrivKey)})
+
+	// 3. Create Secret
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Data: map[string][]byte{
+			"tls.crt": certPEM,
+			"tls.key": keyPEM,
+			"ca.crt":  caPEM,
+		},
+		Type: corev1.SecretTypeTLS,
+	}
+
+	return k8sClient.Create(ctx, secret)
+}
 
 const (
 	certmanagerVersion = "v1.19.2"

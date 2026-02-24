@@ -232,6 +232,8 @@ func TestBuildRedisConfig(t *testing.T) {
 			name: "with TLS client auth",
 			setupLR: func(lr *littleredv1alpha1.LittleRed) {
 				lr.Spec.TLS.Enabled = true
+				lr.Spec.TLS.ExistingSecret = "tls-secret"
+				lr.Spec.TLS.CACertSecret = "tls-secret" // CA is in the same secret → mounted at /tls
 				lr.Spec.TLS.ClientAuth = true
 			},
 			mustHave: []string{

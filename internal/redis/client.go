@@ -18,6 +18,7 @@ package redis
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"strconv"
 	"strings"
@@ -25,6 +26,30 @@ import (
 
 	"github.com/redis/go-redis/v9"
 )
+
+// makeTLSConfig returns a TLS config for operator-to-pod connections.
+//
+// We use InsecureSkipVerify deliberately. TLS here provides encryption in
+// transit (confidentiality); it does not need to provide authentication.
+//
+// Authentication is already established at a higher level: the operator
+// resolves pod IPs from the Kubernetes API, and only the actual pod can
+// receive traffic on its assigned IP within the cluster network. Intercepting
+// traffic at the pod-IP level requires compromising node networking or the CNI
+// — at that point, TLS cert verification is the least of your concerns.
+//
+// Certificate verification would also fail in practice: TLS secrets are scoped
+// to service hostnames, not pod IPs, so the cert's SANs never match the
+// address we dial.
+//
+// For full PKI-based mutual authentication, use a service mesh (Istio,
+// Linkerd). See docs/adr/004-tls-insecure-skip-verify.md.
+func makeTLSConfig(enabled bool) *tls.Config {
+	if !enabled {
+		return nil
+	}
+	return &tls.Config{InsecureSkipVerify: true} //nolint:gosec // intentional, see ADR 004
+}
 
 const (
 	// SentinelMasterName is the name used to identify the master in sentinel
@@ -44,15 +69,17 @@ type MasterInfo struct {
 
 // SentinelClient wraps sentinel operations
 type SentinelClient struct {
-	addresses []string
-	password  string
+	addresses  []string
+	password   string
+	tlsEnabled bool
 }
 
 // NewSentinelClient creates a new sentinel client
-func NewSentinelClient(addresses []string, password string) *SentinelClient {
+func NewSentinelClient(addresses []string, password string, tlsEnabled bool) *SentinelClient {
 	return &SentinelClient{
-		addresses: addresses,
-		password:  password,
+		addresses:  addresses,
+		password:   password,
+		tlsEnabled: tlsEnabled,
 	}
 }
 
@@ -85,6 +112,7 @@ func (c *SentinelClient) GetMasterState(ctx context.Context, name string) (*Mast
 			Password:    c.password,
 			DialTimeout: DefaultTimeout,
 			ReadTimeout: DefaultTimeout,
+			TLSConfig:   makeTLSConfig(c.tlsEnabled),
 		})
 		result, err := client.Master(ctx, name).Result()
 		client.Close()
@@ -118,6 +146,7 @@ func (c *SentinelClient) IsFailoverInProgress(ctx context.Context, name string) 
 			Password:    c.password,
 			DialTimeout: DefaultTimeout,
 			ReadTimeout: DefaultTimeout,
+			TLSConfig:   makeTLSConfig(c.tlsEnabled),
 		})
 		result, err := client.Master(ctx, name).Result()
 		client.Close()
@@ -176,6 +205,7 @@ func (c *SentinelClient) Subscribe(ctx context.Context, channels ...string) (<-c
 			DialTimeout: DefaultTimeout,
 			// No read timeout for Pub/Sub
 			ReadTimeout: -1,
+			TLSConfig:   makeTLSConfig(c.tlsEnabled),
 		})
 
 		if err := rdb.Ping(ctx).Err(); err == nil {
@@ -219,6 +249,7 @@ func (c *SentinelClient) Monitor(ctx context.Context, name, ip string, port int,
 			Password:    c.password,
 			DialTimeout: DefaultTimeout,
 			ReadTimeout: DefaultTimeout,
+			TLSConfig:   makeTLSConfig(c.tlsEnabled),
 		})
 		err := client.Process(ctx, redis.NewStatusCmd(ctx, "SENTINEL", "MONITOR", name, ip, port, quorum))
 		client.Close()
@@ -245,6 +276,7 @@ func (c *SentinelClient) Set(ctx context.Context, name, option, value string) er
 			Password:    c.password,
 			DialTimeout: DefaultTimeout,
 			ReadTimeout: DefaultTimeout,
+			TLSConfig:   makeTLSConfig(c.tlsEnabled),
 		})
 		err := client.Process(ctx, redis.NewStatusCmd(ctx, "SENTINEL", "SET", name, option, value))
 		client.Close()
@@ -269,6 +301,7 @@ func (c *SentinelClient) getMasterFromSentinel(ctx context.Context, addr string)
 		Password:    c.password,
 		DialTimeout: DefaultTimeout,
 		ReadTimeout: DefaultTimeout,
+		TLSConfig:   makeTLSConfig(c.tlsEnabled),
 	})
 	defer client.Close()
 
@@ -320,6 +353,7 @@ func (c *SentinelClient) getReplicasFromSentinel(ctx context.Context, sentinelAd
 		Password:    c.password,
 		DialTimeout: DefaultTimeout,
 		ReadTimeout: DefaultTimeout,
+		TLSConfig:   makeTLSConfig(c.tlsEnabled),
 	})
 	defer client.Close()
 
@@ -352,6 +386,7 @@ func (c *SentinelClient) Reset(ctx context.Context, masterName string) error {
 			Password:    c.password,
 			DialTimeout: DefaultTimeout,
 			ReadTimeout: DefaultTimeout,
+			TLSConfig:   makeTLSConfig(c.tlsEnabled),
 		})
 		// SENTINEL RESET masterName
 		err := client.Process(ctx, redis.NewIntCmd(ctx, "SENTINEL", "RESET", masterName))
@@ -375,6 +410,7 @@ func (c *SentinelClient) Remove(ctx context.Context, masterName string) error {
 			Password:    c.password,
 			DialTimeout: DefaultTimeout,
 			ReadTimeout: DefaultTimeout,
+			TLSConfig:   makeTLSConfig(c.tlsEnabled),
 		})
 		// SENTINEL REMOVE masterName
 		err := client.Process(ctx, redis.NewStatusCmd(ctx, "SENTINEL", "REMOVE", masterName))
@@ -400,6 +436,7 @@ func (c *SentinelClient) IsMonitoring(ctx context.Context, sentinelAddr, masterN
 		Password:    c.password,
 		DialTimeout: DefaultTimeout,
 		ReadTimeout: DefaultTimeout,
+		TLSConfig:   makeTLSConfig(c.tlsEnabled),
 	})
 	defer client.Close()
 
@@ -414,12 +451,13 @@ func (c *SentinelClient) IsMonitoring(ctx context.Context, sentinelAddr, masterN
 }
 
 // Ping checks if a redis instance is reachable
-func Ping(ctx context.Context, addr, password string) error {
+func Ping(ctx context.Context, addr, password string, tlsEnabled bool) error {
 	client := redis.NewClient(&redis.Options{
 		Addr:        addr,
 		Password:    password,
 		DialTimeout: DefaultTimeout,
 		ReadTimeout: DefaultTimeout,
+		TLSConfig:   makeTLSConfig(tlsEnabled),
 	})
 	defer client.Close()
 
@@ -427,12 +465,13 @@ func Ping(ctx context.Context, addr, password string) error {
 }
 
 // SlaveOf reconfigures a redis instance to follow a new master
-func SlaveOf(ctx context.Context, addr, password, masterIP, masterPort string) error {
+func SlaveOf(ctx context.Context, addr, password, masterIP, masterPort string, tlsEnabled bool) error {
 	client := redis.NewClient(&redis.Options{
 		Addr:        addr,
 		Password:    password,
 		DialTimeout: DefaultTimeout,
 		ReadTimeout: DefaultTimeout,
+		TLSConfig:   makeTLSConfig(tlsEnabled),
 	})
 	defer client.Close()
 
@@ -443,12 +482,13 @@ func SlaveOf(ctx context.Context, addr, password, masterIP, masterPort string) e
 }
 
 // GetReplicationInfo gets replication info from a redis instance
-func GetReplicationInfo(ctx context.Context, addr, password string) (role string, masterHost string, masterLinkStatus string, offset int64, err error) {
+func GetReplicationInfo(ctx context.Context, addr, password string, tlsEnabled bool) (role string, masterHost string, masterLinkStatus string, offset int64, err error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:        addr,
 		Password:    password,
 		DialTimeout: DefaultTimeout,
 		ReadTimeout: DefaultTimeout,
+		TLSConfig:   makeTLSConfig(tlsEnabled),
 	})
 	defer client.Close()
 
