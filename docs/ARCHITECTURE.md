@@ -2,8 +2,8 @@
 
 > Technical architecture for the LittleRed Kubernetes operator.
 
-**Document Status**: Draft
-**Last Updated**: 2026-02-11
+**Document Status**: Active
+**Last Updated**: 2026-02-24
 
 ---
 
@@ -16,9 +16,9 @@
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │                  LittleRed Operator                       │   │
 │  │  ┌─────────────────┐  ┌─────────────────────────────┐    │   │
-│  │  │ Controller      │  │ Webhooks (optional)          │    │   │
-│  │  │ Manager         │  │ - Validation                 │    │   │
-│  │  │                 │  │ - Defaulting                 │    │   │
+│  │  │ Controller      │  │ Sentinel Event Monitor      │    │   │
+│  │  │ Manager         │  │ (background goroutine       │    │   │
+│  │  │                 │  │  per sentinel CR)            │    │   │
 │  │  └────────┬────────┘  └─────────────────────────────┘    │   │
 │  │           │                                               │   │
 │  │           ▼                                               │   │
@@ -41,14 +41,18 @@
 │  │                    Managed Resources                      │   │
 │  │                                                           │   │
 │  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────────────┐ │   │
-│  │  │ StatefulSet │ │ Services    │ │ ConfigMaps          │ │   │
-│  │  │ (Redis)     │ │             │ │ (redis.conf)        │ │   │
+│  │  │ StatefulSets│ │ Services    │ │ ConfigMaps          │ │   │
+│  │  │ (Redis,     │ │ (master,    │ │ (redis.conf,        │ │   │
+│  │  │  Sentinel,  │ │  headless,  │ │  sentinel.conf)     │ │   │
+│  │  │  Cluster)   │ │  sentinel)  │ │                     │ │   │
 │  │  └─────────────┘ └─────────────┘ └─────────────────────┘ │   │
 │  │                                                           │   │
 │  │  ┌─────────────┐ ┌─────────────────────────────────────┐ │   │
 │  │  │ Secrets     │ │ ServiceMonitor (optional)           │ │   │
 │  │  │ (auth/TLS)  │ │                                     │ │   │
-│  │  └─────────────┘ └─────────────────────────────────────┘ │   │
+│  │  │ (user-      │ └─────────────────────────────────────┘ │   │
+│  │  │  provided)  │                                         │   │
+│  │  └─────────────┘                                         │   │
 │  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -71,8 +75,8 @@ spec:
 
   # Image configuration
   image:
-    repository: redis          # or valkey/valkey
-    tag: "7.2"
+    repository: valkey/valkey     # or redis
+    tag: "8.0"
     pullPolicy: IfNotPresent
     pullSecrets: []
 
@@ -86,7 +90,7 @@ spec:
       tcp-keepalive 300
       hz 10
 
-  # Resources
+  # Resources (limits always equal requests for Guaranteed QoS)
   resources:
     requests:
       cpu: "500m"
@@ -98,12 +102,14 @@ spec:
   # Authentication
   auth:
     enabled: false
-    secretName: ""           # Secret containing 'password' key
+    existingSecret: ""       # Secret containing 'password' key
 
-  # TLS
+  # TLS (encryption in transit; see ADR-004 for verification model)
   tls:
     enabled: false
-    secretName: ""           # Secret containing tls.crt, tls.key, ca.crt
+    existingSecret: ""       # Secret containing tls.crt, tls.key, ca.crt
+    caCertSecret: ""         # Separate CA cert secret (optional)
+    clientAuth: false        # Require client certificates
 
   # Metrics
   metrics:
@@ -113,12 +119,9 @@ spec:
       resources: {}
     serviceMonitor:
       enabled: false
-      namespace: ""          # Override namespace for ServiceMonitor
-      labels: {}             # Additional labels
+      namespace: ""
+      labels: {}
       interval: 30s
-
-  # Update strategy (sentinel mode only uses this for rolling)
-  updateStrategy: RollingUpdate | Recreate
 
   # Pod configuration
   podTemplate:
@@ -127,50 +130,67 @@ spec:
     nodeSelector: {}
     tolerations: []
     affinity: {}
-    securityContext: {}
+    topologySpreadConstraints: []
+    priorityClassName: ""
 
-  # Service configuration
-  service:
-    type: ClusterIP
-    annotations: {}
+  # Sentinel mode settings
+  sentinel:
+    quorum: 2
+    downAfterMilliseconds: 5000
+    failoverTimeout: 60000
+    parallelSyncs: 1
 
   # Cluster mode settings
   cluster:
-    shards: 3               # Minimum 3
+    shards: 3                    # Minimum 3
     replicasPerShard: 1
-    clusterNodeTimeout: 15000
+    clusterNodeTimeout: 15000    # ms
+    failoverGracePeriod: 15      # seconds beyond cluster-node-timeout
 
 status:
-  phase: Pending | Initializing | Running | Failed
-  bootstrapRequired: true    # Sentinel mode only
+  phase: Pending | Initializing | Running | Failed | Terminating
+  status: ""                     # Human-readable summary (master pod name or phase)
+  bootstrapRequired: true        # Sentinel mode only
+  observedGeneration: 0
   conditions:
-    - type: Ready
-      status: "True" | "False" | "Unknown"
+    - type: Ready | ConfigValid | Initialized | SentinelReady
+      status: "True" | "False"
       reason: ""
       message: ""
       lastTransitionTime: ""
-  master:                    # Sentinel mode only
+  redis:
+    ready: 0
+    total: 0
+  master:                        # Sentinel mode only
     podName: ""
-    podIP: ""
-  replicas:                  # Sentinel mode only
+    ip: ""
+  replicas:                      # Sentinel mode only
     ready: 0
     total: 0
-  sentinels:                 # Sentinel mode only
+  sentinels:                     # Sentinel mode only
     ready: 0
     total: 0
-  cluster:                   # Cluster mode only
-    state: ok
-    nodes: []
-    lastBootstrap: ""
-  observedGeneration: 0
+  cluster:                       # Cluster mode only
+    state: ok | fail | unknown
+    nodes:
+      - podName: ""
+        nodeID: ""
+        role: master | replica
+        masterNodeID: ""
+        slotRanges: ""
+    orphanedReplicas:            # Tracked for failover grace period
+      - podName: ""
+        nodeID: ""
+        masterNodeID: ""
+        detectedAt: ""
 ```
 
 ### 2.2 CRD Versioning Strategy
 
 | Version | Status | Notes |
 |---------|--------|-------|
-| `v1alpha1` | Initial | Breaking changes allowed |
-| `v1beta1` | Future | Stabilized API, deprecation warnings |
+| `v1alpha1` | Current | Breaking changes allowed |
+| `v1beta1` | Future | Stabilized API |
 | `v1` | Future | Stable, full compatibility guarantees |
 
 ---
@@ -184,13 +204,12 @@ status:
 │                    Namespace: user-ns                        │
 │                                                              │
 │  ┌────────────────────────────────────────────────────────┐ │
-│  │           StatefulSet: {name}                          │ │
+│  │           StatefulSet: {name}-redis (replicas: 1)       │ │
 │  │  ┌──────────────────────────────────────────────────┐  │ │
-│  │  │                   Pod: {name}-0                   │  │ │
+│  │  │                   Pod: {name}-redis-0              │  │ │
 │  │  │  ┌─────────────────┐  ┌────────────────────────┐ │  │ │
 │  │  │  │ Container:      │  │ Container:             │ │  │ │
 │  │  │  │ redis           │  │ redis-exporter         │ │  │ │
-│  │  │  │                 │  │                        │ │  │ │
 │  │  │  │ Port: 6379      │  │ Port: 9121             │ │  │ │
 │  │  │  └─────────────────┘  └────────────────────────┘ │  │ │
 │  │  └──────────────────────────────────────────────────┘  │ │
@@ -198,8 +217,7 @@ status:
 │                                                              │
 │  ┌────────────────────────┐  ┌────────────────────────────┐ │
 │  │ Service: {name}        │  │ ConfigMap: {name}-config   │ │
-│  │ Port: 6379 → 6379      │  │ - redis.conf               │ │
-│  │ Port: 9121 → 9121      │  │                            │ │
+│  │ Port: 6379, 9121       │  │ - redis.conf               │ │
 │  └────────────────────────┘  └────────────────────────────┘ │
 │                                                              │
 │  ┌────────────────────────────────────────────────────────┐ │
@@ -207,12 +225,6 @@ status:
 │  └────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```
-
-**Resource Naming Convention**:
-- StatefulSet: `{cr-name}`
-- Service: `{cr-name}`
-- ConfigMap: `{cr-name}-config`
-- ServiceMonitor: `{cr-name}`
 
 ### 3.2 Sentinel Mode
 
@@ -222,19 +234,17 @@ status:
 │                                                                      │
 │  ┌────────────────────────────────────────────────────────────────┐ │
 │  │              StatefulSet: {name}-redis (replicas: 3)           │ │
-│  │                                                                 │ │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │ │
 │  │  │ Pod: -0      │  │ Pod: -1      │  │ Pod: -2      │          │ │
 │  │  │ (master)     │  │ (replica)    │  │ (replica)    │          │ │
-│  │  │              │  │              │  │              │          │ │
 │  │  │ redis:6379   │  │ redis:6379   │  │ redis:6379   │          │ │
 │  │  │ export:9121  │  │ export:9121  │  │ export:9121  │          │ │
 │  │  └──────────────┘  └──────────────┘  └──────────────┘          │ │
+│  │  Labels: chuck-chuck-chuck.net/role = master | replica          │ │
 │  └────────────────────────────────────────────────────────────────┘ │
 │                                                                      │
 │  ┌────────────────────────────────────────────────────────────────┐ │
 │  │              StatefulSet: {name}-sentinel (replicas: 3)        │ │
-│  │                                                                 │ │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │ │
 │  │  │ Pod: -0      │  │ Pod: -1      │  │ Pod: -2      │          │ │
 │  │  │ sentinel     │  │ sentinel     │  │ sentinel     │          │ │
@@ -245,91 +255,57 @@ status:
 │  ┌─────────────────────┐  ┌─────────────────────┐                   │
 │  │ Service:            │  │ Service:            │                   │
 │  │ {name}-master       │  │ {name}-replicas     │                   │
-│  │ (to current master) │  │ (headless, all)     │                   │
+│  │ (selector: role=    │  │ (headless, all      │                   │
+│  │  master)            │  │  Redis pods)        │                   │
 │  └─────────────────────┘  └─────────────────────┘                   │
 │                                                                      │
 │  ┌─────────────────────┐  ┌─────────────────────────────────────┐   │
 │  │ Service:            │  │ ConfigMap: {name}-config            │   │
 │  │ {name}-sentinel     │  │ ConfigMap: {name}-sentinel-config   │   │
+│  │ (headless)          │  │                                     │   │
 │  └─────────────────────┘  └─────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 **Sentinel Mode Resources**:
-- StatefulSet: `{name}-redis` (3 replicas: 1 master + 2 replicas)
-- StatefulSet: `{name}-sentinel` (3 replicas)
-- Service: `{name}-master` (ClusterIP, points to current master)
+- StatefulSet: `{name}-redis` (3 pods: 1 master + 2 replicas)
+- StatefulSet: `{name}-sentinel` (3 sentinel pods)
+- Service: `{name}-master` (ClusterIP, selector `role=master`)
 - Service: `{name}-replicas` (headless, all Redis pods)
 - Service: `{name}-sentinel` (headless, all Sentinel pods)
-- ConfigMap: `{name}-config` (redis.conf)
-- ConfigMap: `{name}-sentinel-config` (sentinel.conf)
+- ConfigMap: `{name}-config` (redis.conf + startup script)
+- ConfigMap: `{name}-sentinel-config` (sentinel.conf + startup script)
 
-### 3.2.1 Safe Bootstrap (Sentinel Mode)
-
-To prevent data loss in pure in-memory mode (where an empty master restarting could wipe live replicas), LittleRed implements a strict "Operator-Authorized" bootstrap mechanism:
-
-1.  **Operator Intent**: On CR creation (or total cluster loss), the operator sets `status.bootstrapRequired: true`.
-2.  **Pod Strategy (Wait-Loop)**:
-    *   **All** Redis pods start with a shell script that enters a loop.
-    *   Inside the loop, the pod uses `redis-cli` to query the Sentinels for the current master.
-    *   The pod **refuses** to start `redis-server` until Sentinel returns a valid master address.
-3.  **Operator Strategy (Authorization)**:
-    *   The operator monitors `redis-0`. Once `redis-0` has been assigned a **PodIP**, the operator identifies it as the "seed" master.
-    *   The operator issues a `SENTINEL MONITOR` command to the Sentinels, registering `redis-0`'s **Pod IP** as the master.
-4.  **Handshake**:
-    *   `redis-0` sees its own **Pod IP** in the Sentinel reply. It exits the loop and starts as **master**.
-    *   `redis-1` and `redis-2` see the master in Sentinel, exit their loops, and start as **replicas**.
-5.  **Completion**: Once all pods are ready and the cluster is healthy, the operator clears `status.bootstrapRequired: false`.
-
-### 3.2.2 Strict IP-Only Identity
-
-For pure in-memory mode, LittleRed enforces **IP-based identity** instead of stable hostnames (FQDNs).
-
-**Rationale**:
-- **Identity Coupling**: In K8s, a StatefulSet Pod keeps its name across restarts but gets a **new IP**.
-- **Data Loss Protection**: Since we are pure in-memory, a restarted pod is an **empty node**. If we used hostnames, Sentinel might recognize the restarted `redis-0` as the previous master and re-connect to it, leading to a "Ghost Master" scenario where an empty node accepts writes.
-- **Race Prevention**: Ephemeral IPs ensure that a restarted pod is treated as a "stranger" node. Sentinel will have already promoted a replica, and the restarted pod will be forced to join as a replica and sync from the new master.
-- **DNS Resilience**: Eliminates dependency on CoreDNS resolution during critical failover windows.
-
-**Implementation**:
-- `sentinel announce-hostnames no` and `sentinel resolve-hostnames no` are set.
-- The operator strictly maps Sentinel-reported IPs to Pod names via the K8s API.
-- All internal communication (Operator → Sentinel, Pod → Sentinel) uses Pod IPs where possible.
-
----
-
-## 3.3 Cluster Mode
+### 3.3 Cluster Mode
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Namespace: user-ns                            │
 │                                                                      │
 │  ┌────────────────────────────────────────────────────────────────┐ │
-│  │  StatefulSet: {name}-cluster (replicas: shards × (1+replicasPerShard)) │ │
-│  │                                                                 │ │
-│  │  Example: 3 shards, 1 replica per shard = 6 pods                │ │
+│  │  StatefulSet: {name}-cluster                                    │ │
+│  │  (replicas: shards × (1 + replicasPerShard))                    │ │
+│  │                                                                  │ │
+│  │  Example: 3 shards, 1 replica/shard = 6 pods                    │ │
+│  │  Pod 0-2: shard masters (slots evenly divided)                  │ │
+│  │  Pod 3-5: shard replicas (one per master)                       │ │
+│  │                                                                  │ │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │ │
 │  │  │ Pod: -0      │  │ Pod: -1      │  │ Pod: -2      │          │ │
-│  │  │ (shard-0     │  │ (shard-0     │  │ (shard-1     │          │ │
-│  │  │  master)     │  │  replica)    │  │  master)     │          │ │
-│  │  │ slots 0-5460 │  │              │  │ slots 5461-  │          │ │
-│  │  │              │  │              │  │ 10922        │          │ │
-│  │  │ redis:6379   │  │ redis:6379   │  │ redis:6379   │          │ │
-│  │  │ bus:16379    │  │ bus:16379    │  │ bus:16379    │          │ │
-│  │  │ export:9121  │  │ export:9121  │  │ export:9121  │          │ │
+│  │  │ shard-0      │  │ shard-1      │  │ shard-2      │          │ │
+│  │  │ master       │  │ master       │  │ master       │          │ │
+│  │  │ 0-5461       │  │ 5462-10922   │  │ 10923-16383  │          │ │
+│  │  │ 6379/16379   │  │ 6379/16379   │  │ 6379/16379   │          │ │
 │  │  └──────────────┘  └──────────────┘  └──────────────┘          │ │
 │  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │ │
 │  │  │ Pod: -3      │  │ Pod: -4      │  │ Pod: -5      │          │ │
-│  │  │ (shard-1     │  │ (shard-2     │  │ (shard-2     │          │ │
-│  │  │  replica)    │  │  master)     │  │  replica)    │          │ │
-│  │  │              │  │ slots 10923- │  │              │          │ │
-│  │  │              │  │ 16383        │  │              │          │ │
+│  │  │ replica of 0 │  │ replica of 1 │  │ replica of 2 │          │ │
 │  │  └──────────────┘  └──────────────┘  └──────────────┘          │ │
 │  └────────────────────────────────────────────────────────────────┘ │
 │                                                                      │
 │  ┌─────────────────────┐  ┌─────────────────────────────────────┐   │
 │  │ Service:            │  │ Service: {name}-cluster             │   │
-│  │ {name}              │  │ (headless for cluster gossip)       │   │
+│  │ {name}              │  │ (headless for gossip + bus)         │   │
 │  │ (ClusterIP, client) │  │ Ports: 6379, 16379                  │   │
 │  └─────────────────────┘  └─────────────────────────────────────┘   │
 │                                                                      │
@@ -339,410 +315,222 @@ For pure in-memory mode, LittleRed enforces **IP-based identity** instead of sta
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-**Cluster Mode Resources**:
-- StatefulSet: `{name}-cluster` (shards × (1 + replicasPerShard) pods)
-- Service: `{name}` (ClusterIP, client access)
-- Service: `{name}-cluster` (headless, cluster gossip)
-- ConfigMap: `{name}-cluster-config` (redis.conf with cluster settings)
-
 **Key design decisions**:
-- No PersistentVolumes: Cluster topology stored in CR status, not nodes.conf
-- Data durability through replication, not disk persistence
-- Operator manages cluster formation, slot assignment, and recovery
+- Strict positional shard mapping: Pod N owns shard N
+- No PersistentVolumes: `nodes.conf` is deleted on every start for fresh identity
+- Data durability through replication, not disk
 - Port 16379 used for cluster bus communication
+- `PodManagementPolicy: Parallel` for faster bootstrap
 
 ---
 
 ## 4. Reconciliation Flow
 
-### 4.1 Standalone Reconciler
+The operator uses a single `LittleRedReconciler` that dispatches based on `spec.mode`.
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│                    Reconcile(LittleRed)                         │
-└───────────────────────────┬────────────────────────────────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Validate spec         │
-                │ (mode == standalone?) │
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Reconcile ConfigMap   │──────────────────┐
-                │ (redis.conf)          │                  │
-                └───────────┬───────────┘                  │
-                            │                              │
-                            ▼                              │ Create/Update
-                ┌───────────────────────┐                  │ if not exists
-                │ Reconcile Service     │──────────────────┤ or changed
-                └───────────┬───────────┘                  │
-                            │                              │
-                            ▼                              │
-                ┌───────────────────────┐                  │
-                │ Reconcile StatefulSet │──────────────────┤
-                └───────────┬───────────┘                  │
-                            │                              │
-                            ▼                              │
-                ┌───────────────────────┐                  │
-                │ Reconcile             │──────────────────┘
-                │ ServiceMonitor (opt)  │
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Update CR Status      │
-                │ - phase               │
-                │ - conditions          │
-                └───────────────────────┘
-```
+**Common entry point**: validate spec → add finalizer → dispatch to mode-specific reconciler.
 
-### 4.2 Sentinel Reconciler
+**Requeue strategy**: fast interval (2s default) when not Running, steady interval (10s default) when Running. Intervals are overridable via annotations.
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│                    Reconcile(LittleRed)                         │
-└───────────────────────────┬────────────────────────────────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Validate spec         │
-                │ (mode == sentinel?)   │
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Reconcile ConfigMaps  │
-                │ - redis.conf          │
-                │ - sentinel.conf       │
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Reconcile Pod RBAC    │◄─── SA, Role, Binding
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Reconcile Services    │
-                │ - master              │
-                │ - replicas (headless) │
-                │ - sentinel (headless) │
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Reconcile Redis       │
-                │ StatefulSet           │
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Bootstrap master      │◄─── Wait for redis-0 PodIP,
-                │ (if first deploy)     │     issue SENTINEL MONITOR
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Reconcile Sentinel    │
-                │ StatefulSet           │
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Discover current      │◄─── Query sentinels
-                │ master                │     for master info
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Update master Service │◄─── Point to actual
-                │ endpoints             │     master pod
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Reconcile             │
-                │ ServiceMonitor (opt)  │
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Update CR Status      │
-                │ - phase               │
-                │ - master info         │
-                │ - replica counts      │
-                │ - sentinel counts     │
-                └───────────────────────┘
-```
+**Resource management**: All resources use Server-Side Apply (SSA) with `client.Apply` and `client.ForceOwnership`, which only manages fields the operator explicitly sets. This preserves external labels/annotations (e.g. `kubectl rollout restart`).
 
-### 4.3 Cluster Reconciler
+**Watch configuration**: The controller watches the LittleRed CR with `GenerationChangedPredicate` (ignoring status-only updates) and owns ConfigMaps, Services, and StatefulSets. Sentinel mode additionally watches a channel fed by the background Sentinel event monitor.
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│                    Reconcile(LittleRed)                         │
-└───────────────────────────┬────────────────────────────────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Validate spec         │
-                │ (mode == cluster?)    │
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Reconcile ConfigMap   │
-                │ (cluster-enabled)     │
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Reconcile Services    │
-                │ - client              │
-                │ - headless (cluster)  │
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Reconcile StatefulSet │
-                │ (shards × replicas)   │
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Wait for all pods     │◄─── All nodes must be
-                │ ready                 │     running before
-                └───────────┬───────────┘     cluster formation
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Gather ground truth   │◄─── Query each node for
-                │ (actual cluster state)│     CLUSTER INFO/NODES
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Cluster healthy?      │
-                └───────────┬───────────┘
-                            │
-             ┌──────────────┼──────────────┐
-             │ No           │              │ Yes
-             ▼              │              ▼
-┌────────────────────────┐  │  ┌────────────────────────┐
-│ Run repair loop        │  │  │ Update CR Status       │
-│ - Quorum recovery      │  │  │ - cluster state        │
-│ - Partition healing    │  │  │ - node info            │
-│ - Ghost node removal   │  │  │ - slot assignments     │
-│ - Slot restoration     │  │  └────────────────────────┘
-│ - Replica assignment   │  │
-└────────────────────────┘  │
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ Requeue (fast or      │
-                │ steady state)         │
-                └───────────────────────┘
-```
+For detailed reconciliation logic per mode, see:
+- [RECONCILIATION_LOOP.md](RECONCILIATION_LOOP.md) — high-level flow
+- [RECONCILIATION_LOOP_SENTINEL.md](RECONCILIATION_LOOP_SENTINEL.md) — sentinel healing rules, DetermineRealMaster, kill-9 protection
+- [RECONCILIATION_LOOP_CLUSTER.md](RECONCILIATION_LOOP_CLUSTER.md) — repair loop, quorum recovery, kill-9 protection
 
-See [CLUSTER_RECONCILIATION.md](CLUSTER_RECONCILIATION.md) for detailed cluster repair logic.
-
-### 4.4 Reconciliation Triggers
+### 4.1 Reconciliation Triggers
 
 | Event | Action |
 |-------|--------|
-| CR created | Full reconciliation |
-| CR updated | Diff-based reconciliation |
-| CR deleted | Cleanup owned resources (OwnerReference) |
-| Pod deleted | StatefulSet recreates, operator updates status |
-| Periodic resync | Verify state matches desired (default: 10h) |
+| CR spec change (generation bump) | Full reconciliation |
+| Owned resource change (STS, SVC, CM) | Reconciliation via ownership watch |
+| Sentinel `+switch-master` event | Reconciliation via channel (sentinel mode) |
+| Fast requeue timer (2s) | While not Running |
+| Steady requeue timer (10s) | While Running |
+| CR deleted | Cleanup: remove finalizer, stop sentinel monitor |
 
 ---
 
-## 5. Master Service Management (Sentinel Mode)
+## 5. Sentinel Mode: Key Mechanisms
 
-One of the key challenges is keeping the `{name}-master` Service pointing to the current master.
+### 5.1 Safe Bootstrap
 
-### 5.1 Approach: Endpoint Management
+To prevent data loss in pure in-memory mode, LittleRed implements operator-authorized bootstrap:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Reconciliation Loop                      │
-│                                                              │
-│  1. Query any Sentinel: SENTINEL get-master-addr-by-name    │
-│                              │                               │
-│                              ▼                               │
-│  2. Get current master IP                                    │
-│                              │                               │
-│                              ▼                               │
-│  3. Find Pod with that IP                                    │
-│                              │                               │
-│                              ▼                               │
-│  4. Update Service selector or Endpoints to match           │
-│                                                              │
-└─────────────────────────────────────────────────────────────┘
-```
+1. On CR creation, `status.bootstrapRequired = true`.
+2. All Redis pods start with a wait-loop querying Sentinel for the current master.
+3. Once `redis-0` has a PodIP, the operator issues `SENTINEL MONITOR` to **each sentinel pod individually** (not via the headless service, which would only reach one).
+4. `redis-0` sees its own IP in the Sentinel reply → starts as master.
+5. Other pods see the master → start as replicas.
+6. Once all pods are Running and Sentinel knows all replicas, `bootstrapRequired` is cleared.
 
-**Options for master service**:
+### 5.2 Strict IP-Only Identity (ADR-001)
 
-| Option | Pros | Cons |
-|--------|------|------|
-| **A: Selector-based** | Simple, K8s-native | Can't dynamically change selector |
-| **B: Manual Endpoints** | Full control | More code, manage Endpoints directly |
-| **C: Label on pod** | Elegant, selector works | Need to update pod labels |
+LittleRed enforces **IP-based identity** for all Sentinel and Redis nodes.
 
-**Recommended: Option C** - Add a label `chuck-chuck-chuck.net/role: master` to the master pod, update it on failover. Service selector uses this label.
+**Why**: A restarted pod keeps its hostname but gets a new IP. Since we are pure in-memory, a restarted pod is empty. If we used hostnames, Sentinel would see the empty `redis-0` as the previous master and allow it to accept writes, wiping live replicas via FULLRESYNC.
 
-### 5.2 Honest Labeling (Sentinel Mode)
+**Implementation**:
+- `sentinel announce-hostnames no` / `sentinel resolve-hostnames no`
+- All `SENTINEL MONITOR` commands use Pod IPs
+- The operator maps Sentinel-reported IPs to Pod names via the K8s API
 
-To improve observability and ensure correct traffic routing during cluster transitions, LittleRed implements "Honest Labeling." Instead of a binary master/replica choice, pods are labeled based on their actual relationship to the cluster:
+### 5.3 Kill-9 / Crash Protection (ADR-001 amendment)
 
-| Role | Meaning | Traffic Impact |
-|------|---------|----------------|
-| `master` | A living pod authorized as master by Sentinel. | Receives all traffic (Read/Write). |
-| `replica` | A living pod tracking a **living** master. | Receives read-only traffic (if configured). |
-| `orphan` | Sentinel reports a master, but it is a **ghost IP** (dead pod). | Removed from all Service endpoints. |
-| `undefined` | Sentinel has **no master information** registered. | Removed from all Service endpoints. |
+When a Redis process is killed (OOM, kill -9) but the pod stays alive, the container restarts at the same IP with no data. The startup script detects this by querying Sentinel for the stored `run-id` of the master at its own IP:
 
-This prevents "Zombie Replicas" (pods following dead IPs) from being perceived as healthy cluster members.
+- If Sentinel knows a `run-id` for a master at this IP → **crash detected**. The script suppresses Redis startup and waits up to 120s for Sentinel's SDOWN timer to fire and failover to complete.
+- The pod then joins as a replica of the newly elected master.
 
-### 5.3 Proactive Topology Introduction (Sentinel Mode)
+### 5.4 Master Service Routing
 
-Because "Strict IP Identity" prevents nodes from automatically re-discovering each other via hostnames, the Operator proactively "introduces" and repairs node relationships during reconciliation:
+The `{name}-master` service uses a label selector (`chuck-chuck-chuck.net/role: master`). The operator surgically updates this label on each reconcile cycle:
 
-1.  **Sentinel Membership Insurance**: The Operator ensures every Sentinel pod is monitoring the current master. If a Sentinel restarts with a new IP and enters an idle state, the Operator re-introduces the master to it.
-2.  **Replica Rescue**: The Operator verifies every Redis pod's replication state. If a pod is found pointing to a ghost IP (the "Zombie" state), the Operator authoritatively reconfigures it via `SLAVEOF` to follow the current living master.
-3.  **Ghost Node Removal**: The Operator proactively prunes dead IPs from Sentinel's topology via `SENTINEL RESET` once a new living master is stable.
+- **Master known**: the master pod gets `role=master`, all others get `role=replica`.
+- **No master** (failover in progress): only the `role=master` label is stripped from whoever had it. Other pods are left untouched to avoid churn.
+- **Sentinel unreachable**: labels are left unchanged (stale but stable).
 
-### 5.4 Failover Detection
+### 5.5 Healing Rules
 
-The operator doesn't perform failover—Sentinel does. The operator only needs to:
-1. Detect that failover occurred (master changed)
-2. Update the `role` label on pods
-3. Update CR status
+The sentinel reconciler gathers ground truth from every Redis and Sentinel pod, then applies a prioritized set of healing rules:
 
-Detection happens during reconciliation by querying Sentinel.
+| Rule | Trigger | Action |
+|------|---------|--------|
+| Rule 0 | Sentinel reachable but not monitoring | SENTINEL MONITOR + settings |
+| Rule A | Pod terminating or failover active | Skip all healing |
+| Ghost Master | Sentinel points at ghost or wrong IP | SENTINEL REMOVE + MONITOR |
+| Ghost Replicas | Ghost IPs in s_down in replica list | SENTINEL RESET |
+| Rule R | Redis pod not following consensus master | SLAVEOF |
+
+See [RECONCILIATION_LOOP_SENTINEL.md](RECONCILIATION_LOOP_SENTINEL.md) for the full algorithm.
+
+### 5.6 Sentinel Event Monitor
+
+A background goroutine per LittleRed CR subscribes to the Sentinel `+switch-master` pubsub channel. When a failover event is received, it injects a `GenericEvent` into the controller's work queue, triggering an immediate reconciliation without waiting for the next requeue timer.
 
 ---
 
-## 6. Configuration Management
+## 6. Cluster Mode: Key Mechanisms
 
-### 6.1 Default redis.conf
+### 6.1 Ground Truth Gathering
 
-```
-# LittleRed defaults - optimized for pure in-memory storage
-# IMPORTANT: Persistence is ACTIVELY DISABLED to ensure pure in-memory behavior.
-# Note: By default, we use 'noeviction', meaning data is never forgotten unless explicitly deleted.
+On each reconcile, the operator queries every pod for `CLUSTER MYID`, `CLUSTER INFO`, and `CLUSTER NODES`. It builds a `ClusterGroundTruth` containing: node identities, slot assignments, role/replica relationships, partition detection (BFS on the adjacency graph), and ghost node detection (NodeIDs without living K8s pods).
 
-# Networking
-bind 0.0.0.0
-port 6379
-tcp-backlog 511
-tcp-keepalive 300
+### 6.2 Repair Loop
 
-# Memory
-maxmemory-policy noeviction
+When the cluster is unhealthy, the operator runs a prioritized repair sequence:
 
-# Persistence - ACTIVELY DISABLED
-# These settings override any defaults from the Redis/Valkey image
-save ""                    # Disable RDB snapshots entirely
-appendonly no              # Disable AOF persistence
-rdbcompression no          # No compression (nothing to compress)
-rdbchecksum no             # No checksum (nothing to write)
+| Step | Trigger | Action |
+|------|---------|--------|
+| 0. Quorum Recovery | Voting masters ≤ shards/2 | CLUSTER FAILOVER TAKEOVER |
+| 1. Heal Partitions | >1 connected component | CLUSTER MEET + orphan tracking/promotion |
+| 2. Forget Ghosts | NodeIDs without K8s pods | CLUSTER FORGET (protected if still a replica's master) |
+| 3. Recover Slots | Missing shard ranges | CLUSTER ADDSLOTS to intended master |
+| 4. Repair Replication | Empty masters, missing replicas | CLUSTER REPLICATE |
+| 5. Bootstrap | 0 slots AND 0 replicas | Full MEET + ADDSLOTS + REPLICATE |
 
-# Performance
-hz 10
-dynamic-hz yes
+See [RECONCILIATION_LOOP_CLUSTER.md](RECONCILIATION_LOOP_CLUSTER.md) for the full algorithm.
 
-# Limits
-maxclients 10000
-```
+### 6.3 Kill-9 / Crash Protection
 
-**Persistence Guarantee**: The operator explicitly disables persistence to ensure:
-- No PVCs are needed
-- No disk I/O overhead
-- No background save processes
-- Pod restart = clean slate (due to no persistence)
+The cluster startup script detects container restarts via a surviving `nodes.conf` in the emptyDir:
 
-This overrides any persistence defaults that might be baked into Redis/Valkey container images.
+1. If `nodes.conf` exists → crash detected. Poll peers for up to 60s.
+2. If peers still see this pod as master with slots after 30s → find own replica and issue `CLUSTER FAILOVER TAKEOVER` to break the deadlock.
+3. If still stuck after 60s → enter infinite sleep (liveness probe will restart).
+4. Always delete `nodes.conf` before starting to ensure a fresh NodeID.
 
-### 6.2 Config Merging Strategy
+---
+
+## 7. Authentication & TLS
+
+### 7.1 Authentication
+
+- User provides a Secret containing a `password` key
+- `spec.auth.existingSecret` references the Secret
+- The operator injects `REDIS_PASSWORD` as an environment variable
+- Redis is configured with `requirepass` and `masterauth`
+- Sentinel is configured with `auth-pass` via `SENTINEL SET`
+
+### 7.2 TLS
+
+- User provides a Secret containing `tls.crt`, `tls.key`, and `ca.crt`
+- `spec.tls.existingSecret` references the Secret
+- Secrets are mounted at `/tls` in all pods (Redis, Sentinel)
+- Redis/Sentinel are configured with `tls-port`, `tls-cert-file`, `tls-key-file`, `tls-ca-cert-file`
+- The non-TLS port is disabled (`port 0`)
+
+### 7.3 Operator-to-Pod Connections
+
+The operator connects to Redis/Sentinel pods using `InsecureSkipVerify` for TLS. This provides encryption in transit while relying on the Kubernetes API (not PKI) for identity verification. See [ADR-004](adr/004-tls-insecure-skip-verify.md) for the full rationale.
+
+---
+
+## 8. Configuration Management
+
+### 8.1 Config Layering
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Configuration Layers                      │
 │                                                              │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │ 1. Hardcoded base (non-overridable)                 │    │
-│  │    - daemonize no (required for container)          │    │
-│  │    - dir /data                                      │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                          │                                   │
-│                          ▼                                   │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │ 2. Performance-optimized defaults (noeviction, no-persistence)│    │
-│  │    - maxmemory-policy noeviction                   │    │
-│  │    - save ""           ◄── ACTIVELY DISABLE RDB     │    │
-│  │    - appendonly no     ◄── ACTIVELY DISABLE AOF     │    │
-│  │    - rdbcompression no                              │    │
-│  │    - rdbchecksum no                                 │    │
-│  │    These ensure pure in-memory behavior regardless  │    │
-│  │    of what the upstream image might default to.     │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                          │                                   │
-│                          ▼ (merged, user overrides win)      │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │ 3. User config (spec.config.*)                      │    │
-│  │    - Typed fields (validated)                       │    │
-│  │    - Raw passthrough (expert mode - can re-enable   │    │
-│  │      persistence if user really wants it)           │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                          │                                   │
-│                          ▼                                   │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │ 4. Final redis.conf                                 │    │
-│  └─────────────────────────────────────────────────────┘    │
+│  1. Hardcoded base (non-overridable)                        │
+│     - daemonize no, dir /data                               │
+│                                                              │
+│  2. Performance-optimized defaults                          │
+│     - maxmemory-policy noeviction                           │
+│     - save ""           ← ACTIVELY DISABLE RDB              │
+│     - appendonly no     ← ACTIVELY DISABLE AOF              │
+│                                                              │
+│  3. User config (spec.config.*)                             │
+│     - Typed fields (validated)                              │
+│     - Raw passthrough (expert mode)                         │
+│                                                              │
+│  4. Mode-specific (auto-injected)                           │
+│     - Sentinel: replicaof, announce-ip                      │
+│     - Cluster: cluster-enabled, announce-ip/port/bus-port   │
+│     - TLS: tls-port, tls-cert-file, etc.                   │
+│     - Auth: requirepass, masterauth                         │
+│                                                              │
+│  → Final redis.conf written to ConfigMap                    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Key Point**: Layer 2 actively overrides any persistence defaults from upstream images. This guarantees that out-of-the-box, LittleRed is a pure in-memory store with no disk dependencies and no eviction by default.
+### 8.2 Startup Scripts
+
+Each mode uses a Go `text/template` (with `[[` `]]` delimiters) to generate a startup script injected as the container command. The script handles:
+- Sentinel mode: wait-loop for Sentinel authorization, kill-9 detection, master/replica branching
+- Cluster mode: crash detection, yield loop, deadlock breaker, fresh identity guarantee
+
+Pre-stop hooks handle graceful shutdown:
+- Sentinel mode: triggers `SENTINEL FAILOVER` if master, waits for handoff
+- Cluster mode: triggers `CLUSTER FAILOVER` to replica if master with slots
 
 ---
 
-## 7. Security Considerations
+## 9. Security
 
-### 7.1 Pod Security
+### 9.1 Pod Security
+- Runs as non-root (uid 999)
+- Read-only root filesystem (writable `/data` emptyDir)
+- All capabilities dropped
 
-```yaml
-securityContext:
-  runAsNonRoot: true
-  runAsUser: 999       # redis user
-  runAsGroup: 999
-  fsGroup: 999
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true  # May need /data writable for temp files
-  capabilities:
-    drop:
-      - ALL
-```
-
-### 7.2 Network Security
-
+### 9.2 Network Security
 - Services are ClusterIP by default (no external exposure)
-- TLS available for transport encryption
-- No network policies created by operator (user responsibility)
+- TLS available for transport encryption (ADR-004)
+- No NetworkPolicies created by operator (user responsibility)
 
-### 7.3 Secret Handling
-
-- Password read from Secret, not stored in CR
-- TLS certs read from Secret
-- Operator uses RBAC to read Secrets in target namespace
+### 9.3 Secret Handling
+- Passwords and TLS certs stored in user-managed Secrets, not in the CR
+- Operator uses RBAC to read Secrets in the target namespace
+- Secrets validated during spec validation (existence + required keys)
 
 ---
 
-## 8. Operator Deployment
-
-### 8.1 Deployment Architecture
+## 10. Operator Deployment
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -750,130 +538,116 @@ securityContext:
 │                                                              │
 │  ┌────────────────────────────────────────────────────────┐ │
 │  │             Deployment: littlered-operator              │ │
-│  │                                                         │ │
 │  │  ┌─────────────────────────────────────────────────┐   │ │
 │  │  │              Pod: operator                       │   │ │
-│  │  │  ┌─────────────────────────────────────────┐    │   │ │
-│  │  │  │ Container: manager                       │    │   │ │
-│  │  │  │ - Controller Manager                     │    │   │ │
-│  │  │  │ - Health probes: :8081                   │    │   │ │
-│  │  │  │ - Metrics: :8080                         │    │   │ │
-│  │  │  └─────────────────────────────────────────┘    │   │ │
+│  │  │  - Controller Manager                            │   │ │
+│  │  │  - Health probes: :8081                          │   │ │
+│  │  │  - Metrics: :8080                                │   │ │
+│  │  │  - Leader election enabled                       │   │ │
 │  │  └─────────────────────────────────────────────────┘   │ │
 │  └────────────────────────────────────────────────────────┘ │
 │                                                              │
-│  ┌─────────────────────┐  ┌─────────────────────────────┐   │
-│  │ ServiceAccount      │  │ Service: metrics            │   │
-│  │ ClusterRole         │  │ ServiceMonitor (optional)   │   │
-│  │ ClusterRoleBinding  │  └─────────────────────────────┘   │
-│  └─────────────────────┘                                    │
+│  ServiceAccount, ClusterRole, ClusterRoleBinding             │
+│  Service (metrics), ServiceMonitor (optional)                │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 8.2 RBAC Requirements
-
-**Cluster-scoped mode**:
-```yaml
-rules:
-  - apiGroups: ["chuck-chuck-chuck.net"]
-    resources: ["littlereds", "littlereds/status", "littlereds/finalizers"]
-    verbs: ["*"]
-  - apiGroups: [""]
-    resources: ["configmaps", "services", "secrets", "pods", "endpoints"]
-    verbs: ["*"]
-  - apiGroups: ["apps"]
-    resources: ["statefulsets"]
-    verbs: ["*"]
-  - apiGroups: ["monitoring.coreos.com"]
-    resources: ["servicemonitors"]
-    verbs: ["*"]
-```
-
-**Namespace-scoped mode**: Same rules, but Role instead of ClusterRole.
-
 ---
 
-## 9. Project Structure
+## 11. Project Structure
 
 ```
 littlered/
 ├── api/
 │   └── v1alpha1/
-│       ├── littlered_types.go      # CRD struct definitions
-│       ├── littlered_webhook.go    # Validation/defaulting webhooks
+│       ├── littlered_types.go         # CRD struct definitions
+│       ├── littlered_defaults.go      # Default values and helpers
 │       └── zz_generated.deepcopy.go
 ├── cmd/
-│   ├── littlered/                  # Operator entrypoint
-│   │   ├── main.go                 # Entrypoint
-│   │   └── Dockerfile              # Operator Dockerfile
-│   └── littlered-chaos-client/     # Chaos test client
+│   ├── littlered/                     # Operator entrypoint
+│   ├── lrctl/                         # CLI tool (kubectl plugin)
+│   └── littlered-chaos-client/        # Chaos test client
 ├── config/
-│   ├── crd/                        # Generated CRD YAML
-│   ├── manager/                    # Operator deployment
-│   ├── rbac/                       # RBAC manifests
-│   └── samples/                    # Example CRs
+│   ├── crd/                           # Generated CRD YAML
+│   ├── manager/                       # Operator deployment
+│   ├── rbac/                          # RBAC manifests
+│   └── samples/                       # Example CRs
 ├── internal/
 │   ├── controller/
-│   │   ├── littlered_controller.go # Main reconciler
-│   │   ├── resources.go            # Resource builders (ConfigMaps, Services, etc.)
-│   │   ├── cluster_reconcile.go    # Cluster mode reconciliation logic
-│   │   └── sentinel_monitor.go     # Sentinel event monitoring
-│   └── redis/
-│       ├── client.go               # Sentinel client wrapper
-│       └── cluster_client.go       # Cluster client wrapper
+│   │   ├── littlered_controller.go    # Main reconciler + sentinel healing
+│   │   ├── cluster_reconcile.go       # Cluster mode reconciliation
+│   │   ├── resources.go               # Resource builders (CMs, SVCs, STSs, startup scripts)
+│   │   ├── gatherer.go                # Operator-side Gatherer implementation
+│   │   └── sentinel_monitor.go        # Background +switch-master subscriber
+│   ├── redis/
+│   │   ├── client.go                  # Sentinel client wrapper
+│   │   ├── cluster_client.go          # Cluster client wrapper
+│   │   ├── sentinel_state.go          # SentinelClusterState + DetermineRealMaster
+│   │   ├── cluster_state.go           # ClusterGroundTruth + health checks
+│   │   └── gather.go                  # GatherClusterState / GatherClusterGroundTruth
+│   └── cli/
+│       ├── discovery/                 # Resource discovery for lrctl
+│       ├── k8s/                       # K8s exec-based Gatherer for lrctl
+│       └── types/                     # Shared types
 ├── charts/
-│   └── littlered/                  # Helm chart
-│       ├── Chart.yaml
-│       ├── values.yaml
-│       └── templates/
+│   └── littlered/                     # Helm chart
 ├── test/
-│   ├── e2e/                        # End-to-end tests
-│   └── fixtures/                   # Test CRs
+│   ├── e2e/                           # End-to-end tests (kind)
+│   ├── chaos/                         # Chaos test definitions
+│   └── utils/                         # Test utilities (TLS cert generation, etc.)
 ├── docs/
+│   ├── ARCHITECTURE.md                # This document
 │   ├── REQUIREMENTS.md
-│   ├── ARCHITECTURE.md
 │   ├── SCOPE.md
-│   └── TEST_CASES.md
+│   ├── RECONCILIATION_LOOP.md         # High-level reconciliation diagram
+│   ├── RECONCILIATION_LOOP_SENTINEL.md
+│   ├── RECONCILIATION_LOOP_CLUSTER.md
+│   ├── RECONCILIATION_ALGORITHM_CHANGELOG.md
+│   ├── USAGE.md
+│   ├── LRCTL.md
+│   ├── E2E_TESTING.md
+│   └── adr/                           # Architecture Decision Records
+│       ├── 001-strict-ip-identity.md
+│       ├── 002-remove-startup-ping-check.md
+│       ├── 003-low-interference-sentinel-reconciliation.md
+│       ├── 003a-deferred-improvements.md
+│       └── 004-tls-insecure-skip-verify.md
 ├── Makefile
 ├── go.mod
-└── README.md
+└── LLM_STARTUP.md
 ```
 
 ---
 
-## 10. Dependencies
+## 12. Dependencies
 
 | Dependency | Purpose | Version |
 |------------|---------|---------|
 | controller-runtime | K8s controller framework | latest stable |
 | client-go | K8s API client | matches K8s version |
-| redis (go-redis) | Redis client for health checks | v9 |
+| go-redis/v9 | Redis/Sentinel client | v9.17+ |
 | zap | Structured logging | via controller-runtime |
-| prometheus/client_golang | Operator metrics | latest |
 
 ---
 
-## 11. Design Decisions
+## 13. Design Decisions
 
 | Question | Decision | Rationale |
 |----------|----------|-----------|
-| Use admission webhooks? | **No** (initially) | Operational complexity, cert management burden. Validate in controller, report via status. Add later if needed. |
-| Leader election? | **Yes** | Required for HA operator deployments |
-| Finalizers? | **TBD** | Evaluate during implementation |
-| Watch Secrets for rotation? | **Yes** | Auto-reconcile on password/cert changes |
+| Admission webhooks? | No (validate in controller) | Operational complexity, cert management burden |
+| Leader election? | Yes | Required for HA operator |
+| Finalizers? | Yes | Clean shutdown of sentinel monitors |
+| Watch Secrets? | No (validated on reconcile) | Simpler; password/cert changes trigger requeue via status check |
+| Resource application? | Server-Side Apply | Preserves external fields, no read-modify-write races |
+| Watch predicate? | GenerationChangedPredicate | Prevents status-only updates from triggering redundant reconciliation |
+| TLS verification? | InsecureSkipVerify | Identity via K8s API, not PKI (ADR-004) |
 
 ---
 
-## 12. Diagrams Key
+## 14. References
 
-```
-┌─────────┐   Box: Component/Resource
-└─────────┘
-
-    │
-    ▼         Arrow: Flow direction
-
-─────────    Line: Connection/relationship
-
-◄────────    Arrow with reference: Annotation/note
-```
+- [ADR-001: Strict IP-Only Identity](adr/001-strict-ip-identity.md)
+- [ADR-003: Low-Interference Sentinel Reconciliation](adr/003-low-interference-sentinel-reconciliation.md)
+- [ADR-004: TLS InsecureSkipVerify](adr/004-tls-insecure-skip-verify.md)
+- [Reconciliation Algorithm Changelog](RECONCILIATION_ALGORITHM_CHANGELOG.md)
+- [LLM_STARTUP.md](../LLM_STARTUP.md) — condensed project overview for LLM onboarding

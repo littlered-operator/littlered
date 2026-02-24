@@ -2,7 +2,7 @@
 
 > Quick reference for what's in and out of scope.
 
-**Last Updated**: 2026-02-11
+**Last Updated**: 2026-02-24
 
 ---
 
@@ -13,7 +13,7 @@
 | Product Name | LittleRed |
 | Technical Name | `littlered` |
 | API Group | `chuck-chuck-chuck.net` |
-| API Version | `v1alpha1` (initial) |
+| API Version | `v1alpha1` (current) |
 | Default Image | `docker.io/valkey/valkey:8.0` |
 | Image Format | `{registry}/{path}:{tag}` (each component overridable) |
 
@@ -26,41 +26,66 @@
 - [x] Single Redis/Valkey instance (StatefulSet, 1 replica)
 - [x] Redis 7.2+ / Valkey 7.2+ support
 - [x] In-memory only (no persistence)
-- [x] Opinionated defaults (performance-optimized)
+- [x] Opinionated defaults (performance-optimized, noeviction)
 - [x] Full redis.conf override capability
-- [x] Optional password authentication
-- [x] Optional TLS
 - [x] Prometheus metrics (redis_exporter sidecar)
 - [x] Configurable resources (CPU/memory)
-- [x] Guaranteed QoS by default
+- [x] Guaranteed QoS by default (requests = limits)
 - [x] CR status reporting
 
 ### MVP (Sentinel) ✅
 
 - [x] Sentinel mode: 1 master + 2 replicas + 3 sentinels
-- [x] Automatic failover
+- [x] Automatic failover via Sentinel
 - [x] Rolling update strategy
-- [x] Recreate update strategy
 - [x] Optional ServiceMonitor creation
 - [x] Master/replica/sentinel services
+- [x] Safe bootstrap (operator-authorized master registration)
+- [x] Strict IP-only identity (ADR-001)
 
 ### Phase 2 (Cluster) ✅
 
 - [x] Cluster mode: configurable shards with replicas per shard
-- [x] Automatic cluster bootstrapping
+- [x] Automatic cluster bootstrapping (MEET + ADDSLOTS + REPLICATE)
 - [x] Operator-managed recovery (topology in CR status)
 - [x] No PersistentVolumes required
 - [x] Data durability through replication
+- [x] Strict positional shard mapping (Pod N = Shard N)
 
-### Infrastructure
+### Phase 3 (Auth & TLS) ✅
 
-- [x] Go implementation (kubebuilder)
-- [x] Kubernetes 1.28+ support
+- [x] Password authentication (all modes)
+- [x] TLS encryption (all modes)
+- [x] User-provided secrets for auth and TLS
+- [x] Separate CA cert secret support
+- [x] Client certificate auth support
+
+### Phase 4 (Resilience Hardening) ✅
+
+- [x] Kill-9 / OOM crash protection (sentinel: run-id detection, cluster: nodes.conf detection)
+- [x] Ghost node pruning (SENTINEL RESET, CLUSTER FORGET)
+- [x] Divergent sentinel correction (SENTINEL REMOVE + MONITOR)
+- [x] Cluster quorum recovery (CLUSTER FAILOVER TAKEOVER)
+- [x] Cluster partition healing (CLUSTER MEET + orphan tracking)
+- [x] Replica rescue (SLAVEOF for rogue masters)
+- [x] Graceful pre-stop hooks (failover before shutdown)
+- [x] Operator passivity during active transitions (Rule A guardrails)
+
+### Tooling ✅
+
+- [x] lrctl CLI tool (kubectl plugin, JSON output, shell completion)
+- [x] Chaos test client (littlered-chaos-client)
+- [x] E2E test suite (kind-based)
 - [x] Helm chart distribution
-- [x] Configurable namespace/cluster scope
-- [x] Unit tests
-- [x] Integration tests (envtest)
-- [x] E2E tests (kind)
+- [x] Structured JSON operator logs with categories (recon, state, audit)
+
+### Infrastructure ✅
+
+- [x] Go 1.24+ implementation (Kubebuilder v4)
+- [x] Kubernetes 1.28+ support
+- [x] Server-Side Apply for resource management
+- [x] Unit tests + integration tests (envtest) + E2E tests (kind)
+- [x] Architecture Decision Records (ADR-001 through ADR-004)
 
 ---
 
@@ -72,12 +97,15 @@
 |---------|--------|---------|
 | Persistence (RDB/AOF with PVC) | Not needed for pure in-memory use case | Maybe |
 | Redis < 7.2 | Legacy, not required | No |
-| Cluster slot migration | Needed for dynamic scaling | Yes |
+| Cluster slot migration | Needed for dynamic shard scaling | Yes |
 | ACL-based auth | Complexity, password sufficient | Maybe |
 | Auto-sizing | Sizing is app-driven | No |
-| Prometheus alerts | Low priority | If trivial |
+| Prometheus alerts / PrometheusRules | Low priority | If trivial |
 | OLM distribution | Helm sufficient | Maybe |
-| Multi-cluster | Out of scope | Unlikely |
+| Multi-cluster replication | Out of scope | Unlikely |
+| Admission webhooks | Validate in controller instead | Maybe later |
+| Configurable sentinel/replica counts | Fixed 1+2+3 topology | Yes |
+| TLS certificate verification (operator→pod) | Identity via K8s API, not PKI (ADR-004) | Service mesh recommended |
 
 ### Will Not Do
 
@@ -85,6 +113,7 @@
 - Backup/restore (no persistence)
 - Cross-namespace replication
 - Custom Redis modules
+- Managing PersistentVolumeClaims
 
 ---
 
@@ -93,13 +122,10 @@
 Design decisions that support extensibility:
 
 1. **Sentinel topology**: Fixed 1+2+3, architected for configurable counts in future
-2. **Redis Cluster**: ✅ Implemented with operator-managed topology (no nodes.conf dependency)
-3. **Persistence**:
-   - **Default**: Actively disable persistence (`save ""`, `appendonly no`) to guarantee pure in-memory behavior
-   - **No volumes**: Default deployment requires no PVCs
-   - **Expert override**: User can re-enable persistence via `spec.config.raw` if they really want it (their responsibility)
-   - **Future**: Operator-managed persistence (with proper PVC handling) could be added as opt-in feature later
-4. **Cluster state storage**: Topology stored in CR status, enabling deployment on any K8s cluster without local storage requirements
+2. **Cluster topology**: Strict positional shard mapping (Pod N = Shard N), operator-managed
+3. **Persistence**: Actively disabled by default; expert override via `spec.config.raw`
+4. **Identity model**: IP-only for in-memory mode (ADR-001); hostname-based would be needed for persistence mode
+5. **Operator philosophy**: Enablement over intervention (ADR-003) — trust Redis/Sentinel internal mechanisms, intervene only on permanent stalls
 
 ---
 
@@ -107,21 +133,18 @@ Design decisions that support extensibility:
 
 ### Pre-MVP Complete ✅
 
-1. ✅ Can deploy standalone Redis via CR
-2. ✅ Can deploy standalone Valkey via CR
-3. ✅ SET/GET operations work
-4. ✅ Prometheus metrics accessible
-5. ✅ Pod deletion triggers recreation
-6. ✅ All unit and integration tests pass
+1. ✅ Deploy standalone Redis/Valkey via CR
+2. ✅ SET/GET operations work
+3. ✅ Prometheus metrics accessible
+4. ✅ Pod deletion triggers recreation
 
 ### MVP Complete ✅
 
 1. ✅ Sentinel mode deploys all 6 pods
-2. ✅ Automatic failover works (kill master → new master elected)
+2. ✅ Automatic failover (kill master → new master elected)
 3. ✅ Rolling updates maintain availability
-4. ✅ ServiceMonitor created when enabled
-5. ✅ E2E tests pass on kind
-6. ✅ Helm chart installable
+4. ✅ E2E tests pass on kind
+5. ✅ Helm chart installable
 
 ### Phase 2 Complete ✅
 
@@ -129,7 +152,22 @@ Design decisions that support extensibility:
 2. ✅ Automatic slot assignment (16384 slots)
 3. ✅ Cluster recovery from node failures
 4. ✅ Topology stored in CR status (no PVC dependency)
-5. ✅ Chaos testing validates resilience
+
+### Phase 3 Complete ✅
+
+1. ✅ Auth works in standalone, sentinel, and cluster modes
+2. ✅ TLS works in standalone, sentinel, and cluster modes
+3. ✅ E2E tests for auth and TLS
+
+### Phase 4 Complete ✅
+
+1. ✅ Sentinel mode survives `kubectl delete pod --force --grace-period=0`
+2. ✅ Sentinel mode survives in-pod kill -9 (crash protection)
+3. ✅ Cluster mode survives `kubectl delete pod --force --grace-period=0`
+4. ✅ Cluster mode survives in-pod kill -9 (crash protection)
+5. ✅ Ghost nodes pruned automatically
+6. ✅ Divergent sentinels corrected automatically
+7. ✅ Reconciliation algorithm changelog tracks all fixes (LR-001 through LR-010)
 
 ---
 
@@ -138,20 +176,18 @@ Design decisions that support extensibility:
 ```
 Pre-MVP ✅
 ├── Project setup (kubebuilder init)
-├── CR definition (types.go)
+├── CR definition
 ├── Standalone controller
 ├── Metrics sidecar
-├── Basic tests
-└── Documentation
+└── Basic tests
 
 MVP ✅
 ├── Sentinel controller
+├── Safe bootstrap
 ├── Failover handling
 ├── Update strategies
-├── ServiceMonitor support
 ├── Helm chart
-├── E2E tests
-└── Release automation
+└── E2E tests
 
 Phase 2 ✅
 ├── Cluster controller
@@ -160,4 +196,19 @@ Phase 2 ✅
 ├── Partition healing
 ├── Ghost node removal
 └── Chaos testing
+
+Phase 3 ✅
+├── Password auth (all modes)
+├── TLS encryption (all modes)
+└── Auth/TLS E2E tests
+
+Phase 4 ✅
+├── Kill-9 protection (sentinel + cluster)
+├── Ghost master correction (REMOVE + MONITOR)
+├── Replica rescue (Rule R)
+├── Surgical pod relabeling
+├── GenerationChangedPredicate (reduce reconcile churn)
+├── Structured JSON logging with categories
+├── lrctl CLI tool
+└── Reconciliation algorithm changelog
 ```

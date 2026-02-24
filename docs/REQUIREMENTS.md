@@ -1,10 +1,10 @@
 # LittleRed - Requirements Document
 
-> A Kubernetes operator for Redis and Valkey, focused on high-performance in-memory caching.
+> A Kubernetes operator for Redis and Valkey, focused on high-performance in-memory data storage with durability through replication.
 
 **Document Status**: Active
-**Last Updated**: 2026-02-11
-**Version**: 0.3.0
+**Last Updated**: 2026-02-24
+**Version**: 0.4.0
 
 ---
 
@@ -19,57 +19,44 @@ Create a Kubernetes operator to run Redis and Valkey instances, based on upstrea
 ### 2.1 Project Name
 - **Product Name**: LittleRed
 - **Technical Name**: `littlered`
-- **Repository**: `littlered-operator` (or similar)
+- **API Group**: `chuck-chuck-chuck.net`
 
 ### 2.2 Compatibility Target
 - **Redis**: 7.2+
 - **Valkey**: Compatible versions (7.2+ equivalent)
-- **Future**: Redis 8.x, newer Valkey versions (out of initial scope)
+- **Default image**: `docker.io/valkey/valkey:8.0`
 
 ### 2.3 Technology Stack
-- **Language**: Go
-- **Framework**: Kubebuilder / controller-runtime
+- **Language**: Go 1.24+
+- **Framework**: Kubebuilder v4 / controller-runtime
 - **Target Kubernetes**: 1.28+
+- **Redis client**: go-redis v9
 
 ---
 
 ## 3. Phased Delivery
 
-### Phase 0: Pre-MVP - Standalone Instance
+### Phase 0: Pre-MVP - Standalone Instance ✅
 Single Redis/Valkey instance with no high availability.
 
-**Deliverables**:
-- Single-node deployment
-- Basic CR (`LittleRed`) with standalone mode
-- Prometheus metrics endpoint
-- Configurable resources
-- Optional TLS
-- Optional password auth
+### Phase 1: MVP - Sentinel High Availability ✅
+Redis Sentinel-based HA setup with automatic failover.
 
-### Phase 1: MVP - Sentinel High Availability
-Redis Sentinel-based HA setup.
-
-**Deliverables**:
-- Sentinel mode: 1 master + 2 replicas + 3 sentinels
-- Automatic failover via Sentinel
-- Rolling and recreate upgrade strategies
-- ServiceMonitor support (optional, user-enabled)
-
-### Phase 2: Cluster Mode (✅ COMPLETED)
+### Phase 2: Cluster Mode ✅
 Redis Cluster for horizontal scaling and sharding.
 
-**Deliverables**:
-- Cluster mode: Configurable shards with replicas per shard
-- Automatic cluster bootstrapping
-- Operator-managed recovery (stores topology in CR status, not nodes.conf)
-- No PersistentVolumes required (works on any K8s cluster)
-- Data durability through replication
+### Phase 3: Auth & TLS ✅
+Password authentication and TLS encryption across all modes.
 
-### Phase 3+: Future Considerations
+### Phase 4: Resilience Hardening ✅
+Kill-9 / crash protection, ghost node healing, operator-driven topology repair.
+
+### Phase 5+: Future Considerations
 - Persistence (RDB/AOF with PVC management)
 - Redis 8.x / newer Valkey support
 - ACL-based authentication
-- Cluster slot migration for scaling
+- Cluster slot migration for dynamic scaling
+- Configurable replica counts in Sentinel mode
 
 ---
 
@@ -85,198 +72,152 @@ kind: LittleRed
 metadata:
   name: my-cache
 spec:
-  mode: standalone | sentinel  # Default: standalone
-  image: redis:7.2 | valkey/valkey:7.2  # User specifies
-  # ... additional config
+  mode: standalone | sentinel | cluster
+  image:
+    repository: valkey/valkey
+    tag: "8.0"
+  auth:
+    enabled: true
+    existingSecret: my-redis-auth  # Secret with 'password' key
+  tls:
+    enabled: true
+    existingSecret: my-redis-tls   # Secret with tls.crt, tls.key, ca.crt
+  cluster:
+    shards: 3
+    replicasPerShard: 1
+  sentinel:
+    quorum: 2
+    downAfterMilliseconds: 5000
 ```
 
 ### 4.2 Configuration Philosophy
 
 | Aspect | Approach |
 |--------|----------|
-| **Defaults** | Follow upstream Redis/Valkey defaults where reasonable |
-| **Override** | Full redis.conf override capability available |
-| **Explicit Config** | Key settings exposed as CRD fields for easy configuration |
-| **Footgun Policy** | User can break things; not our job to prevent |
-
-**Operator-managed settings** (always set by operator):
-- `save ""`: Persistence disabled (no disk I/O)
-- `appendonly no`: AOF disabled (no disk I/O)
-- Performance-tuned settings for in-memory workloads
-
-**User-configurable via CRD** (explicit fields, not raw config):
-- `maxmemory`: Memory limit (optional, follows upstream default if not set)
-- `maxmemoryPolicy`: Eviction policy like `noeviction`, `noeviction`, etc. (optional, follows upstream default `noeviction` if not set)
-- Other common Redis settings as needed
-
-**Rationale**: We follow upstream defaults (like `noeviction`) rather than imposing "cache-first" opinions. This means out-of-the-box, the operator does NOT evict data when memory is full. Users who want caching behavior can explicitly set `maxmemoryPolicy: allkeys-lru`. This makes the operator more general-purpose and honest about its behavior.
+| **Defaults** | Performance-optimized: noeviction, no persistence, Guaranteed QoS |
+| **Override** | Full redis.conf override via `spec.config.raw` |
+| **Explicit Config** | Key settings exposed as CRD fields (maxmemory, maxmemoryPolicy) |
+| **Safety** | Persistence actively disabled (`save ""`, `appendonly no`) |
 
 ### 4.3 Persistence
 
-**Default Behavior**: Pure in-memory data store. **No disk persistence. No volumes.**
-
-The operator actively disables any disk persistence that Redis/Valkey images might enable by default:
-
-```
-save ""                 # Disable RDB snapshots
-appendonly no           # Disable AOF
-```
+**Default**: Pure in-memory. No disk persistence. No PersistentVolumeClaims.
 
 **Guarantees**:
-- No PersistentVolumeClaims created by default
 - No disk I/O for snapshots or AOF
-- Data resides entirely in memory
-- **Data durability achieved through replication, not disk persistence**
+- Data durability achieved through replication, not disk
+- Pod restart = clean slate (by design)
 
-**User Override**: If an expert user configures persistence via `spec.config.raw`, that's their choice. The operator won't prevent it, but won't manage volumes for it either.
-
-**Future Consideration**: Operator-managed persistence (with proper PVC handling) may be added as an opt-in feature later. But the default promise remains: **in-memory data store with no disk storage.**
+**Expert Override**: Users can re-enable persistence via `spec.config.raw` (their responsibility for PVC management).
 
 ### 4.4 Authentication
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| None | No authentication | Yes (controlled environment) |
-| Password | `requirepass` configuration | Optional |
-
-ACL-based auth is out of scope for MVP.
+| Option | Description | Status |
+|--------|-------------|--------|
+| None | No authentication | Default |
+| Password | `requirepass` + `masterauth` via existing Secret | ✅ Implemented |
+| ACL | ACL-based auth | Out of scope |
 
 ### 4.5 TLS
 
-- **Status**: Optional in MVP
-- **Implementation**: User provides Secret with certs
-- **Default**: Disabled
+| Feature | Status |
+|---------|--------|
+| Transport encryption (all modes) | ✅ Implemented |
+| User-provided TLS secrets | ✅ Implemented |
+| Separate CA cert secret | ✅ Implemented |
+| Client certificate auth | ✅ Implemented |
+| Operator-to-pod: InsecureSkipVerify | ✅ By design (ADR-004) |
 
-### 4.6 Monitoring & Observability
+### 4.6 Resilience
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Prometheus metrics | In scope | Via redis_exporter sidecar or native |
-| ServiceMonitor CR | In scope | Optional, user-enabled via CR flag |
-| Alerts/PrometheusRules | Out of scope | May add if low effort |
+| Scenario | Protection | Status |
+|----------|-----------|--------|
+| Pod deletion (`kubectl delete pod`) | Sentinel failover / Cluster gossip | ✅ |
+| Hard pod deletion (`--grace-period=0 --force`) | Pre-stop hook triggers failover before termination | ✅ |
+| In-pod process crash (kill -9, OOM) | Startup script detects crash via run-id (sentinel) or nodes.conf (cluster), yields until failover completes | ✅ |
+| Ghost nodes (dead IPs in topology) | Operator prunes via SENTINEL RESET / CLUSTER FORGET | ✅ |
+| Split-brain / divergent sentinels | Operator re-registers via SENTINEL REMOVE + MONITOR | ✅ |
+| Quorum loss (cluster mode) | CLUSTER FAILOVER TAKEOVER on orphan replicas | ✅ |
+| Partition healing (cluster mode) | CLUSTER MEET with orphan tracking + grace period | ✅ |
 
-### 4.7 Resource Management
+### 4.7 Monitoring & Observability
 
-| Aspect | Approach |
-|--------|----------|
-| Defaults | Sensible defaults provided |
-| Override | User can specify via CR |
-| QoS | Target Guaranteed QoS (requests = limits) |
-| Auto-sizing | Not implemented (app-driven, not cluster-driven) |
+| Feature | Status |
+|---------|--------|
+| Prometheus metrics via redis_exporter sidecar | ✅ |
+| Optional ServiceMonitor CR | ✅ |
+| Structured JSON operator logs | ✅ |
+| Log categories (recon, state, audit) | ✅ |
+| CR status with phase, conditions, master info | ✅ |
 
-### 4.8 Upgrade Strategy
+### 4.8 CLI Tool (lrctl)
 
-User-selectable via CR:
-- **Rolling**: Gradual pod replacement, maintains availability
-- **Recreate**: All pods replaced simultaneously, brief downtime
+| Feature | Status |
+|---------|--------|
+| List/describe LittleRed resources | ✅ |
+| Verify cluster health (connectivity, topology) | ✅ |
+| JSON output mode | ✅ |
+| kubectl plugin integration | ✅ |
+| Shell completion | ✅ |
 
 ---
 
 ## 5. Non-Functional Requirements
 
 ### 5.1 Performance
-- Optimize for low-latency, high-throughput caching
-- Guaranteed QoS class by default
+- Guaranteed QoS class by default (requests = limits)
 - No persistence overhead
+- No unnecessary reconciliation (GenerationChangedPredicate)
 
 ### 5.2 Reliability
-- Sentinel mode provides automatic failover
-- Operator should be crash-safe (reconciliation-based)
+- Sentinel mode: automatic failover with kill-9 protection
+- Cluster mode: quorum recovery, partition healing, ghost removal
+- Operator crash-safe (reconciliation-based, no in-memory state beyond sentinel monitor goroutines)
 
 ### 5.3 Security
-- Runs in highly controlled environment
-- TLS available but optional
-- Password auth available but optional
+- TLS encryption available across all modes
+- Password auth available across all modes
+- Runs as non-root with dropped capabilities
+- Secrets validated at reconcile time
 
 ### 5.4 Operability
-- Clear status reporting via CR `.status`
-- Prometheus metrics for monitoring
-- Standard Kubernetes patterns (labels, annotations)
+- Clear status reporting via CR `.status` (phase, conditions, master info, cluster nodes)
+- Audit log for all cluster-modifying actions
+- lrctl CLI for inspection and verification
 
 ---
 
 ## 6. Scope Definition
 
-### 6.1 In Scope
-
-| Item | Phase | Status |
-|------|-------|--------|
-| Single standalone Redis/Valkey | Pre-MVP | ✅ |
-| Sentinel HA (1+2+3 topology) | MVP | ✅ |
-| Cluster mode (sharding with replicas) | Phase 2 | ✅ |
-| Redis 7.2+ / Valkey 7.2+ | Pre-MVP | ✅ |
-| In-memory operation (no persistence) | Pre-MVP | ✅ |
-| Data durability through replication | Phase 2 | ✅ |
-| Prometheus metrics | Pre-MVP | ✅ |
-| Optional ServiceMonitor | MVP | ✅ |
-| Optional TLS | MVP | ✅ |
-| Optional password auth | Pre-MVP | ✅ |
-| Rolling & recreate upgrades | MVP | ✅ |
-| Full config override | Pre-MVP | ✅ |
-| Explicit maxmemory config (CRD field) | Phase 2 | ✅ |
-| Explicit maxmemory-policy config (CRD field) | Phase 2 | ✅ |
-
-### 6.2 Out of Scope (Current)
-
-| Item | Notes |
-|------|-------|
-| Persistence (RDB/AOF with PVC) | Future consideration |
-| Cluster slot migration (dynamic scaling) | Future - needed for adding/removing shards |
-| Redis < 7.2 | Not required |
-| ACL-based auth | Future consideration |
-| Auto-sizing | Not planned |
-| Prometheus alerts | Only if trivial to add |
-| Auto-detection of Prometheus Operator | User must explicitly enable |
-
-### 6.3 Architecture Considerations for Future
-
-While out of initial scope, architecture should not preclude:
-- Adding Redis Cluster support later
-- Adding persistence options later
-- Supporting configurable replica counts in Sentinel mode
+See [SCOPE.md](SCOPE.md) for the full in/out of scope breakdown.
 
 ---
 
-## 7. Open Questions
-
-1. ~~**Metrics export**: Sidecar (redis_exporter) vs. native Redis metrics (7.0+)?~~ **RESOLVED**: redis_exporter sidecar
-2. ~~**Operator distribution**: Helm chart? OLM? Kustomize?~~ **RESOLVED**: Helm chart
-3. ~~**CR API group**: `littlered.io`? Something else?~~ **RESOLVED**: `chuck-chuck-chuck.net`
-4. ~~**Namespace scope**: Namespace-scoped or cluster-scoped operator?~~ **RESOLVED**: Configurable (can run either way)
-
----
-
-## 8. Decision Log
+## 7. Decision Log
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
-| 2026-01-30 | Go as implementation language | Best K8s operator ecosystem support |
-| 2026-01-30 | K8s 1.28+ only | Can use latest APIs, reduce compat burden |
-| 2026-01-30 | No persistence | Target use case requires pure in-memory storage |
-| 2026-01-30 | Single CR with mode selector | Simpler UX than multiple CRs |
-| 2026-01-30 | LittleRed name | Redis/Valkey agnostic, memorable |
-| 2026-01-30 | Fixed 1+2+3 Sentinel topology initially | Simplest, architect for flexibility |
-| 2026-01-30 | redis_exporter sidecar for metrics | Industry standard, Grafana dashboard compat |
-| 2026-01-30 | Helm chart for distribution | Most common, familiar to users |
-| 2026-01-30 | Configurable namespace/cluster scope | Flexibility for different deployment models |
+| 2026-01-30 | Go, Kubebuilder, K8s 1.28+ | Best operator ecosystem support |
+| 2026-01-30 | No persistence by default | Pure in-memory use case |
+| 2026-01-30 | Single CR with mode selector | Simpler UX |
+| 2026-01-30 | redis_exporter sidecar | Industry standard |
+| 2026-01-30 | Helm chart distribution | Most common |
 | 2026-01-30 | API group: `chuck-chuck-chuck.net` | User-owned domain |
-| 2026-01-30 | No admission webhooks (initially) | Operational complexity, validate in controller |
-| 2026-01-30 | Watch Secrets for rotation | Auto-reconcile on password/cert changes |
-| 2026-01-30 | Actively disable persistence by default | Override image defaults with `save ""`, `appendonly no` to guarantee pure in-memory behavior |
-| 2026-01-30 | Default to Valkey (not Redis) | Personal preference, easily overridable |
-| 2026-01-30 | Image composed from registry/path:tag | Easy registry mirror support without copy-pasting image names |
-| 2026-01-30 | Fully qualified image refs by default | Unqualified images deprecated in modern runtimes (CRI-O, containerd) |
-| 2026-01-30 | Exporter inherits registry from main image | Single registry setting applies to all images |
-| 2026-02-03 | Cluster mode: No PVCs, topology in CR status | Enables deployment on K8s without local storage, simpler than managing nodes.conf |
-| 2026-02-03 | Data durability through replication, not disk | Replicas exist to prevent data loss during pod restarts |
-| 2026-02-03 | Follow upstream defaults for eviction | More honest/general-purpose; users opt-in to caching behavior explicitly |
-| 2026-02-03 | Expose maxmemory/maxmemory-policy as CRD fields | Easy configuration without raw config manipulation |
+| 2026-01-30 | Default to Valkey | Personal preference, easily overridable |
+| 2026-02-03 | Cluster mode: no PVCs, topology in CR status | Works on any K8s cluster |
+| 2026-02-03 | Upstream defaults for eviction (noeviction) | Honest/general-purpose |
+| 2026-02-11 | Strict IP-only identity (ADR-001) | Prevent ghost master data loss |
+| 2026-02-21 | Low-interference sentinel reconciliation (ADR-003) | Trust Sentinel, intervene only on permanent stalls |
+| 2026-02-21 | REMOVE + MONITOR over RESET for stuck sentinels (LR-008) | RESET doesn't change monitored master IP |
+| 2026-02-22 | Rule R: don't trigger on LinkStatus=down alone (LR-010) | Avoid interrupting in-progress handshakes |
+| 2026-02-24 | TLS InsecureSkipVerify (ADR-004) | Identity via K8s API, not PKI |
 
 ---
 
-## 9. References
+## 8. References
 
-- [Redis Documentation](https://redis.io/docs/)
-- [Valkey Documentation](https://valkey.io/docs/)
-- [Kubebuilder Book](https://book.kubebuilder.io/)
-- [Redis Sentinel](https://redis.io/docs/management/sentinel/)
+- [Architecture Document](ARCHITECTURE.md)
+- [Scope Definition](SCOPE.md)
+- [Reconciliation Algorithm Changelog](RECONCILIATION_ALGORITHM_CHANGELOG.md)
+- Architecture Decision Records: `docs/adr/`
+- [LLM Startup Guide](../LLM_STARTUP.md)
