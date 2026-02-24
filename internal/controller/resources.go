@@ -212,8 +212,14 @@ func buildRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 		sb.WriteString("port 0\n") // Disable non-TLS port
 		sb.WriteString("tls-cert-file /tls/tls.crt\n")
 		sb.WriteString("tls-key-file /tls/tls.key\n")
+		if lr.Spec.TLS.CACertSecret != "" {
+			if lr.Spec.TLS.CACertSecret == lr.Spec.TLS.ExistingSecret {
+				sb.WriteString("tls-ca-cert-file /tls/ca.crt\n")
+			} else {
+				sb.WriteString("tls-ca-cert-file /tls-ca/ca.crt\n")
+			}
+		}
 		if lr.Spec.TLS.ClientAuth {
-			sb.WriteString("tls-ca-cert-file /tls/ca.crt\n")
 			sb.WriteString("tls-auth-clients yes\n")
 		} else {
 			sb.WriteString("tls-auth-clients no\n")
@@ -355,11 +361,10 @@ func buildRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 			MountPath: "/tls",
 			ReadOnly:  true,
 		})
-		if lr.Spec.TLS.ClientAuth && lr.Spec.TLS.CACertSecret != "" {
+		if lr.Spec.TLS.CACertSecret != "" && lr.Spec.TLS.CACertSecret != lr.Spec.TLS.ExistingSecret {
 			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
 				Name:      "ca-cert",
-				MountPath: "/tls/ca.crt",
-				SubPath:   "ca.crt",
+				MountPath: "/tls-ca",
 				ReadOnly:  true,
 			})
 		}
@@ -439,6 +444,21 @@ func buildExporterContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 		},
 	}
 
+	if lr.Spec.TLS.Enabled {
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      "tls",
+			MountPath: "/tls",
+			ReadOnly:  true,
+		})
+		if lr.Spec.TLS.CACertSecret != "" && lr.Spec.TLS.CACertSecret != lr.Spec.TLS.ExistingSecret {
+			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+				Name:      "ca-cert",
+				MountPath: "/tls-ca",
+				ReadOnly:  true,
+			})
+		}
+	}
+
 	return container
 }
 
@@ -473,7 +493,7 @@ func buildVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 				},
 			},
 		})
-		if lr.Spec.TLS.ClientAuth && lr.Spec.TLS.CACertSecret != "" {
+		if lr.Spec.TLS.CACertSecret != "" {
 			volumes = append(volumes, corev1.Volume{
 				Name: "ca-cert",
 				VolumeSource: corev1.VolumeSource{
@@ -497,7 +517,7 @@ func buildLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 		"redis-cli",
 	}
 	if lr.Spec.Auth.Enabled {
-		cmd = append(cmd, "-a", "$(REDIS_PASSWORD)")
+		cmd = append(cmd, "-a", "$(REDIS_PASSWORD)", "--no-auth-warning")
 	}
 	if lr.Spec.TLS.Enabled {
 		cmd = append(cmd, "--tls", "--insecure")
@@ -528,7 +548,7 @@ func buildReadinessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 		"redis-cli",
 	}
 	if lr.Spec.Auth.Enabled {
-		cmd = append(cmd, "-a", "$(REDIS_PASSWORD)")
+		cmd = append(cmd, "-a", "$(REDIS_PASSWORD)", "--no-auth-warning")
 	}
 	if lr.Spec.TLS.Enabled {
 		cmd = append(cmd, "--tls", "--insecure")
@@ -603,7 +623,7 @@ func buildSentinelLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 
 	tmpl := template.Must(template.New("sentinel-liveness").Delims("[[", "]]").Parse(
 		`if [ -f /data/bootstrap-in-progress ]; then exit 0; fi
-AUTH=""; [ -n "$REDIS_PASSWORD" ] && AUTH="-a $REDIS_PASSWORD"
+AUTH=""; [ -n "$REDIS_PASSWORD" ] && AUTH="-a $REDIS_PASSWORD --no-auth-warning"
 info=$(redis-cli -h 127.0.0.1 $AUTH[[.TLSFlags]] -t 2 info replication 2>/dev/null) || exit 1
 echo "$info" | grep -q "^role:master" && exit 0
 echo "$info" | grep -q "^master_link_status:up" && exit 0
@@ -650,7 +670,7 @@ func buildSentinelReadinessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe 
 
 	tmpl := template.Must(template.New("sentinel-readiness").Delims("[[", "]]").Parse(
 		`if [ -f /data/bootstrap-in-progress ]; then exit 1; fi
-AUTH=""; [ -n "$REDIS_PASSWORD" ] && AUTH="-a $REDIS_PASSWORD"
+AUTH=""; [ -n "$REDIS_PASSWORD" ] && AUTH="-a $REDIS_PASSWORD --no-auth-warning"
 info=$(redis-cli -h 127.0.0.1 $AUTH[[.TLSFlags]] -t 2 info replication 2>/dev/null) || exit 1
 echo "$info" | grep -q "^role:master" && exit 0
 echo "$info" | grep -q "^master_link_status:up" && exit 0
@@ -808,8 +828,39 @@ func buildSentinelConfig(lr *littleredv1alpha1.LittleRed) string {
 
 	// Auth configuration
 	if lr.Spec.Auth.Enabled {
-		// Password will be set via command line
-		sb.WriteString("\n# Auth will be configured via environment\n")
+		// Sentinels use sentinel-pass to authenticate with each other.
+		// Since we use the same password for everything, we use REDIS_PASSWORD.
+		// The actual value is provided via environment to the shell, and we can't
+		// easily inject it into the static config file without a rewrite.
+		// However, for startup, we can just use the environment variable in the command line
+		// or use 'sentinel sentinel-pass' in the config if we were to rewrite it.
+		//
+		// For LittleRed, we'll use the CLI args for requirepass, and for sentinel-pass
+		// we'll rely on the operator setting it or adding it to the startup script.
+		sb.WriteString("\n# Auth configured via startup arguments\n")
+	}
+
+	// TLS settings
+	if lr.Spec.TLS.Enabled {
+		sb.WriteString("\n# TLS configuration\n")
+		sb.WriteString(fmt.Sprintf("tls-port %d\n", littleredv1alpha1.SentinelPort))
+		sb.WriteString("port 0\n")
+		sb.WriteString("tls-cert-file /tls/tls.crt\n")
+		sb.WriteString("tls-key-file /tls/tls.key\n")
+		if lr.Spec.TLS.CACertSecret != "" {
+			if lr.Spec.TLS.CACertSecret == lr.Spec.TLS.ExistingSecret {
+				sb.WriteString("tls-ca-cert-file /tls/ca.crt\n")
+			} else {
+				sb.WriteString("tls-ca-cert-file /tls-ca/ca.crt\n")
+			}
+		}
+		if lr.Spec.TLS.ClientAuth {
+			sb.WriteString("tls-auth-clients yes\n")
+		} else {
+			sb.WriteString("tls-auth-clients no\n")
+		}
+		// Sentinels use replication protocol to talk to each other and master.
+		sb.WriteString("tls-replication yes\n")
 	}
 
 	// Announce settings for proper discovery
@@ -865,8 +916,14 @@ func buildRedisConfigSentinel(lr *littleredv1alpha1.LittleRed) string {
 		sb.WriteString("tls-cert-file /tls/tls.crt\n")
 		sb.WriteString("tls-key-file /tls/tls.key\n")
 		sb.WriteString("tls-replication yes\n")
+		if lr.Spec.TLS.CACertSecret != "" {
+			if lr.Spec.TLS.CACertSecret == lr.Spec.TLS.ExistingSecret {
+				sb.WriteString("tls-ca-cert-file /tls/ca.crt\n")
+			} else {
+				sb.WriteString("tls-ca-cert-file /tls-ca/ca.crt\n")
+			}
+		}
 		if lr.Spec.TLS.ClientAuth {
-			sb.WriteString("tls-ca-cert-file /tls/ca.crt\n")
 			sb.WriteString("tls-auth-clients yes\n")
 		} else {
 			sb.WriteString("tls-auth-clients no\n")
@@ -1006,110 +1063,117 @@ SENTINEL_SVC="[[.Name]]-sentinel.[[.Namespace]].svc"
 
 log "Starting Redis node $HOSTNAME. Waiting for Sentinel authorization..."
 
-AUTH_ARGS=""
-SENTINEL_AUTH_ARGS=""
-if [ -n "$REDIS_PASSWORD" ]; then
-  AUTH_ARGS="--requirepass $REDIS_PASSWORD --masterauth $REDIS_PASSWORD"
-  SENTINEL_AUTH_ARGS="-a $REDIS_PASSWORD"
-fi
+	AUTH_ARGS=""
+	SENTINEL_AUTH_ARGS=""
+	if [ -n "$REDIS_PASSWORD" ]; then
+	  AUTH_ARGS="--requirepass $REDIS_PASSWORD --masterauth $REDIS_PASSWORD"
+	  SENTINEL_AUTH_ARGS="-a $REDIS_PASSWORD --no-auth-warning"
+	fi
 
-# Kill-9 / in-pod crash protection (see ADR-001 amendment):
-# If Sentinel already has a non-empty run-id stored for a master at MY IP, a previous
-# Redis process ran here and Sentinel observed it. The container must have restarted
-# (kill-9, OOM, etc.) while the pod IP stayed the same.
-# Starting as master in that state means an empty node becomes master and replicas
-# perform a FULLRESYNC from empty data — all data for this shard is lost.
-#
-# Defence: set YIELD_MASTER=true. The main loop sleeps (Redis NOT started) until
-# Sentinel's down-after-milliseconds fires, failover completes, and a different
-# master is elected. We then join as a replica.
-STORED_RUNID=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS -t 2 --raw sentinel master mymaster 2>/dev/null \
-  | awk 'prev=="runid"{print; exit} {prev=$0}' || true)
-SENTINEL_MASTER_IP=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS -t 2 --raw sentinel get-master-addr-by-name mymaster 2>/dev/null \
-  | head -n 1 || true)
+	# Kill-9 / in-pod crash protection (see ADR-001 amendment):
+	# If Sentinel already has a non-empty run-id stored for a master at MY IP, a previous
+	# Redis process ran here and Sentinel observed it. The container must have restarted
+	# (kill-9, OOM, etc.) while the pod IP stayed the same.
+	# Starting as master in that state means an empty node becomes master and replicas
+	# perform a FULLRESYNC from empty data — all data for this shard is lost.
+	#
+	# Defence: set YIELD_MASTER=true. The main loop sleeps (Redis NOT started) until
+	# Sentinel's down-after-milliseconds fires, failover completes, and a different
+	# master is elected. We then join as a replica.
+	STORED_RUNID=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS [[.TLSFlags]] -t 2 --raw sentinel master mymaster 2>/dev/null \
+	  | awk 'prev=="runid"{print; exit} {prev=$0}' || true)
+	SENTINEL_MASTER_IP=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS [[.TLSFlags]] -t 2 --raw sentinel get-master-addr-by-name mymaster 2>/dev/null \
+	  | head -n 1 || true)
 
-YIELD_MASTER=false
-YIELD_COUNT=0
-# 60 iterations x 2 s = 120 s: enough for 30 s SDOWN + failover + margin.
-# If failover never completes (no eligible replica), we give up and start as master.
-YIELD_LIMIT=60
+	YIELD_MASTER=false
+	YIELD_COUNT=0
+	# 60 iterations x 2 s = 120 s: enough for 30 s SDOWN + failover + margin.
+	# If failover never completes (no eligible replica), we give up and start as master.
+	YIELD_LIMIT=60
 
-if [ "$SENTINEL_MASTER_IP" = "$POD_IP" ] && [ -n "$STORED_RUNID" ]; then
-  log "Kill-9 protection: Sentinel knows $POD_IP as master (run-id=$STORED_RUNID)."
-  log "Suppressing Redis start. Waiting for Sentinel SDOWN detection and failover..."
-  YIELD_MASTER=true
-fi
+	if [ "$SENTINEL_MASTER_IP" = "$POD_IP" ] && [ -n "$STORED_RUNID" ]; then
+	  log "Kill-9 protection: Sentinel knows $POD_IP as master (run-id=$STORED_RUNID)."
+	  log "Suppressing Redis start. Waiting for Sentinel SDOWN detection and failover..."
+	  YIELD_MASTER=true
+	fi
 
-# Loop until Sentinel has a master for us
-while true; do
-  # Use --raw to get just the values (IP/Host on line 1, Port on line 2)
-  # Use -t to avoid hanging on DNS or network issues
-  SENTINEL_REPLY=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS -t 2 --raw sentinel get-master-addr-by-name mymaster || true)
-  CURRENT_MASTER_HOST=$(echo "$SENTINEL_REPLY" | head -n 1)
-  CURRENT_MASTER_PORT=$(echo "$SENTINEL_REPLY" | sed -n '2p')
+	# Loop until Sentinel has a master for us
+	while true; do
+	  # Use --raw to get just the values (IP/Host on line 1, Port on line 2)
+	  # Use -t to avoid hanging on DNS or network issues
+	  SENTINEL_REPLY=$(redis-cli -h $SENTINEL_SVC -p 26379 $SENTINEL_AUTH_ARGS [[.TLSFlags]] -t 2 --raw sentinel get-master-addr-by-name mymaster || true)
+	  CURRENT_MASTER_HOST=$(echo "$SENTINEL_REPLY" | head -n 1)
+	  CURRENT_MASTER_PORT=$(echo "$SENTINEL_REPLY" | sed -n '2p')
 
-  if [ -n "$CURRENT_MASTER_HOST" ]; then
-    log "Sentinel reported master at $CURRENT_MASTER_HOST:$CURRENT_MASTER_PORT"
+	  if [ -n "$CURRENT_MASTER_HOST" ]; then
+	    log "Sentinel reported master at $CURRENT_MASTER_HOST:$CURRENT_MASTER_PORT"
 
-    # Check if reported master is ME (compare IP)
-    if [ "$CURRENT_MASTER_HOST" = "$POD_IP" ]; then
-      if [ "$YIELD_MASTER" = "true" ]; then
-        YIELD_COUNT=$((YIELD_COUNT + 1))
-        if [ "$YIELD_COUNT" -ge "$YIELD_LIMIT" ]; then
-          log "Yield timeout (${YIELD_LIMIT} attempts). No failover completed — no eligible replica? Starting as master."
-          YIELD_MASTER=false
-        else
-          log "Yielding ($YIELD_COUNT/$YIELD_LIMIT): still master per Sentinel. Waiting for SDOWN + failover..."
-          sleep 2
-          continue
-        fi
-      fi
-      log "I am the authorized master. Starting redis-server..."
-      rm -f /data/bootstrap-in-progress
-      exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} $AUTH_ARGS
-    fi
+	    # Check if reported master is ME (compare IP)
+	    if [ "$CURRENT_MASTER_HOST" = "$POD_IP" ]; then
+	      if [ "$YIELD_MASTER" = "true" ]; then
+	        YIELD_COUNT=$((YIELD_COUNT + 1))
+	        if [ "$YIELD_COUNT" -ge "$YIELD_LIMIT" ]; then
+	          log "Yield timeout (${YIELD_LIMIT} attempts). No failover completed — no eligible replica? Starting as master."
+	          YIELD_MASTER=false
+	        else
+	          log "Yielding ($YIELD_COUNT/$YIELD_LIMIT): still master per Sentinel. Waiting for SDOWN + failover..."
+	          sleep 2
+	          continue
+	        fi
+	      fi
+	      log "I am the authorized master. Starting redis-server..."
+	      rm -f /data/bootstrap-in-progress
+	      exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} $AUTH_ARGS
+	    fi
 
-    # I am a replica. Check if master is reachable before committing.
-    # Retry several times: during initial cluster boot all pods start in parallel,
-    # so the master's redis-server may not be listening yet even though the IP is valid.
-    PING_ATTEMPTS=6
-    PING_DELAY=3
-    MASTER_ALIVE=false
-    for attempt in $(seq 1 $PING_ATTEMPTS); do
-      if redis-cli -h $CURRENT_MASTER_HOST -p $CURRENT_MASTER_PORT $SENTINEL_AUTH_ARGS -t 2 ping > /dev/null 2>&1; then
-        MASTER_ALIVE=true
-        break
-      fi
-      log "Master $CURRENT_MASTER_HOST not yet reachable (attempt $attempt/$PING_ATTEMPTS). Waiting ${PING_DELAY}s..."
-      sleep $PING_DELAY
-    done
+	    # I am a replica. Check if master is reachable before committing.
+	    # Retry several times: during initial cluster boot all pods start in parallel,
+	    # so the master's redis-server may not be listening yet even though the IP is valid.
+	    PING_ATTEMPTS=6
+	    PING_DELAY=3
+	    MASTER_ALIVE=false
+	    for attempt in $(seq 1 $PING_ATTEMPTS); do
+	      if redis-cli -h $CURRENT_MASTER_HOST -p $CURRENT_MASTER_PORT $SENTINEL_AUTH_ARGS [[.TLSFlags]] -t 2 ping > /dev/null 2>&1; then
+	        MASTER_ALIVE=true
+	        break
+	      fi
+	      log "Master $CURRENT_MASTER_HOST not yet reachable (attempt $attempt/$PING_ATTEMPTS). Waiting ${PING_DELAY}s..."
+	      sleep $PING_DELAY
+	    done
 
-    if [ "$MASTER_ALIVE" = "true" ]; then
-       log "Master is alive. Joining $CURRENT_MASTER_HOST as replica..."
-       rm -f /data/bootstrap-in-progress
-       exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT --replica-announce-ip ${POD_IP} $AUTH_ARGS
-    fi
+	    if [ "$MASTER_ALIVE" = "true" ]; then
+	       log "Master is alive. Joining $CURRENT_MASTER_HOST as replica..."
+	       rm -f /data/bootstrap-in-progress
+	       exec redis-server /data/redis.conf --replicaof $CURRENT_MASTER_HOST $CURRENT_MASTER_PORT --replica-announce-ip ${POD_IP} $AUTH_ARGS
+	    fi
 
-    # Master is unreachable after retries (likely a ghost IP). Start as bare server
-    # so Sentinel can discover us and perform a failover. This avoids both the
-    # deadlock (ADR-002) and the zombie-replica problem.
-    log "Master $CURRENT_MASTER_HOST unreachable after $PING_ATTEMPTS attempts. Starting bare for Sentinel discovery..."
-    rm -f /data/bootstrap-in-progress
-    exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} $AUTH_ARGS
-  fi
+	    # Master is unreachable after retries (likely a ghost IP). Start as bare server
+	    # so Sentinel can discover us and perform a failover. This avoids both the
+	    # deadlock (ADR-002) and the zombie-replica problem.
+	    log "Master $CURRENT_MASTER_HOST unreachable after $PING_ATTEMPTS attempts. Starting bare for Sentinel discovery..."
+	    rm -f /data/bootstrap-in-progress
+	    exec redis-server /data/redis.conf --replica-announce-ip ${POD_IP} $AUTH_ARGS
+	  fi
 
-  log "Sentinel has no master info. Waiting..."
-  sleep 2
-done`
+	  log "Sentinel has no master info. Waiting..."
+	  sleep 2
+	done`
 	tmpl := template.Must(template.New("sentinel-startup").Delims("[[", "]]").Parse(script))
 	var buf bytes.Buffer
+	tlsFlags := ""
+	if lr.Spec.TLS.Enabled {
+		tlsFlags = "--tls --insecure"
+	}
 	err := tmpl.Execute(&buf, struct {
 		Name      string
 		Namespace string
+		TLSFlags  string
 	}{
 		Name:      lr.Name,
 		Namespace: lr.Namespace,
+		TLSFlags:  tlsFlags,
 	})
+
 	if err != nil {
 		panic(fmt.Sprintf("failed to execute sentinel startup template: %v", err))
 	}
@@ -1124,13 +1188,14 @@ set -x
 
 echo "preStop hook starting at $(date), PID $$"
 
-ROLE=$(redis-cli info replication | grep role | cut -d: -f2 | tr -d '\r')
+AUTH_ARGS=""
+if [ -n "$REDIS_PASSWORD" ]; then
+  AUTH_ARGS="-a $REDIS_PASSWORD --no-auth-warning"
+fi
+
+ROLE=$(redis-cli $AUTH_ARGS [[.TLSFlags]] info replication | grep role | cut -d: -f2 | tr -d '\r')
 if [ "$ROLE" = "master" ]; then
   echo "I am the master. Proactively failing over..."
-  AUTH_ARGS=""
-  if [ -n "$REDIS_PASSWORD" ]; then
-    AUTH_ARGS="-a $REDIS_PASSWORD"
-  fi
   SENTINEL_SVC="[[.Name]]-sentinel.[[.Namespace]].svc"
   # Wait until Sentinel has discovered all expected replicas before forcing a
   # failover. If the master was just restarted, Sentinel may not yet know about
@@ -1139,7 +1204,7 @@ if [ "$ROLE" = "master" ]; then
   # reconfiguration step and get stuck pointing at the dead master IP.
   EXPECTED_SLAVES=2
   for i in $(seq 1 10); do
-    SLAVE_COUNT=$(redis-cli --raw -h $SENTINEL_SVC -p 26379 $AUTH_ARGS SENTINEL SLAVES mymaster 2>/dev/null | grep -c "^name$" || echo 0)
+    SLAVE_COUNT=$(redis-cli --raw -h $SENTINEL_SVC -p 26379 $AUTH_ARGS [[.TLSFlags]] SENTINEL SLAVES mymaster 2>/dev/null | grep -c "^name$" || echo 0)
     if [ "$SLAVE_COUNT" -ge "$EXPECTED_SLAVES" ]; then
       echo "Sentinel knows $SLAVE_COUNT/$EXPECTED_SLAVES replicas. Proceeding with failover."
       break
@@ -1148,12 +1213,12 @@ if [ "$ROLE" = "master" ]; then
     sleep 1
   done
   # Pause writes for 30s to ensure a clean handover
-  redis-cli $AUTH_ARGS CLIENT PAUSE 30000 WRITE || true
+  redis-cli $AUTH_ARGS [[.TLSFlags]] CLIENT PAUSE 30000 WRITE || true
   # Trigger failover
-  redis-cli -h $SENTINEL_SVC -p 26379 $AUTH_ARGS SENTINEL failover mymaster || true
+  redis-cli -h $SENTINEL_SVC -p 26379 $AUTH_ARGS [[.TLSFlags]] SENTINEL failover mymaster || true
   # Wait for Sentinel to acknowledge the new master
   for i in $(seq 1 10); do
-    MASTER_IP=$(redis-cli -h $SENTINEL_SVC -p 26379 $AUTH_ARGS -t 2 --raw sentinel get-master-addr-by-name mymaster | head -n 1 || true)
+    MASTER_IP=$(redis-cli -h $SENTINEL_SVC -p 26379 $AUTH_ARGS [[.TLSFlags]] -t 2 --raw sentinel get-master-addr-by-name mymaster | head -n 1 || true)
     if [ -n "$MASTER_IP" ] && [ "$MASTER_IP" != "$POD_IP" ]; then
        echo "Failover confirmed. New master: $MASTER_IP"
        exit 0
@@ -1162,12 +1227,18 @@ if [ "$ROLE" = "master" ]; then
   done
 fi`))
 	var preStopBuf bytes.Buffer
+	sentinelPreStopTLSFlags := ""
+	if lr.Spec.TLS.Enabled {
+		sentinelPreStopTLSFlags = "--tls --insecure"
+	}
 	err = preStopTmpl.Execute(&preStopBuf, struct {
 		Name      string
 		Namespace string
+		TLSFlags  string
 	}{
 		Name:      lr.Name,
 		Namespace: lr.Namespace,
+		TLSFlags:  sentinelPreStopTLSFlags,
 	})
 	if err != nil {
 		panic(fmt.Sprintf("failed to execute sentinel prestop template: %v", err))
@@ -1249,6 +1320,13 @@ fi`))
 			MountPath: "/tls",
 			ReadOnly:  true,
 		})
+		if lr.Spec.TLS.CACertSecret != "" && lr.Spec.TLS.CACertSecret != lr.Spec.TLS.ExistingSecret {
+			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+				Name:      "ca-cert",
+				MountPath: "/tls-ca",
+				ReadOnly:  true,
+			})
+		}
 	}
 
 	// Add auth env var
@@ -1267,6 +1345,49 @@ fi`))
 	}
 
 	return container
+}
+
+// buildSentinelVolumes returns the volumes for the Sentinel StatefulSet pod spec.
+func buildSentinelVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
+	volumes := []corev1.Volume{
+		{
+			Name: "config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: sentinelConfigMapName(lr),
+					},
+				},
+			},
+		},
+		{
+			Name: "data",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+	}
+	if lr.Spec.TLS.Enabled {
+		volumes = append(volumes, corev1.Volume{
+			Name: "tls",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: lr.Spec.TLS.ExistingSecret,
+				},
+			},
+		})
+		if lr.Spec.TLS.CACertSecret != "" {
+			volumes = append(volumes, corev1.Volume{
+				Name: "ca-cert",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: lr.Spec.TLS.CACertSecret,
+					},
+				},
+			})
+		}
+	}
+	return volumes
 }
 
 // buildSentinelStatefulSet creates the Sentinel StatefulSet
@@ -1312,26 +1433,9 @@ func buildSentinelStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulS
 					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
-					SecurityContext: lr.Spec.PodTemplate.SecurityContext,
-					Containers:      []corev1.Container{buildSentinelContainer(lr)},
-					Volumes: []corev1.Volume{
-						{
-							Name: "config",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: sentinelConfigMapName(lr),
-									},
-								},
-							},
-						},
-						{
-							Name: "data",
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
-							},
-						},
-					},
+					SecurityContext:  lr.Spec.PodTemplate.SecurityContext,
+					Containers:       []corev1.Container{buildSentinelContainer(lr)},
+					Volumes:          buildSentinelVolumes(lr),
 					NodeSelector:     lr.Spec.PodTemplate.NodeSelector,
 					Tolerations:      lr.Spec.PodTemplate.Tolerations,
 					Affinity:         lr.Spec.PodTemplate.Affinity,
@@ -1369,7 +1473,7 @@ cp /etc/sentinel/sentinel.conf /data/sentinel.conf
 
 AUTH_ARGS=""
 if [ -n "$REDIS_PASSWORD" ]; then
-  AUTH_ARGS="--sentinel auth-pass mymaster $REDIS_PASSWORD"
+  AUTH_ARGS="--requirepass $REDIS_PASSWORD --sentinel sentinel-pass $REDIS_PASSWORD"
 fi
 
 log "Starting Sentinel node with IP ${POD_IP}..."
@@ -1411,7 +1515,7 @@ exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_A
 				Exec: &corev1.ExecAction{
 					Command: []string{
 						"sh", "-c",
-						fmt.Sprintf("redis-cli -p %d ping", littleredv1alpha1.SentinelPort),
+						fmt.Sprintf("AUTH=\"\"; [ -n \"$REDIS_PASSWORD\" ] && AUTH=\"-a $REDIS_PASSWORD --no-auth-warning\"; TLS=\"\"; [ \"%t\" = \"true\" ] && TLS=\"--tls --insecure\"; redis-cli -p %d $AUTH $TLS ping", lr.Spec.TLS.Enabled, littleredv1alpha1.SentinelPort),
 					},
 				},
 			},
@@ -1425,7 +1529,7 @@ exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_A
 				Exec: &corev1.ExecAction{
 					Command: []string{
 						"sh", "-c",
-						fmt.Sprintf("redis-cli -p %d ping", littleredv1alpha1.SentinelPort),
+						fmt.Sprintf("AUTH=\"\"; [ -n \"$REDIS_PASSWORD\" ] && AUTH=\"-a $REDIS_PASSWORD --no-auth-warning\"; TLS=\"\"; [ \"%t\" = \"true\" ] && TLS=\"--tls --insecure\"; redis-cli -p %d $AUTH $TLS ping", lr.Spec.TLS.Enabled, littleredv1alpha1.SentinelPort),
 					},
 				},
 			},
@@ -1466,6 +1570,22 @@ exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_A
 				},
 			},
 		})
+	}
+
+	// Add TLS volume mounts
+	if lr.Spec.TLS.Enabled {
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      "tls",
+			MountPath: "/tls",
+			ReadOnly:  true,
+		})
+		if lr.Spec.TLS.CACertSecret != "" && lr.Spec.TLS.CACertSecret != lr.Spec.TLS.ExistingSecret {
+			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+				Name:      "ca-cert",
+				MountPath: "/tls-ca",
+				ReadOnly:  true,
+			})
+		}
 	}
 
 	return container
@@ -1645,8 +1765,14 @@ func buildClusterRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 		sb.WriteString("tls-key-file /tls/tls.key\n")
 		sb.WriteString("tls-cluster yes\n")
 		sb.WriteString("tls-replication yes\n")
+		if lr.Spec.TLS.CACertSecret != "" {
+			if lr.Spec.TLS.CACertSecret == lr.Spec.TLS.ExistingSecret {
+				sb.WriteString("tls-ca-cert-file /tls/ca.crt\n")
+			} else {
+				sb.WriteString("tls-ca-cert-file /tls-ca/ca.crt\n")
+			}
+		}
 		if lr.Spec.TLS.ClientAuth {
-			sb.WriteString("tls-ca-cert-file /tls/ca.crt\n")
 			sb.WriteString("tls-auth-clients yes\n")
 		} else {
 			sb.WriteString("tls-auth-clients no\n")
@@ -1804,7 +1930,7 @@ if [ "$RESTART_DETECTED" = "true" ]; then
 
   # Configuration from environment
   AUTH_ARGS=""
-  [ -n "$REDIS_PASSWORD" ] && AUTH_ARGS="-a $REDIS_PASSWORD"
+  [ -n "$REDIS_PASSWORD" ] && AUTH_ARGS="-a $REDIS_PASSWORD --no-auth-warning"
   PEER_SERVICE="[[.Name]]-cluster.[[.Namespace]].svc"
 
   # Wait up to 60s for peers to confirm failover
@@ -1817,7 +1943,7 @@ if [ "$RESTART_DETECTED" = "true" ]; then
 
     for peer in $PEER_IPS; do
       [ "$peer" = "$POD_IP" ] && continue
-      NODES_INFO=$(redis-cli -h "$peer" -p [[.RedisPort]] $AUTH_ARGS -t 2 CLUSTER NODES 2>/dev/null || true)
+      NODES_INFO=$(redis-cli -h "$peer" -p [[.RedisPort]] $AUTH_ARGS [[.TLSFlags]] -t 2 CLUSTER NODES 2>/dev/null || true)
       if [ -n "$NODES_INFO" ]; then
         PEERS_CONTACTED=$((PEERS_CONTACTED + 1))
 
@@ -1837,7 +1963,7 @@ if [ "$RESTART_DETECTED" = "true" ]; then
                 MY_REPLICA_IP=$(echo "$NODES_INFO" | grep "slave $MY_NODE_ID" | grep -v "fail" | head -n 1 | awk '{print $2}' | cut -d: -f1 | cut -d@ -f1)
                 if [ -n "$MY_REPLICA_IP" ]; then
                    log "Deadlock detected! Forcing replica $MY_REPLICA_IP to TAKEOVER slots for dead node $MY_NODE_ID..."
-                   redis-cli -h "$MY_REPLICA_IP" -p [[.RedisPort]] $AUTH_ARGS -t 2 CLUSTER FAILOVER TAKEOVER || true
+                   redis-cli -h "$MY_REPLICA_IP" -p [[.RedisPort]] $AUTH_ARGS [[.TLSFlags]] -t 2 CLUSTER FAILOVER TAKEOVER || true
                 fi
              fi
              break
@@ -1880,16 +2006,22 @@ exec redis-server /data/redis.conf \
 `
 	tmpl := template.Must(template.New("startup").Delims("[[", "]]").Parse(startupScript))
 	var buf bytes.Buffer
+	tlsFlags := ""
+	if lr.Spec.TLS.Enabled {
+		tlsFlags = "--tls --insecure"
+	}
 	err := tmpl.Execute(&buf, struct {
 		Name           string
 		Namespace      string
 		RedisPort      int
 		ClusterBusPort int
+		TLSFlags       string
 	}{
 		Name:           lr.Name,
 		Namespace:      lr.Namespace,
 		RedisPort:      littleredv1alpha1.RedisPort,
 		ClusterBusPort: littleredv1alpha1.ClusterBusPort,
+		TLSFlags:       tlsFlags,
 	})
 	if err != nil {
 		// This should never happen with Must() and valid data
@@ -1908,12 +2040,12 @@ echo "preStop hook starting at $(date), PID $$"
 
 AUTH_ARGS=""
 if [ -n "$REDIS_PASSWORD" ]; then
-  AUTH_ARGS="-a $REDIS_PASSWORD"
+  AUTH_ARGS="-a $REDIS_PASSWORD --no-auth-warning"
 fi
 
 # Check if I am a master
-MY_ID=$(redis-cli $AUTH_ARGS cluster nodes | grep myself | awk '{print $1}')
-IS_MASTER=$(redis-cli $AUTH_ARGS cluster nodes | grep myself | grep -q master && echo "yes" || echo "no")
+MY_ID=$(redis-cli $AUTH_ARGS [[.TLSFlags]] cluster nodes | grep myself | awk '{print $1}')
+IS_MASTER=$(redis-cli $AUTH_ARGS [[.TLSFlags]] cluster nodes | grep myself | grep -q master && echo "yes" || echo "no")
 
 if [ "$IS_MASTER" != "yes" ]; then
   echo "I am not a master. Safe to stop."
@@ -1921,7 +2053,7 @@ if [ "$IS_MASTER" != "yes" ]; then
 fi
 
 # Find a healthy replica for my shard
-REPLICA_IP=$(redis-cli $AUTH_ARGS cluster nodes | grep "$MY_ID" | grep "slave" | grep -v "fail" | head -n 1 | awk '{print $2}' | cut -d: -f1 | cut -d@ -f1)
+REPLICA_IP=$(redis-cli $AUTH_ARGS [[.TLSFlags]] cluster nodes | grep "$MY_ID" | grep "slave" | grep -v "fail" | head -n 1 | awk '{print $2}' | cut -d: -f1 | cut -d@ -f1)
 
 if [ -z "$REPLICA_IP" ]; then
   echo "No healthy replica found to take over. Proceeding with restart."
@@ -1929,11 +2061,11 @@ if [ -z "$REPLICA_IP" ]; then
 fi
 
 echo "Requesting replica $REPLICA_IP to take over shard..."
-redis-cli -h $REPLICA_IP $AUTH_ARGS CLUSTER FAILOVER
+redis-cli -h $REPLICA_IP $AUTH_ARGS [[.TLSFlags]] CLUSTER FAILOVER
 
 # Wait for role swap (I become slave)
 for i in $(seq 1 10); do
-  NEW_ROLE=$(redis-cli $AUTH_ARGS cluster nodes | grep myself | awk '{print $3}')
+  NEW_ROLE=$(redis-cli $AUTH_ARGS [[.TLSFlags]] cluster nodes | grep myself | awk '{print $3}')
   if echo "$NEW_ROLE" | grep -q "slave"; then
     echo "Failover successful. I am now a replica."
     exit 0
@@ -1941,7 +2073,15 @@ for i in $(seq 1 10); do
   sleep 1
 done`))
 	var preStopBuf bytes.Buffer
-	err = preStopTmpl.Execute(&preStopBuf, struct{}{})
+	clusterPreStopTLSFlags := ""
+	if lr.Spec.TLS.Enabled {
+		clusterPreStopTLSFlags = "--tls --insecure"
+	}
+	err = preStopTmpl.Execute(&preStopBuf, struct {
+		TLSFlags string
+	}{
+		TLSFlags: clusterPreStopTLSFlags,
+	})
 	if err != nil {
 		panic(fmt.Sprintf("failed to execute cluster prestop template: %v", err))
 	}
@@ -2001,6 +2141,13 @@ done`))
 			MountPath: "/tls",
 			ReadOnly:  true,
 		})
+		if lr.Spec.TLS.CACertSecret != "" && lr.Spec.TLS.CACertSecret != lr.Spec.TLS.ExistingSecret {
+			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+				Name:      "ca-cert",
+				MountPath: "/tls-ca",
+				ReadOnly:  true,
+			})
+		}
 	}
 
 	// Add POD_IP env var (required for cluster-announce-ip)
@@ -2088,6 +2235,16 @@ func buildClusterVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 				},
 			},
 		})
+		if lr.Spec.TLS.CACertSecret != "" {
+			volumes = append(volumes, corev1.Volume{
+				Name: "ca-cert",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: lr.Spec.TLS.CACertSecret,
+					},
+				},
+			})
+		}
 	}
 
 	return volumes
@@ -2095,14 +2252,17 @@ func buildClusterVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 
 // buildClusterLivenessProbe creates the liveness probe for cluster mode
 func buildClusterLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
-	cmd := []string{"redis-cli"}
+	cmd := []string{
+		"if [ -f /data/bootstrap-in-progress ]; then exit 0; fi;",
+		"redis-cli",
+	}
 	if lr.Spec.Auth.Enabled {
-		cmd = append(cmd, "-a", "$(REDIS_PASSWORD)")
+		cmd = append(cmd, "-a", "$(REDIS_PASSWORD)", "--no-auth-warning")
 	}
 	if lr.Spec.TLS.Enabled {
 		cmd = append(cmd, "--tls", "--insecure")
 	}
-	cmd = append(cmd, "ping")
+	cmd = append(cmd, "-t", "2", "ping")
 
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
@@ -2122,14 +2282,17 @@ func buildClusterLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 
 // buildClusterReadinessProbe creates the readiness probe for cluster mode
 func buildClusterReadinessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
-	cmd := []string{"redis-cli"}
+	cmd := []string{
+		"if [ -f /data/bootstrap-in-progress ]; then exit 1; fi;",
+		"redis-cli",
+	}
 	if lr.Spec.Auth.Enabled {
-		cmd = append(cmd, "-a", "$(REDIS_PASSWORD)")
+		cmd = append(cmd, "-a", "$(REDIS_PASSWORD)", "--no-auth-warning")
 	}
 	if lr.Spec.TLS.Enabled {
 		cmd = append(cmd, "--tls", "--insecure")
 	}
-	cmd = append(cmd, "ping")
+	cmd = append(cmd, "-t", "2", "ping")
 
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{

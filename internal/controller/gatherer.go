@@ -26,12 +26,13 @@ import (
 )
 
 type operatorGatherer struct {
-	password string
+	password   string
+	tlsEnabled bool
 }
 
 func (g *operatorGatherer) GetRedisState(ctx context.Context, podName, ip string) (*redisclient.RedisNodeState, error) {
 	addr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.RedisPort)
-	role, mHost, link, offset, err := redisclient.GetReplicationInfo(ctx, addr, g.password)
+	role, mHost, link, offset, err := redisclient.GetReplicationInfo(ctx, addr, g.password, g.tlsEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +49,7 @@ func (g *operatorGatherer) GetRedisState(ctx context.Context, podName, ip string
 
 func (g *operatorGatherer) GetSentinelState(ctx context.Context, podName, ip string) (*redisclient.SentinelNodeState, error) {
 	podAddr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.SentinelPort)
-	sc := redisclient.NewSentinelClient([]string{podAddr}, g.password)
+	sc := redisclient.NewSentinelClient([]string{podAddr}, g.password, g.tlsEnabled)
 
 	masterInfo, err := sc.GetMasterState(ctx, redisclient.SentinelMasterName)
 	if err != nil {
@@ -80,19 +81,19 @@ func (g *operatorGatherer) GetSentinelState(ctx context.Context, podName, ip str
 }
 
 func (g *operatorGatherer) GetClusterID(ctx context.Context, podName, ip string) (string, error) {
-	cc := redisclient.NewClusterClient(g.password)
+	cc := redisclient.NewClusterClient(g.password, g.tlsEnabled)
 	addr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.RedisPort)
 	return cc.GetMyID(ctx, addr)
 }
 
 func (g *operatorGatherer) GetClusterInfo(ctx context.Context, podName, ip string) (*redisclient.ClusterInfo, error) {
-	cc := redisclient.NewClusterClient(g.password)
+	cc := redisclient.NewClusterClient(g.password, g.tlsEnabled)
 	addr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.RedisPort)
 	return cc.GetClusterInfo(ctx, addr)
 }
 
 func (g *operatorGatherer) GetClusterNodes(ctx context.Context, podName, ip string) ([]redisclient.ClusterNodeInfo, error) {
-	cc := redisclient.NewClusterClient(g.password)
+	cc := redisclient.NewClusterClient(g.password, g.tlsEnabled)
 	addr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.RedisPort)
 	return cc.GetClusterNodes(ctx, addr)
 }

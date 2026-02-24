@@ -77,13 +77,15 @@ type ClusterInfo struct {
 
 // ClusterClient wraps Redis cluster operations
 type ClusterClient struct {
-	password string
+	password   string
+	tlsEnabled bool
 }
 
 // NewClusterClient creates a new cluster client
-func NewClusterClient(password string) *ClusterClient {
+func NewClusterClient(password string, tlsEnabled bool) *ClusterClient {
 	return &ClusterClient{
-		password: password,
+		password:   password,
+		tlsEnabled: tlsEnabled,
 	}
 }
 
@@ -94,6 +96,7 @@ func (c *ClusterClient) getClient(addr string) *redis.Client {
 		Password:    c.password,
 		DialTimeout: DefaultTimeout,
 		ReadTimeout: DefaultTimeout,
+		TLSConfig:   makeTLSConfig(c.tlsEnabled),
 	})
 }
 

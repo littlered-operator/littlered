@@ -120,7 +120,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 	fast, _ := littleRed.GetRequeueIntervals()
 
 	password := r.getRedisPassword(ctx, littleRed)
-	clusterClient := redisclient.NewClusterClient(password)
+	clusterClient := redisclient.NewClusterClient(password, littleRed.Spec.TLS.Enabled)
 
 	stateLog := r.getLogger(ctx, littleRed, LogCategoryState)
 	auditLog := r.getLogger(ctx, littleRed, LogCategoryAudit)
@@ -493,7 +493,7 @@ func (r *LittleRedReconciler) gatherGroundTruth(ctx context.Context, littleRed *
 		}
 	}
 
-	g := &operatorGatherer{password: password}
+	g := &operatorGatherer{password: password, tlsEnabled: littleRed.Spec.TLS.Enabled}
 	return redisclient.GatherClusterGroundTruth(ctx, g, clusterPods)
 }
 
@@ -510,7 +510,7 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 	}
 
 	password := r.getRedisPassword(ctx, littleRed)
-	clusterClient := redisclient.NewClusterClient(password)
+	clusterClient := redisclient.NewClusterClient(password, littleRed.Spec.TLS.Enabled)
 	totalNodes := cluster.GetTotalNodes()
 
 	// Gather all Pod IPs and Node IDs

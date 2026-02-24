@@ -106,7 +106,7 @@ func (r *LittleRedReconciler) monitorSentinel(ctx context.Context, littleRed *li
 		default:
 			// Refresh addresses on each retry to catch new pods
 			addresses := r.getSentinelAddresses(ctx, littleRed)
-			sentinelClient := redis.NewSentinelClient(addresses, password)
+			sentinelClient := redis.NewSentinelClient(addresses, password, littleRed.Spec.TLS.Enabled)
 
 			// +switch-master is the event we care about
 			log.Info("Connecting to Sentinel for monitoring", "addresses", addresses)

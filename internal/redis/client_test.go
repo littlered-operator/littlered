@@ -156,7 +156,7 @@ func TestNewSentinelClient(t *testing.T) {
 	addresses := []string{"sentinel-0:26379", "sentinel-1:26379", "sentinel-2:26379"}
 	password := "secret"
 
-	client := NewSentinelClient(addresses, password)
+	client := NewSentinelClient(addresses, password, false)
 
 	if client == nil {
 		t.Fatal("NewSentinelClient returned nil")
