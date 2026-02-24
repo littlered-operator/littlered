@@ -75,6 +75,16 @@ The operator builds an adjacency graph from each node's `CLUSTER NODES` output a
 
 Any NodeID that appears in `CLUSTER NODES` output but does NOT have a corresponding living K8s pod is a ghost.
 
+**Why K8s is the source of truth, not gossip**: Redis gossip-based failure detection (`FAIL` flag) can lag behind pod deletions by up to `cluster-node-timeout` (default 15s). During this window a "healthy ghost" problem occurs:
+
+1. Pod is deleted — K8s knows immediately
+2. Redis gossip still considers the NodeID healthy (no `FAIL` flag yet)
+3. The ghost still "owns" its slots at a high `configEpoch`
+4. `CLUSTER ADDSLOTS` for those ranges fails with "Slot already busy"
+5. If a new pod is MEETed in before the ghost is forgotten, Redis's internal epoch conflict resolution can **demote the new pod to a replica of the ghost**
+
+By using the K8s pod list, the operator detects and FORGETs ghosts immediately — before gossip catches up and before the new pod joins.
+
 ---
 
 ## Repair Steps Detail
@@ -119,6 +129,13 @@ graph TD
 
 **CLUSTER MEET**: Uses the largest partition as the seed. Every node outside the seed's partition is MEETed into it.
 
+**Why CLUSTER MEET must wait for failover**: When a master dies, its replacement pod starts isolated — a partition. The naive fix is `CLUSTER MEET`, but issuing it during an in-progress failover is dangerous:
+- Redis automatic failover requires a **majority vote from masters**
+- A freshly-joined pod doesn't yet know the existing master-replica relationships and cannot vote correctly
+- Disrupting the quorum can prevent the replica from being promoted, leaving the cluster stuck
+
+The operator therefore blocks CLUSTER MEET while `HasOrphanedReplicas()` is true. This also implicitly delays ghost removal (Step 2): the orphaned replica needs the ghost's NodeID in the topology to identify which slots to claim during promotion.
+
 ### Step 2: Forget Ghost Nodes
 
 **Trigger**: NodeIDs in `CLUSTER NODES` that don't have living K8s pods.
@@ -151,6 +168,97 @@ graph TD
 1. `CLUSTER MEET` all nodes via Pod 0
 2. `CLUSTER ADDSLOTS` for each shard
 3. `CLUSTER REPLICATE` for each replica
+
+---
+
+## Failure Scenarios
+
+These walkthroughs show the repair sequence across multiple reconcile cycles for common failure patterns.
+
+### Scenario 1: Single Master Failure (with replica)
+
+**Situation**: One master dies. K8s replaces the pod. The cluster still has a majority of masters alive.
+
+**What develops**: The old master's NodeID becomes a ghost; its replica becomes orphaned (still references the ghost as master); the new pod starts with a fresh NodeID, isolated from the cluster.
+
+```
+Reconcile #1:
+  HasPartitions() = true (new pod isolated)
+  HasOrphanedReplicas() = true (replica points to ghost master)
+  → WAIT — CLUSTER MEET now would disrupt the in-progress failover vote
+
+[Redis gossip promotes the orphaned replica to master automatically]
+
+Reconcile #2:
+  HasPartitions() = true
+  HasOrphanedReplicas() = false (replica is now master)
+  → CLUSTER MEET (heal partition, bring new pod in)
+
+Reconcile #3:
+  HasGhostNodes() = true
+  → CLUSTER FORGET (remove ghost from every node's known-nodes table)
+
+Reconcile #4:
+  HasEmptyMasters() = true (new pod is a master with no slots)
+  → CLUSTER REPLICATE (assign new pod as replica of the promoted shard)
+
+Reconcile #5:
+  Cluster healthy → Phase: Running
+```
+
+### Scenario 2: Quorum Loss (replicas survive)
+
+**Situation**: Majority of masters die simultaneously (e.g., 2 out of 3 in a 3-shard cluster). Only 1 voting master remains — not enough for the gossip majority vote required for automatic failover.
+
+**What develops**: Multiple ghost masters appear; multiple replicas are orphaned; `votingMasters (1) ≤ shards/2 (1)` triggers Step 0.
+
+```
+Reconcile #1:
+  votingMasters (1) ≤ shards/2 (1) → Quorum loss detected
+  For each orphaned replica:
+    → CLUSTER FAILOVER TAKEOVER (force-promote without requiring a vote)
+
+Reconcile #2:
+  Quorum restored (promoted replicas are now voting masters)
+  Normal repair continues (MEET, FORGET, REPLICATE)
+```
+
+`CLUSTER FAILOVER TAKEOVER` bypasses the voting mechanism entirely — the replica unilaterally claims its master's epoch and slots. This is safe because the operator has confirmed no K8s pod exists for the old master.
+
+### Scenario 3: Shard Loss (no replica)
+
+**Situation**: A master dies and all of its replicas also die. The shard's slots have no surviving node to take over.
+
+**Behavior**: The operator detects orphaned slots (`TotalSlots < 16384`) but cannot recover the data. Human intervention or restoration from backup is required.
+
+### Scenario 4: Master Failure in 0-Replica Mode
+
+**Situation**: A master dies in a cluster with `replicasPerShard: 0`. There is no replica to promote — the shard's data is lost and its slots must be reassigned to the replacement pod.
+
+**What develops**: The old master's NodeID becomes a ghost that still owns the slots (at a high `configEpoch`). The new pod starts with a fresh NodeID, isolated.
+
+**Why ordering matters**: There is no failover to wait for, so the operator does not hold back CLUSTER FORGET. However, the ghost **must** be forgotten before MEET or ADDSLOTS:
+- If not forgotten first, `CLUSTER ADDSLOTS` fails with "Slot already busy" (ghost's `configEpoch` wins the conflict)
+- If the new pod is MEETed before FORGET, Redis epoch resolution can demote it to a replica of the ghost
+
+```
+Reconcile #1:
+  HasGhostNodes() = true, HasOrphanedReplicas() = false (0-replica mode)
+  → CLUSTER FORGET (remove ghost from all live nodes first)
+
+Reconcile #2:
+  HasPartitions() = true, no orphaned replicas to wait for
+  → CLUSTER MEET (bring new pod into the cluster)
+
+Reconcile #3:
+  Missing shard detected; intended master (pod N) is alive and ready
+  → CLUSTER ADDSLOTS (assign shard N's slot range to pod N)
+
+Reconcile #4:
+  Cluster healthy → Phase: Running
+```
+
+Pod N always receives shard N's slots (strict positional mapping). The operator never assigns a shard to a different pod as a fallback — if pod N is not yet ready, it waits.
 
 ---
 
@@ -210,6 +318,14 @@ The operator reports `Phase: Running` when:
 - Master count == expected shard count
 - No partitions
 - No ghost nodes
+
+---
+
+## Debug
+
+| Annotation | Effect |
+|------------|--------|
+| `chuck-chuck-chuck.net/debug-skip-slot-assignment` | Skip CLUSTER ADDSLOTS during bootstrap (for testing) |
 
 ---
 
