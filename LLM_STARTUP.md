@@ -105,7 +105,7 @@ internal/controller/        # Core Reconciliation Logic
   ├── sentinel_monitor.go     # Sentinel health/failover logic
   └── resources.go            # K8s resource builders (STS, SVC, CM)
 internal/redis/             # Redis/Cluster API clients
-docs/                       # Detailed specs (ARCHITECTURE.md, CLUSTER_RECONCILIATION.md)
+docs/                       # Detailed specs (ARCHITECTURE.md, RECONCILIATION_LOOP_CLUSTER.md)
 test/e2e/                   # End-to-end tests (requires Kind)
 ```
 
@@ -137,7 +137,7 @@ kubectl apply -f config/samples/ # Try out sample CRs
 ## 8. Current Context & Ongoing Work
 Refer to:
 - `PROJECT`: Kubebuilder metadata.
-- `docs/CLUSTER_RECONCILIATION.md`: Deep dive into cluster healing.
+- `docs/RECONCILIATION_LOOP_CLUSTER.md`: Deep dive into cluster healing (repair steps, failure scenarios, kill-9 protection).
 - `.gemini/GEMINI.md` or `.claud/CLAUDE.md`: (If they exist) for LLM-specific session notes and active task status.
 - `docs/DEBUG_CRASH_TEST_INVESTIGATION.md`: Detailed investigation of the failing "both mechanisms active (crash)" e2e test (open as of 2026-02-18, not yet resolved).
 
