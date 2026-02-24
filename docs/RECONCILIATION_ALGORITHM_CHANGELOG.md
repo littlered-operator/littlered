@@ -35,53 +35,53 @@ This document tracks significant changes to the LittleRed reconciliation logic. 
 
 ## [LR-004] Sentinel Ghost Master Fallback Race
 - **Date:** 2026-02-21
-- **Commit:** <current>
+- **Commit:** f3de62a
 - **Problem:** If a master pod crashes and restarts quickly with a new IP, it starts as a "master" by default. The operator's master identification logic (fallback mode) would pick this new IP as the authoritative master, bypassing the "leaderless" guardrail. This would then trigger Rule A+ (Ghost pruning) which would RESET Sentinels still monitoring the old (dead) IP, blocking their failover.
 - **Fix:** Hardened `DetermineRealMaster` to ignore ghost IPs when counting Sentinel votes, and specifically to DISALLOW fallback to Redis-only master identification if a majority of Sentinels are still monitoring a ghost IP.
 - **Impacts:** LR-001 (further hardening). Ensures the operator remains passive while Sentinel is timing out a dead master.
 
 ## [LR-005] Sentinel Divergent Master Deadlock
 - **Date:** 2026-02-21
-- **Commit:** <current>
+- **Commit:** 66dcd83
 - **Problem:** A sentinel could miss a failover event and remain stuck monitoring a previous master IP. If that IP was still "living" (e.g. the old master restarted and became a replica), the operator's ghost pruning logic wouldn't trigger, and the sentinel would never converge with the majority.
-- **Fix:** Added a new healing rule to `reconcileSentinelCluster`: if a sentinel is monitoring a living but incorrect master (divergent from the majority consensus), it is force-reset to rediscover the real master via gossip.
+- **Fix:** Added a new healing rule to `reconcileSentinelCluster`: if a sentinel is monitoring a living but incorrect master (divergent from the majority consensus), issue `SENTINEL REMOVE` + `SENTINEL MONITOR <consensus-master-IP>` to force it onto the correct master. *(Note: initially implemented with `SENTINEL RESET`; superseded by LR-008 which changed all divergent-master correction to REMOVE+MONITOR.)*
 - **Impacts:** Sentinel convergence safety.
 
 ## [LR-006] Surgical Pod Relabeling
 - **Date:** 2026-02-21
-- **Commit:** <current>
+- **Commit:** d1be0ca
 - **Problem:** During failover (leaderless period), the operator would relabel all living pods as 'orphan'. This caused massive K8s churn and triggered new reconciliation loops that could interfere with Sentinel's convergence.
 - **Fix:** Refactored `updateMasterLabel` to be surgical. If no living master is known, the operator only ensures that the 'master' label is removed from whoever held it, leaving other pods untouched. Once a master is elected, ALL pods are reconciled to their correct labels (Master/Replica).
 - **Impacts:** Cluster stability during failover.
 
 ## [LR-007] Sentinel Failover Blocked by Reset (Regression Fix)
 - **Date:** 2026-02-21
-- **Commit:** <current>
+- **Commit:** b5bd053
 - **Problem:** An earlier attempt to allow ghost-master pruning during leaderless periods caused a regression. If a master died, its IP became a ghost. The operator would then issue `SENTINEL RESET` every 2 seconds. Because `RESET` wipes Sentinel's internal state, it reset the `down-after-milliseconds` timer, preventing failover from ever triggering.
 - **Fix:** Re-instated the hard gate: NO `SENTINEL RESET` (for master or replicas) is allowed if the cluster is leaderless (`RealMasterIP == ""`). The operator must remain passive and allow Sentinel to complete its built-in failure detection and election.
 - **Impacts:** Sentinel failover reliability.
 
 ## [LR-008] Sentinel Ghost Master RESET Ineffectiveness & Failure Detection Suppression
 - **Date:** 2026-02-22
-- **Commit:** <current>
+- **Commit:** d1c9ff9
 - **Problem:**
     1. `SENTINEL RESET` does not change the master IP monitored by Sentinel; it only clears state like replicas and other sentinels. Stuck sentinels monitoring ghost IPs remained stuck even after a reset.
     2. Frequent `SENTINEL RESET` (every 2s) reset the `s_down` timer (5s), preventing failover detection for crashed masters when Rule A was bypassed (e.g. by a fast-restarting pod masquerading as a master).
 - **Fix:**
     1. Replaced `SENTINEL RESET` with a `SENTINEL REMOVE` + `SENTINEL MONITOR` sequence for correcting stuck sentinels. This forces the sentinel to immediately point to the correct, living consensus master IP.
     2. Hardened Rule D (ghost pruning): `SENTINEL RESET` is now only issued if the consensus master is confirmed to be a living AND reachable pod. This ensures the operator remains passive during any period where failure detection might be in progress.
-- **Impacts:** LR-001, LR-007 (further hardening). Ensures failover reliability and guaranteed convergence.
+- **Impacts:** LR-001, LR-005, LR-007 (further hardening). The REMOVE+MONITOR approach now covers both ghost master IPs (LR-008's primary scope) and divergent-but-living master IPs (LR-005's scope). Ensures failover reliability and guaranteed convergence.
 
 ## [LR-009] Missing Replica Rescue (Rule R)
 - **Date:** 2026-02-22
-- **Commit:** <current>
+- **Commit:** 2b12e92
 - **Problem:** A Redis pod could remain in "master" mode (e.g., after a restart or crash) even if a different consensus master was already established by Sentinel. The operator was missing the logic to force these rogue pods back into "replica" mode, leaving Sentinel with an incomplete replica count and preventing the cluster from reaching "Running" phase.
 - **Fix:** Implemented **Rule R (Replica Rescue)** in `reconcileSentinelCluster`. The operator now iterates over all Redis pods and issues `SLAVEOF <RealMasterIP>` to any pod that is not the consensus master and is not correctly following it.
 - **Impacts:** Cluster convergence to "Running" phase.
 
 ## [LR-010] Redundant Reconciliation & Aggressive Rule R
 - **Date:** 2026-02-22
-- **Commit:** <current>
+- **Commit:** b2ef31e
 - **Problem:**
     1. The operator often issued duplicate `SLAVEOF` commands for the same pod within milliseconds. This was caused by status updates triggering immediate reconciliations that collided with the periodic requeue timer.
     2. Rule R was too aggressive, triggering `SLAVEOF` if `LinkStatus == "down"`. Since the replica handshake takes time, a second reconciliation would often trigger and interrupt an ongoing successful handshake.
