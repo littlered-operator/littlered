@@ -2,8 +2,8 @@
 
 > Detailed Custom Resource Definition schema for LittleRed.
 
-**Document Status**: Draft
-**Last Updated**: 2026-02-11
+**Document Status**: Active
+**Last Updated**: 2026-02-24
 **API Version**: `chuck-chuck-chuck.net/v1alpha1`
 
 ---
@@ -380,6 +380,7 @@ spec:
     shards: 3                   # Number of master shards (minimum 3)
     replicasPerShard: 1         # Replicas per master (0 = no replicas)
     clusterNodeTimeout: 15000   # Node timeout in milliseconds
+    failoverGracePeriod: 15     # Extra seconds to wait for natural failover before operator intervenes
 ```
 
 | Field | Type | Required | Default | Description |
@@ -387,6 +388,7 @@ spec:
 | `cluster.shards` | `int` | No | `3` | Number of master shards (min: 3) |
 | `cluster.replicasPerShard` | `int` | No | `1` | Replicas per shard (0 = no replicas) |
 | `cluster.clusterNodeTimeout` | `int` | No | `15000` | Node timeout in ms |
+| `cluster.failoverGracePeriod` | `int` | No | `15` | Extra seconds (on top of `clusterNodeTimeout`) to wait for natural gossip-based failover before the operator force-promotes an orphaned replica. Total wait = `clusterNodeTimeout + failoverGracePeriod`. |
 
 **Cluster mode creates**:
 - Total pods: `shards × (1 + replicasPerShard)`
@@ -421,6 +423,7 @@ spec:
 ```yaml
 status:
   phase: Running                # Overall phase
+  status: "my-cache-redis-0"   # Human-readable summary (master pod name when Running)
   observedGeneration: 1         # Last observed generation
   conditions:                   # Detailed conditions
     - type: Ready
@@ -459,11 +462,17 @@ status:
         nodeId: ghi789jkl012...
         role: replica
         masterNodeId: abc123def456...
+    orphanedReplicas:           # Replicas awaiting force-promotion (transient)
+      - podName: my-cache-cluster-3
+        nodeId: mno345pqr678...
+        masterNodeId: abc123def456...
+        detectedAt: "2026-02-03T12:01:00Z"
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `phase` | `string` | `Pending`, `Initializing`, `Running`, `Failed`, `Terminating` |
+| `status` | `string` | Human-readable summary: master pod name when Running, phase otherwise. Shown in `kubectl get littlered` output. |
 | `bootstrapRequired` | `bool` | True on creation, cleared after first master is elected (sentinel mode) |
 | `observedGeneration` | `int64` | Last processed `.metadata.generation` |
 | `conditions` | `[]Condition` | Detailed status conditions |
@@ -475,21 +484,31 @@ status:
 | `replicas.total` | `int32` | Total replica count (sentinel mode) |
 | `sentinels.ready` | `int32` | Ready sentinel count (sentinel mode) |
 | `sentinels.total` | `int32` | Total sentinel count (sentinel mode) |
-| `cluster.state` | `string` | Cluster state: ok, fail, initializing (cluster mode) |
-| `cluster.lastBootstrap` | `Time` | Last bootstrap timestamp (cluster mode) |
-| `cluster.nodes` | `[]ClusterNodeState` | Per-node state for recovery (cluster mode) |
+| `cluster.state` | `string` | Cluster state: `ok`, `fail`, `initializing` (cluster mode) |
+| `cluster.lastBootstrap` | `Time` | Timestamp of last full cluster bootstrap (cluster mode) |
+| `cluster.nodes` | `[]ClusterNodeState` | Per-node topology for operator-managed recovery (cluster mode) |
+| `cluster.nodes[].podName` | `string` | Stable pod name (e.g., `my-cache-cluster-0`) |
+| `cluster.nodes[].nodeId` | `string` | Redis cluster node ID (40-char hex) |
+| `cluster.nodes[].role` | `string` | `master` or `replica` |
+| `cluster.nodes[].masterNodeId` | `string` | Master's node ID (replicas only) |
+| `cluster.nodes[].slotRanges` | `string` | Assigned slot range (masters only, e.g., `0-5460`) |
+| `cluster.orphanedReplicas` | `[]OrphanedReplicaInfo` | Replicas whose master is gone, tracked for timeout-based force-promotion (transient, cluster mode) |
+| `cluster.orphanedReplicas[].podName` | `string` | Pod name of the orphaned replica |
+| `cluster.orphanedReplicas[].nodeId` | `string` | Node ID of the orphaned replica |
+| `cluster.orphanedReplicas[].masterNodeId` | `string` | Node ID of the (now gone) master |
+| `cluster.orphanedReplicas[].detectedAt` | `Time` | When the orphan was first detected |
 
 ### 3.1 Condition Types
 
-| Type | Description |
-|------|-------------|
-| `Ready` | All components are ready and operational |
-| `Initialized` | Initial setup complete |
-| `ConfigValid` | Configuration is valid |
-| `TLSReady` | TLS secrets are valid (if enabled) |
-| `AuthReady` | Auth secrets are valid (if enabled) |
-| `SentinelReady` | Sentinel quorum established (sentinel mode) |
-| `ClusterReady` | Cluster is formed and healthy (cluster mode) |
+| Type | Set by controller | Description |
+|------|:-----------------:|-------------|
+| `Ready` | ✅ | All components are ready and operational |
+| `Initialized` | ✅ | Initial setup complete |
+| `ConfigValid` | ✅ | Configuration is valid (set `False` on validation failure) |
+| `SentinelReady` | ✅ | Sentinel quorum established (sentinel mode) |
+| `TLSReady` | — | Reserved for future use (defined but not currently set) |
+| `AuthReady` | — | Reserved for future use (defined but not currently set) |
+| `ClusterReady` | — | Reserved for future use (defined but not currently set) |
 
 ### 3.2 Phase Transitions
 
@@ -966,8 +985,8 @@ type ConfigSpec struct {
 | If `tls.enabled`, must have `existingSecret` | Missing TLS certificate |
 | If `tls.clientAuth`, must have `caCertSecret` | Missing CA certificate |
 | `sentinel` config ignored if `mode=standalone` | Warning in status |
-| `cluster.shards` must be >= 3 | Minimum 3 shards required |
-| `cluster.replicasPerShard` must be >= 0 | Non-negative value required |
+| `cluster.shards` must be exactly `3` | Currently only 3-shard clusters are supported (CRD schema allows ≥3, controller enforces exactly 3 until slot migration is implemented) |
+| `cluster.replicasPerShard` must be `0` or `1` | Currently only 0 or 1 replica per shard supported |
 | `maxmemory` must parse as quantity | Invalid memory format |
 
 ### 7.2 Status Condition on Validation Failure
