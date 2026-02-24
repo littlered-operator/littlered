@@ -57,11 +57,10 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 - **Rationale**: Replicas must start `redis-server` even if the reported master is unreachable. This allows them to register with Sentinel as living replicas, enabling Sentinel to perform a failover when the master is dead. Keeping the `PING` check leads to a deadlock where no replicas ever start because they are waiting for a master that Sentinel hasn't promoted yet.
 - **Assumed Risk**: We assume Redis/Valkey handles unreachable masters gracefully at startup via standard retry logic.
 
-### 2.9 Ghost Node Removal (Sentinel Mode)
-- **Decision**: Proactively prune dead IPs from Sentinel's topology via `SENTINEL RESET`.
-- **Rationale**: To prevent Sentinel's state from being cluttered with "ghost" IPs from previous pod generations, the operator cross-references Sentinel's replica list with the Kubernetes Pod list.
-- **Ghost replicas (Rule D)**: RESET is broadcast to all sentinels when ghost IPs are found in the *replica* list, but only after Rule A passes (no terminating pods, no active failover) and the sentinel's master is a verified living pod.
-- **Ghost master (Rule D extension, 2026-02-20)**: A dual-failover race can leave one sentinel permanently stuck monitoring a ghost master IP: two sentinels race to lead the failover, one supersedes the other before it records `+switch-master`, and the stuck sentinel cannot reach `o_down` alone to trigger a corrective failover. In this case the operator issues `SENTINEL RESET` targeted at **that specific pod's IP only** (not via the service). The sentinel discards its stale config and rediscovers the real master via gossip from the healthy sentinels. This is an extension of Rule D, not a reversion to the reverted MONITOR/SLAVEOF interference: RESET does not direct sentinel to any specific master IP. See ADR-003 (Amendment 2026-02-20) for the full analysis and forensic evidence.
+### 2.9 Ghost Node Healing (Sentinel Mode)
+- **Decision**: Proactively correct dead IPs from Sentinel's topology; strategy differs for ghost replicas vs ghost masters.
+- **Ghost replicas**: When dead pod IPs appear in Sentinel's *replica* list, issue `SENTINEL RESET` (broadcast to all sentinels). This clears the stale entries without directing Sentinel to any specific master. Only applied after Rule A passes (no terminating pods, no active failover) and the consensus master is a verified living pod.
+- **Ghost master** (LR-008): A dual-failover race can leave a sentinel permanently stuck monitoring a ghost master IP — it cannot reach `o_down` alone and cannot self-correct. `SENTINEL RESET` was tried first (LR-007) but found ineffective: RESET clears replica/sentinel lists but does **not** change the monitored master IP; the sentinel reconnects to the same ghost. The correct fix (LR-008) is `SENTINEL REMOVE` followed by `SENTINEL MONITOR <consensus-master-IP>` — this forces the sentinel to immediately point at the correct living master. Applied only after Rule A passes. See ADR-003 and `docs/RECONCILIATION_ALGORITHM_CHANGELOG.md` (LR-007, LR-008).
 
 ---
 
@@ -71,7 +70,7 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 | :--- | :--- | :--- |
 | **Standalone** | 1 Redis Pod | Dev / Simple caching |
 | **Sentinel** | 3 Redis (1M+2R) + 3 Sentinels | High Availability (HA) |
-| **Cluster** | $Shards 	imes (1 + Replicas)$ Pods | Horizontal Scaling / Large Data |
+| **Cluster** | `shards × (1 + replicasPerShard)` Pods | Horizontal Scaling / Large Data |
 
 ### Key Logic:
 - **Sentinel Mode**: The operator manages a `chuck-chuck-chuck.net/role: master` label on Pods. The `{name}` Service uses this label as a selector to always route traffic to the current master.
@@ -98,13 +97,25 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 ```text
 api/v1alpha1/               # CRD definitions (LittleRed types)
 cmd/littlered/              # Operator entrypoint
+cmd/lrctl/                  # lrctl CLI tool (kubectl plugin)
+cmd/littlered-chaos-client/ # Chaos test client
 config/                     # Kustomize manifests (CRDs, RBAC, Samples)
 internal/controller/        # Core Reconciliation Logic
-  ├── littlered_controller.go # Entrypoint reconciler
-  ├── cluster_reconcile.go    # Cluster-specific logic
-  ├── sentinel_monitor.go     # Sentinel health/failover logic
-  └── resources.go            # K8s resource builders (STS, SVC, CM)
+  ├── littlered_controller.go # Entrypoint reconciler + sentinel healing rules
+  ├── cluster_reconcile.go    # Cluster-specific reconciliation
+  ├── gatherer.go             # Operator-side ground truth gatherer
+  ├── sentinel_monitor.go     # Background +switch-master subscriber
+  └── resources.go            # K8s resource builders (STS, SVC, CM, startup scripts)
 internal/redis/             # Redis/Cluster API clients
+  ├── client.go               # Sentinel client wrapper
+  ├── cluster_client.go       # Cluster client wrapper
+  ├── sentinel_state.go       # SentinelClusterState + DetermineRealMaster
+  ├── cluster_state.go        # ClusterGroundTruth + health checks
+  └── gather.go               # GatherClusterState / GatherClusterGroundTruth
+internal/cli/               # CLI support packages for lrctl
+  ├── discovery/              # Resource discovery
+  ├── k8s/                    # K8s exec-based gatherer
+  └── types/                  # Shared types
 docs/                       # Detailed specs (ARCHITECTURE.md, RECONCILIATION_LOOP_CLUSTER.md)
 test/e2e/                   # End-to-end tests (requires Kind)
 ```
@@ -134,21 +145,11 @@ kubectl apply -f config/samples/ # Try out sample CRs
 
 ---
 
-## 8. Current Context & Ongoing Work
-Refer to:
-- `PROJECT`: Kubebuilder metadata.
-- `docs/RECONCILIATION_LOOP_CLUSTER.md`: Deep dive into cluster healing (repair steps, failure scenarios, kill-9 protection).
-- `.gemini/GEMINI.md` or `.claud/CLAUDE.md`: (If they exist) for LLM-specific session notes and active task status.
-- `docs/DEBUG_CRASH_TEST_INVESTIGATION.md`: Detailed investigation of the failing "both mechanisms active (crash)" e2e test (open as of 2026-02-18, not yet resolved).
+## 8. Key Resolved Investigations
 
-### Resolved Investigation (2026-02-20)
+### Sentinel Ghost Master Split-Brain (2026-02-20, LR-007/LR-008)
 **Test:** `Sentinel Advanced Failover Hybrid (Production) Mode > should recover correctly with both mechanisms active (crash)`
 
-**Root cause (confirmed):** The hybrid test runs a graceful failover immediately followed by a crash failover on the same cluster. The crash kill of the second master triggers a second Sentinel failover while the restarted redis-0 pod (new IP) is still joining. Two sentinels race to lead the second failover. The elected leader (`sentinel-1`) is superseded by another sentinel's `+config-update-from` broadcast before it can record its own `+switch-master`. Sentinel-1 is left permanently monitoring the ghost master IP, stuck at `s_down`, unable to reach `o_down` alone (quorum = 2). Classic non-self-healing sentinel split-brain — caused entirely within Sentinel's own election mechanism, not by operator interference.
+**Root cause:** The hybrid test runs a graceful failover immediately followed by a crash failover on the same cluster. Two sentinels race to lead the second failover; one is superseded before it records `+switch-master` and is left permanently monitoring the ghost master IP — stuck at `s_down`, unable to reach `o_down` alone (quorum = 2). Classic non-self-healing split-brain caused entirely within Sentinel's election mechanism.
 
-**Operator bug:** The ghost-master guard in `reconcileSentinelCluster` did `return nil` when any sentinel monitored a ghost master. This was correct during an in-progress failover but fired forever in the post-failover settled state, preventing the stuck sentinel from ever being healed.
-
-**Fix:** Extended Rule D (ghost pruning) to cover ghost *masters*: after Rule A passes (no terminating pods, no active failover), a targeted `SENTINEL RESET` is issued to the specific stuck sentinel pod IP. The sentinel rediscovers the real master via gossip. See ADR-003 (Amendment 2026-02-20) and forensic artifacts in `debug-artifacts-20260220-192511-should-recover-correctly-with-both-mechanisms-active-crash/`.
-
----
-*Generated by Gemini CLI - Feb 2026*
+**Fix (LR-008):** Ghost master correction via `SENTINEL REMOVE` + `SENTINEL MONITOR <consensus-master-IP>`. A prior attempt with targeted `SENTINEL RESET` (LR-007) was found ineffective — RESET does not change the monitored master IP. The REMOVE+MONITOR sequence forces the stuck sentinel to immediately point at the correct living master. See `docs/RECONCILIATION_ALGORITHM_CHANGELOG.md` (LR-007, LR-008) and ADR-003.
