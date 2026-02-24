@@ -1,41 +1,52 @@
 # LittleRed
 
-A lightweight Kubernetes operator for deploying Redis/Valkey as a pure in-memory store.
+A Kubernetes operator for deploying Valkey/Redis as a non-persistent, pure in-memory store.
 
-## Features
+LittleRed is designed for high-throughput caching and transient data workloads where persistence is explicitly disabled. It addresses the specific lifecycle requirements of non-persistent clusters by using a full reconciliation engine to manage node identities and cluster membership—scenarios where static startup scripts and Helm charts often reach their limits.
 
-- **Standalone mode**: Single Redis instance for simple in-memory storage
-- **Sentinel mode**: 1 master + 2 replicas + 3 sentinels with automatic failover
-- **Cluster mode**: Horizontally scaled Redis Cluster with automatic sharding (16384 hash slots)
-- **Valkey/Redis support**: Uses Valkey 8.0 by default (Redis 7.2+ compatible)
-- **Prometheus metrics**: Built-in redis_exporter sidecar
-- **Optional ServiceMonitor**: For Prometheus Operator integration
-- **Optional auth & TLS**: Password authentication and TLS encryption
-- **Safe-by-default performance**: No persistence (in-memory only), noeviction policy, Guaranteed QoS.
+## Technical Rationale: The In-Memory Challenge
+
+Operating Redis or Valkey without persistence requires a specialized approach to lifecycle management. Standard deployments often assume data is preserved on disk, which influences how nodes manage their identity and how clusters handle rejoining members.
+
+> **Current Support:** To ensure maximum stability for the initial release, Cluster mode is specifically validated for **3 shards** with **0 or 1 replica** each. Support for variable cluster sizes is planned for future versions.
+
+### The Risk of State Corruption
+In a non-persistent setup, a node restart results in an **empty dataset**. If a node returns with its previous identity (IP or Hostname), the cluster may incorrectly identify it as a "returning master." This can lead the cluster to accept the empty node as the authoritative source of truth, triggering a cascading data wipe across healthy replicas.
+
+### The LittleRed Solution
+LittleRed implements a reconciliation-based approach to ensure cluster stability:
+- **Ephemeral Identity Management**: The operator ensures that every pod restart—whether a graceful deletion, a `SIGKILL`, or an OOM event—is treated as a new entity. 
+- **Automated Topology Correction**: LittleRed identifies and removes stale identities ("Ghost Nodes") from the cluster configuration before new nodes are permitted to join.
+- **Healing via External Visibility**: Unlike internal cluster mechanisms (Sentinel or Gossip), the operator has global visibility into the Kubernetes API. It can identify when a cluster is in a deadlock or an unrecoverable state and intervene precisely to restore consistency.
+- **Chaos-Hardened**: The implementation is validated against an extensive E2E suite simulating diverse failure modes to verify that the cluster remains stable and data is not lost due to identity reuse.
+
+## Operational Philosophy
+
+LittleRed follows a **low-interference** principle:
+1.  **Trust the Native Protocols**: We allow Sentinel and Cluster Gossip to manage the data plane and failovers.
+2.  **Strategic Intervention**: The operator only intervenes when the cluster lacks the context to heal itself (e.g., when all nodes agree on a master that no longer exists in Kubernetes).
+3.  **Heal-ability**: As long as the cluster state is recoverable and data hasn't been lost, the reconciliation loop is designed to return the cluster to a healthy, consistent state.
+
+## Key Features
+
+- **Deployment Modes**: Support for `standalone`, `sentinel` (1 master + 2 replicas), and `cluster` (sharded) modes.
+- **Valkey & Redis Native**: Uses **Valkey 8.0** by default (compatible with Redis 7.2+).
+- **Observability**: Built-in `redis_exporter` sidecars and optional `ServiceMonitor` for Prometheus.
+- **Security**: Support for password authentication and TLS encryption.
+- **Integrated Diagnostics**: Includes `lrctl`, a CLI tool for direct state verification.
 
 ## Quick Start
 
-### Install with Helm
+### 1. Install the Operator
 
 ```bash
 helm install littlered charts/littlered-operator -n littlered-system --create-namespace
 ```
 
-### Create a Redis Cache
-
-Minimal standalone cache:
+### 2. Deploy a Cluster (Sentinel Mode)
 
 ```yaml
-apiVersion: chuck-chuck-chuck.net/v1alpha1
-kind: LittleRed
-metadata:
-  name: my-cache
-spec: {}
-```
-
-Sentinel mode:
-
-```yaml
+# my-cache.yaml
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
@@ -44,48 +55,21 @@ spec:
   mode: sentinel
 ```
 
-Cluster mode:
-
-```yaml
-apiVersion: chuck-chuck-chuck.net/v1alpha1
-kind: LittleRed
-metadata:
-  name: my-cache
-spec:
-  mode: cluster
-```
-
-Apply:
-
 ```bash
 kubectl apply -f my-cache.yaml
 ```
 
-### Connect to Redis
+### 3. Verify Health
 
 ```bash
-# Standalone mode
-kubectl exec -it my-cache-redis-0 -- valkey-cli PING
+# Install the CLI as a kubectl plugin
+make install-plugin
 
-# Sentinel mode - query sentinel for master address
-kubectl exec -it my-cache-sentinel-0 -- valkey-cli -p 26379 SENTINEL get-master-addr-by-name mymaster
-
-# Sentinel mode - connect to Redis master
-kubectl exec -it my-cache-redis-0 -c redis -- valkey-cli PING
-
-# Cluster mode - be sure to enable cluster mode in the cli using `-c`
-kubectl exec -it my-cache-cluster-cluster-0 -- valkey-cli -c CLUSTER NODES
+# Check cluster consistency
+kubectl lr verify my-cache
 ```
 
-## Configuration
-
-### Deployment Modes
-
-| Mode | Pods | Use Case |
-|------|------|----------|
-| `standalone` | 1 Redis | Development, simple caching |
-| `sentinel` | 3 Redis + 3 Sentinel | Production, high availability |
-| `cluster` | Shards × (1 + replicas) | Production, horizontal scaling with sharding |
+## Configuration Reference
 
 ### Spec Reference
 
@@ -95,257 +79,42 @@ kind: LittleRed
 metadata:
   name: my-cache
 spec:
-  # Deployment mode: standalone, sentinel, or cluster
-  mode: standalone
-
-  # Container image
+  mode: standalone          # standalone, sentinel, or cluster
+  
   image:
     registry: docker.io
     path: valkey/valkey
     tag: "8.0"
     pullPolicy: IfNotPresent
-    pullSecrets: []
 
-  # Redis container resources (Guaranteed QoS by default)
-  resources:
-    requests:
-      cpu: "250m"
-      memory: "256Mi"
-    limits:
-      cpu: "250m"
-      memory: "256Mi"
+  resources:                # Guaranteed QoS recommended (requests == limits)
+    requests: { cpu: 250m, memory: 256Mi }
+    limits:   { cpu: 250m, memory: 256Mi }
 
-  # Redis configuration
   config:
-    maxmemory: ""           # e.g., "900Mi" (auto-calculated from memory limit if empty)
     maxmemoryPolicy: noeviction
-    timeout: 0              # Client idle timeout (0 = disabled)
     tcpKeepalive: 300
-    raw: ""                 # Raw redis.conf content (expert mode)
+    timeout: 0
 
-  # Authentication
-  auth:
-    enabled: false
-    existingSecret: ""      # Secret with 'password' key
-
-  # TLS encryption
-  tls:
-    enabled: false
-    existingSecret: ""      # Secret with tls.crt, tls.key
-    caCertSecret: ""        # Secret with ca.crt
-    clientAuth: false
-
-  # Prometheus metrics
-  metrics:
-    enabled: true
-    exporter:
-      path: oliver006/redis_exporter
-      tag: v1.66.0
-    serviceMonitor:
-      enabled: false
-      namespace: ""
-      labels: {}
-      interval: "30s"
-      scrapeTimeout: "10s"
-
-  # Service configuration
-  service:
-    type: ClusterIP
-    annotations: {}
-    labels: {}
-
-  # Update strategy
-  updateStrategy:
-    type: RollingUpdate     # or Recreate
-
-  # Pod customizations
-  podTemplate:
-    annotations: {}
-    labels: {}
-    nodeSelector: {}
-    tolerations: []
-    affinity: {}
-    priorityClassName: ""
-    securityContext: {}
-    topologySpreadConstraints: []
-
-  # Sentinel settings (sentinel mode only)
-  sentinel:
+  # Mode-specific settings
+  sentinel:                 # For mode: sentinel
     quorum: 2
-    downAfterMilliseconds: 30000
-    failoverTimeout: 180000
-    parallelSyncs: 1
-    resources:
-      requests:
-        cpu: "100m"
-        memory: "64Mi"
-      limits:
-        cpu: "100m"
-        memory: "64Mi"
+    downAfterMilliseconds: 5000
+    failoverTimeout: 60000
 
-  # Cluster settings (cluster mode only)
-  cluster:
-    shards: 3               # Number of master shards (minimum 3)
-    replicasPerShard: 1     # Replicas per master (0 = no replicas)
-    clusterNodeTimeout: 15000
-
-  # Requeue intervals for tuning large-scale deployments
-  requeueIntervals:
-    fast: "2s"              # Used during initialization/recovery
-    steadyState: "30s"      # Used for periodic health checks when Running
+  cluster:                  # For mode: cluster
+    shards: 3
+    replicasPerShard: 1
 ```
 
-### Status
+## Documentation
+- [Usage Guide](docs/USAGE.md) - Deployment examples.
+- [Architecture](docs/ARCHITECTURE.md) - Reconciliation logic.
+- [E2E Testing](docs/E2E_TESTING.md) - Test suite details.
+- [CLI Reference](docs/LRCTL.md) - `lrctl` guide.
 
-```yaml
-status:
-  phase: Running           # Pending, Initializing, Running, Failed, Terminating
-  observedGeneration: 1
-  conditions:
-    - type: Ready
-      status: "True"
-  redis:
-    ready: 1
-    total: 1
-  # Sentinel mode only:
-  master:
-    podName: my-cache-redis-0
-    ip: 10.244.0.5
-  replicas:
-    ready: 2
-    total: 2
-  sentinels:
-    ready: 3
-    total: 3
-  # Cluster mode only:
-  cluster:
-    state: ok
-    lastBootstrap: "2026-02-03T12:00:00Z"
-    nodes:
-      - podName: my-cache-cluster-0
-        nodeId: abc123...
-        role: master
-        slotRanges: "0-5460"
-```
-
-## Examples
-
-See [docs/USAGE.md](docs/USAGE.md) for detailed usage guide with step-by-step instructions.
-
-Sample manifests in [config/samples/](config/samples/):
-
-- `littlered_v1alpha1_littlered.yaml` - Minimal standalone
-- `littlered_v1alpha1_littlered_full.yaml` - Full standalone configuration
-- `littlered_v1alpha1_littlered_sentinel.yaml` - Sentinel mode
-- `littlered_v1alpha1_littlered_cluster.yaml` - Cluster mode
-- `littlered_v1alpha1_littlered_auth.yaml` - With password authentication
-- `littlered_v1alpha1_littlered_production.yaml` - Production-ready sentinel with auth, ServiceMonitor, and pod spreading
-
-## Services
-
-### Standalone Mode
-
-| Service | Port | Description |
-|---------|------|-------------|
-| `{name}` | 6379, 9121 | Redis + metrics |
-
-### Sentinel Mode
-
-| Service | Port | Description |
-|---------|------|-------------|
-| `{name}` | 6379, 9121 | Redis master (follows failover) |
-| `{name}-replicas` | 6379, 9121 | All replicas (read replicas) |
-| `{name}-sentinel` | 26379 | Sentinel endpoints |
-
-### Cluster Mode
-
-| Service | Port | Description |
-|---------|------|-------------|
-| `{name}` | 6379, 9121 | Client access (any node) |
-| `{name}-cluster` | 6379, 16379 | Headless for cluster communication |
-
-## Development
-
-### Prerequisites
-
-- Go 1.24+ (only if you want to build from source)
-- kubectl
-- Access to a Kubernetes cluster
-
-### 
-
-```bash
-# Install Operator and CRDs
-make deploy
-
-# Apply a sample
-kubectl apply -f config/samples/littlered_v1alpha1_littlered.yaml
-```
-
-### Run Tests
-
-```bash
-# Unit and integration tests
-make test
-
-# E2E tests (requires kind)
-make test-e2e
-
-# Focus on a specific subset of tests
-make test-e2e FOCUS="Cluster Mode Chaos"
-
-# Against existing deployment (don't deploy kind, use existing configured kubernetes)
-make test-e2e SKIP_OPERATOR_DEPLOY=true
-```
-
-See [docs/E2E_TESTING.md](docs/E2E_TESTING.md) for the complete guide on building, deploying, and running e2e tests.
-
-### Build
-
-```bash
-# Build operator binary
-make build
-
-# Build lrctl CLI tool
-make lrctl
-
-# Build and push both images (`littlered` operator and `littlered-chaos-client` e2e test client)
-make images
-```
-
-## CLI Tool (lrctl)
-
-LittleRed comes with a dedicated CLI tool `lrctl` for diagnostics and cluster verification. It can be used as a standalone binary or a `kubectl` plugin.
-
-```bash
-# Build and install lrctl
-make install   # builds and installs to /usr/local/bin/lrctl
-
-# Get high-level status
-lrctl status my-cache
-
-# Perform deep-dive consistency verification
-lrctl verify my-cache
-```
-
-### Shell Completion
-
-`lrctl` supports tab completion for resource names and namespaces. Load it in your current shell with:
-
-```bash
-# zsh
-source <(lrctl completion zsh)
-
-# bash
-source <(lrctl completion bash)
-```
-
-To make it permanent, add the line to your shell's rc file (`~/.zshrc` or `~/.bashrc`).
-
-> **Note:** Use `source <(...)` rather than `eval $(...)` — the latter strips newlines and can break the generated completion script.
-
-See [docs/LRCTL.md](docs/LRCTL.md) for full documentation and use cases.
+## Behind the Name
+The name **LittleRed** is an homage to the fable of the *Little Red Hen*. When we searched for a tool that handled the complexities of pure in-memory Redis lifecycles with technical rigor, we found that the existing solutions were often unmaintained or focused on different problems. Like the hen in the story, we decided to build it ourselves.
 
 ## License
-
 Apache License 2.0

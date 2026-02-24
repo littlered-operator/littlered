@@ -437,6 +437,7 @@ With 3 shards, slots are distributed as:
 
 ### Important notes
 
+- **Supported Topologies (V1 Release)**: To ensure absolute stability for the initial release, the operator specifically validates and supports **exactly 3 shards** with either **0 or 1 replica** per shard. While the API is architected for arbitrary cluster sizes, larger topologies are currently considered experimental and are rejected by the validation logic. We plan to expand this support to variable cluster sizes in upcoming minor versions.
 - **In-memory mode**: No persistence. Data will be lost on full cluster restart. By default, 'noeviction' is used, so data is not forgotten when memory is full (Redis will return errors instead).
 - **No PVCs**: Cluster state stored in CR status, not nodes.conf.
 - **Minimum 3 shards**: Redis Cluster requires at least 3 masters.

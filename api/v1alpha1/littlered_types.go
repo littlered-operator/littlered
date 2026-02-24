@@ -593,6 +593,30 @@ type LittleRed struct {
 	Status LittleRedStatus `json:"status,omitempty"`
 }
 
+// Validate ensures the configuration is within currently supported bounds.
+// Note: While the API is architected for flexibility, the initial release
+// specifically supports and validates the configurations covered by our E2E suite.
+func (r *LittleRed) Validate() error {
+	if r.Spec.Mode == "sentinel" {
+		// Sentinel is currently validated for 3 sentinels and 3 redis (1+2).
+		// Since we don't expose sentinel count yet, we just check replicas.
+		// ReplicasPerShard is not used in sentinel mode, we check logic in controller.
+	}
+
+	if r.Spec.Mode == "cluster" {
+		if r.Spec.Cluster != nil {
+			if r.Spec.Cluster.Shards != 3 {
+				return fmt.Errorf("cluster mode currently only supports exactly 3 shards (found %d)", r.Spec.Cluster.Shards)
+			}
+			if r.Spec.Cluster.ReplicasPerShard != nil && *r.Spec.Cluster.ReplicasPerShard != 1 && *r.Spec.Cluster.ReplicasPerShard != 0 {
+				return fmt.Errorf("cluster mode currently only supports 0 or 1 replicas per shard (found %d)", *r.Spec.Cluster.ReplicasPerShard)
+			}
+		}
+	}
+
+	return nil
+}
+
 // +kubebuilder:object:root=true
 
 // LittleRedList contains a list of LittleRed

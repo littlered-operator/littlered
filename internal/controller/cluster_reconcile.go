@@ -626,7 +626,7 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 	littleRed.Status.Redis.Ready = sts.Status.ReadyReplicas
 	littleRed.Status.Redis.Total = *sts.Spec.Replicas
 
-	clusterShards := int32(3)
+	clusterShards := int32(littleredv1alpha1.DefaultClusterShards)
 	if littleRed.Spec.Cluster != nil {
 		clusterShards = int32(littleRed.Spec.Cluster.Shards)
 	}
