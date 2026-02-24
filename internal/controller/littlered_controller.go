@@ -122,6 +122,11 @@ func (r *LittleRedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Apply defaults
 	littleRed.SetDefaults()
 
+	// Validate supported constraints for initial release
+	if err := littleRed.Validate(); err != nil {
+		return r.setFailedStatus(ctx, littleRed, "UnsupportedConfiguration", err.Error())
+	}
+
 	// Handle deletion
 	if !littleRed.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, littleRed)
