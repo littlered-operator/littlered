@@ -110,8 +110,8 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 		return r.repairCluster(ctx, littleRed, gt)
 	}
 
-	// 5. Cluster is healthy and stable
-	return r.updateClusterStatus(ctx, littleRed)
+	// 5. Cluster is healthy and stable — pass gt through to avoid a second gather
+	return r.updateClusterStatus(ctx, littleRed, gt)
 }
 
 // repairCluster handles healing: partitions, ghost nodes, slot restoration, and replication topology
@@ -475,7 +475,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		// Fall through to update status (will likely show as unhealthy/initializing)
 	}
 
-	return r.updateClusterStatus(ctx, littleRed)
+	return r.updateClusterStatus(ctx, littleRed, nil)
 }
 
 // gatherGroundTruth queries all pods to build a view of the cluster
@@ -607,11 +607,12 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 		}
 	}
 
-	return r.updateClusterStatus(ctx, littleRed)
+	return r.updateClusterStatus(ctx, littleRed, nil)
 }
 
-// updateClusterStatus updates the LittleRed status for cluster mode
-func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
+// updateClusterStatus updates the LittleRed status for cluster mode.
+// gt may be passed in from the caller to avoid a redundant gather; pass nil to gather fresh.
+func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, gt *redisclient.ClusterGroundTruth) (ctrl.Result, error) {
 	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 	oldStatus := littleRed.Status.DeepCopy()
 	// Get StatefulSet status
@@ -631,8 +632,11 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 		clusterShards = int32(littleRed.Spec.Cluster.Shards)
 	}
 
-	// Gather ground truth to get node details for status
-	gt := r.gatherGroundTruth(ctx, littleRed)
+	// Gather ground truth to get node details for status.
+	// Reuse the caller's gt if provided (happy path); gather fresh otherwise (post-repair).
+	if gt == nil {
+		gt = r.gatherGroundTruth(ctx, littleRed)
+	}
 	clusterOK := false
 	if gt != nil {
 		if littleRed.Status.Cluster == nil {
