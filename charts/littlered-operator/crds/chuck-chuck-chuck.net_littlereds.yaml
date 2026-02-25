@@ -1931,7 +1931,7 @@ spec:
                             hex)
                           type: string
                         podName:
-                          description: PodName is the stable pod name (e.g., store-cluster-0)
+                          description: PodName is the stable pod name (e.g., my-cache-cluster-0)
                           type: string
                         role:
                           description: Role is master or replica

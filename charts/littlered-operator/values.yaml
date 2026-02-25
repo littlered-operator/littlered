@@ -25,3 +25,20 @@ affinity: {}
 
 leaderElection:
   enabled: true
+
+metrics:
+  # Enable the operator metrics endpoint (HTTP on the specified port).
+  # When enabled, a Service is created and --metrics-bind-address is set on the manager.
+  enabled: false
+  port: 8080
+  serviceMonitor:
+    # Create a Prometheus Operator ServiceMonitor. Requires metrics.enabled=true.
+    enabled: false
+    interval: "30s"
+    scrapeTimeout: "10s"
+    labels: {}
+
+networkPolicy:
+  # Create a NetworkPolicy restricting metrics port access to labeled namespaces.
+  # Requires metrics.enabled=true.
+  enabled: false
