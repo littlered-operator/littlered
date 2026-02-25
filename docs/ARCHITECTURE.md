@@ -83,7 +83,7 @@
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
   namespace: default
 spec:
   # Mode selection

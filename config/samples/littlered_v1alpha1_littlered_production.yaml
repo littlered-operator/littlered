@@ -1,7 +1,7 @@
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache-prod
+  name: store-prod
 spec:
   # Production: sentinel mode with HA
   mode: sentinel
@@ -22,7 +22,7 @@ spec:
   # Enable authentication
   auth:
     enabled: true
-    existingSecret: my-cache-password
+    existingSecret: store-password
 
   # Enable Prometheus ServiceMonitor
   metrics:
@@ -40,7 +40,7 @@ spec:
         whenUnsatisfiable: DoNotSchedule
         labelSelector:
           matchLabels:
-            app.kubernetes.io/name: my-cache-prod
+            app.kubernetes.io/name: store-prod
 
   # Faster failover detection
   sentinel:

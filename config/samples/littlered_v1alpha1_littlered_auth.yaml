@@ -1,13 +1,13 @@
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache-auth
+  name: store-auth
 spec:
   # Enable password authentication
   auth:
     enabled: true
-    existingSecret: my-cache-password  # Secret must have 'password' key
+    existingSecret: store-password  # Secret must have 'password' key
 
 ---
 # Create the password secret first:
-# kubectl create secret generic my-cache-password --from-literal=password=mysecretpassword
+# kubectl create secret generic store-password --from-literal=password=mysecretpassword

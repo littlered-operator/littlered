@@ -162,7 +162,7 @@ A single Redis instance for development or simple caching.
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   mode: standalone
 ```
@@ -175,40 +175,40 @@ kubectl apply -f standalone.yaml
 
 ```bash
 # Check status
-kubectl get littlered my-cache
+kubectl get littlered store
 
 # Expected output:
 # NAME       MODE         PHASE     READY   AGE
-# my-cache   standalone   Running   1       30s
+# store   standalone   Running   1       30s
 
 # Check pods
-kubectl get pods -l app.kubernetes.io/instance=my-cache
+kubectl get pods -l app.kubernetes.io/instance=store
 
 # Check service
-kubectl get svc my-cache
+kubectl get svc store
 ```
 
 ### Connect
 
 ```bash
 # Test Redis connection
-kubectl exec -it my-cache-redis-0 -c redis -- valkey-cli PING
+kubectl exec -it store-redis-0 -c redis -- valkey-cli PING
 # Output: PONG
 
 # Set and get a value
-kubectl exec -it my-cache-redis-0 -c redis -- valkey-cli SET hello world
-kubectl exec -it my-cache-redis-0 -c redis -- valkey-cli GET hello
+kubectl exec -it store-redis-0 -c redis -- valkey-cli SET hello world
+kubectl exec -it store-redis-0 -c redis -- valkey-cli GET hello
 # Output: world
 
 # Check Redis info
-kubectl exec -it my-cache-redis-0 -c redis -- valkey-cli INFO server
+kubectl exec -it store-redis-0 -c redis -- valkey-cli INFO server
 ```
 
 ### Connect from your application
 
 ```bash
 # Service endpoint
-my-cache.<namespace>.svc.cluster.local:6379
+store.<namespace>.svc.cluster.local:6379
 ```
 
 ---
@@ -224,7 +224,7 @@ High-availability setup with automatic failover: 3 Redis pods (1 master + 2 repl
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   mode: sentinel
 ```
@@ -237,59 +237,59 @@ kubectl apply -f sentinel.yaml
 
 ```bash
 # Check status
-kubectl get littlered my-cache
+kubectl get littlered store
 
 # Expected output:
 # NAME       MODE       PHASE     READY   AGE
-# my-cache   sentinel   Running   3       2m
+# store   sentinel   Running   3       2m
 
 # Check all pods (3 Redis + 3 Sentinel)
-kubectl get pods -l app.kubernetes.io/instance=my-cache
+kubectl get pods -l app.kubernetes.io/instance=store
 
 # Expected:
-# my-cache-redis-0      2/2     Running
-# my-cache-redis-1      2/2     Running
-# my-cache-redis-2      2/2     Running
-# my-cache-sentinel-0   1/1     Running
-# my-cache-sentinel-1   1/1     Running
-# my-cache-sentinel-2   1/1     Running
+# store-redis-0      2/2     Running
+# store-redis-1      2/2     Running
+# store-redis-2      2/2     Running
+# store-sentinel-0   1/1     Running
+# store-sentinel-1   1/1     Running
+# store-sentinel-2   1/1     Running
 
 # Check services
-kubectl get svc -l app.kubernetes.io/instance=my-cache
+kubectl get svc -l app.kubernetes.io/instance=store
 
 # Expected:
-# my-cache            ClusterIP   ...   6379/TCP,9121/TCP   (master)
-# my-cache-replicas   ClusterIP   ...   6379/TCP,9121/TCP   (all replicas)
-# my-cache-sentinel   ClusterIP   ...   26379/TCP           (sentinels)
+# store            ClusterIP   ...   6379/TCP,9121/TCP   (master)
+# store-replicas   ClusterIP   ...   6379/TCP,9121/TCP   (all replicas)
+# store-sentinel   ClusterIP   ...   26379/TCP           (sentinels)
 ```
 
 ### Check replication
 
 ```bash
 # Query sentinel for master
-kubectl exec -it my-cache-sentinel-0 -- valkey-cli -p 26379 SENTINEL get-master-addr-by-name mymaster
+kubectl exec -it store-sentinel-0 -- valkey-cli -p 26379 SENTINEL get-master-addr-by-name mymaster
 
 # Check master info
-kubectl exec -it my-cache-sentinel-0 -- valkey-cli -p 26379 SENTINEL master mymaster
+kubectl exec -it store-sentinel-0 -- valkey-cli -p 26379 SENTINEL master mymaster
 
 # Check replicas
-kubectl exec -it my-cache-sentinel-0 -- valkey-cli -p 26379 SENTINEL replicas mymaster
+kubectl exec -it store-sentinel-0 -- valkey-cli -p 26379 SENTINEL replicas mymaster
 ```
 
 ### Test failover
 
 ```bash
 # Find current master
-kubectl get littlered my-cache -o jsonpath='{.status.master.podName}'
+kubectl get littlered store -o jsonpath='{.status.master.podName}'
 
 # Kill the master pod
-kubectl delete pod my-cache-redis-0 --grace-period=0 --force
+kubectl delete pod store-redis-0 --grace-period=0 --force
 
 # Watch failover (new master elected in ~5-30 seconds)
-kubectl get littlered my-cache -w
+kubectl get littlered store -w
 
 # Verify new master
-kubectl exec -it my-cache-sentinel-0 -- valkey-cli -p 26379 SENTINEL get-master-addr-by-name mymaster
+kubectl exec -it store-sentinel-0 -- valkey-cli -p 26379 SENTINEL get-master-addr-by-name mymaster
 ```
 
 ### Connect from your application
@@ -297,14 +297,14 @@ kubectl exec -it my-cache-sentinel-0 -- valkey-cli -p 26379 SENTINEL get-master-
 For sentinel-aware clients:
 
 ```
-Sentinel endpoints: my-cache-sentinel.<namespace>.svc.cluster.local:26379
+Sentinel endpoints: store-sentinel.<namespace>.svc.cluster.local:26379
 Master name: mymaster
 ```
 
 For simple clients (connects to current master):
 
 ```
-my-cache.<namespace>.svc.cluster.local:6379
+store.<namespace>.svc.cluster.local:6379
 ```
 
 ---
@@ -320,7 +320,7 @@ Horizontally scaled setup with automatic sharding across multiple master nodes. 
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   mode: cluster
   cluster:
@@ -336,36 +336,36 @@ kubectl apply -f cluster.yaml
 
 ```bash
 # Check status
-kubectl get littlered my-cache
+kubectl get littlered store
 
 # Expected output:
 # NAME       MODE      PHASE     READY   AGE
-# my-cache   cluster   Running   6       2m
+# store   cluster   Running   6       2m
 
 # Check all pods (3 masters + 3 replicas = 6 pods)
-kubectl get pods -l app.kubernetes.io/instance=my-cache
+kubectl get pods -l app.kubernetes.io/instance=store
 
 # Expected:
-# my-cache-cluster-0   2/2     Running   (shard-0 master)
-# my-cache-cluster-1   2/2     Running   (shard-0 replica)
-# my-cache-cluster-2   2/2     Running   (shard-1 master)
-# my-cache-cluster-3   2/2     Running   (shard-1 replica)
-# my-cache-cluster-4   2/2     Running   (shard-2 master)
-# my-cache-cluster-5   2/2     Running   (shard-2 replica)
+# store-cluster-0   2/2     Running   (shard-0 master)
+# store-cluster-1   2/2     Running   (shard-0 replica)
+# store-cluster-2   2/2     Running   (shard-1 master)
+# store-cluster-3   2/2     Running   (shard-1 replica)
+# store-cluster-4   2/2     Running   (shard-2 master)
+# store-cluster-5   2/2     Running   (shard-2 replica)
 
 # Check services
-kubectl get svc -l app.kubernetes.io/instance=my-cache
+kubectl get svc -l app.kubernetes.io/instance=store
 
 # Expected:
-# my-cache           ClusterIP   ...   6379/TCP,9121/TCP         (client access)
-# my-cache-cluster   ClusterIP   None  6379/TCP,16379/TCP        (headless for cluster)
+# store           ClusterIP   ...   6379/TCP,9121/TCP         (client access)
+# store-cluster   ClusterIP   None  6379/TCP,16379/TCP        (headless for cluster)
 ```
 
 ### Check cluster health
 
 ```bash
 # Cluster info
-kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli CLUSTER INFO
+kubectl exec -it store-cluster-0 -c redis -- valkey-cli CLUSTER INFO
 
 # Expected output includes:
 # cluster_state:ok
@@ -375,25 +375,25 @@ kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli CLUSTER INFO
 # cluster_size:3
 
 # Cluster nodes (shows all nodes with their roles and slots)
-kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli CLUSTER NODES
+kubectl exec -it store-cluster-0 -c redis -- valkey-cli CLUSTER NODES
 
 # Check slot distribution
-kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli CLUSTER SLOTS
+kubectl exec -it store-cluster-0 -c redis -- valkey-cli CLUSTER SLOTS
 ```
 
 ### Check cluster state in CR status
 
 ```bash
 # View stored cluster topology
-kubectl get littlered my-cache -o jsonpath='{.status.cluster}' | jq
+kubectl get littlered store -o jsonpath='{.status.cluster}' | jq
 
 # Expected output:
 # {
 #   "state": "ok",
 #   "lastBootstrap": "2026-02-03T...",
 #   "nodes": [
-#     {"podName": "my-cache-cluster-0", "nodeId": "abc123...", "role": "master", "slotRanges": "0-5460"},
-#     {"podName": "my-cache-cluster-1", "nodeId": "def456...", "role": "replica", "masterNodeId": "abc123..."},
+#     {"podName": "store-cluster-0", "nodeId": "abc123...", "role": "master", "slotRanges": "0-5460"},
+#     {"podName": "store-cluster-1", "nodeId": "def456...", "role": "replica", "masterNodeId": "abc123..."},
 #     ...
 #   ]
 # }
@@ -403,13 +403,13 @@ kubectl get littlered my-cache -o jsonpath='{.status.cluster}' | jq
 
 ```bash
 # Delete a master pod
-kubectl delete pod my-cache-cluster-0
+kubectl delete pod store-cluster-0
 
 # Watch the operator recover (new pod gets new node ID, operator re-adds slots)
 kubectl logs -n littlered-system deployment/littlered-operator -f
 
 # Verify cluster health after recovery
-kubectl exec -it my-cache-cluster-2 -c redis -- valkey-cli CLUSTER INFO
+kubectl exec -it store-cluster-2 -c redis -- valkey-cli CLUSTER INFO
 ```
 
 ### Connect from your application
@@ -417,15 +417,15 @@ kubectl exec -it my-cache-cluster-2 -c redis -- valkey-cli CLUSTER INFO
 Redis Cluster clients automatically discover all nodes:
 
 ```
-Initial endpoint: my-cache.<namespace>.svc.cluster.local:6379
+Initial endpoint: store.<namespace>.svc.cluster.local:6379
 ```
 
 Example with redis-cli:
 
 ```bash
 # -c flag enables cluster mode (follows redirects)
-kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli -c SET mykey myvalue
-kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli -c GET mykey
+kubectl exec -it store-cluster-0 -c redis -- valkey-cli -c SET mykey myvalue
+kubectl exec -it store-cluster-0 -c redis -- valkey-cli -c GET mykey
 ```
 
 ### Slot distribution
@@ -453,7 +453,7 @@ With 3 shards, slots are distributed as:
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   mode: standalone
 
@@ -481,7 +481,7 @@ kubectl create secret generic redis-password --from-literal=password=mysecretpas
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   mode: standalone
   auth:
@@ -491,7 +491,7 @@ spec:
 
 ```bash
 # Connect with password
-kubectl exec -it my-cache-redis-0 -c redis -- valkey-cli -a mysecretpassword PING
+kubectl exec -it store-redis-0 -c redis -- valkey-cli -a mysecretpassword PING
 ```
 
 ### With ServiceMonitor (Prometheus)
@@ -500,7 +500,7 @@ kubectl exec -it my-cache-redis-0 -c redis -- valkey-cli -a mysecretpassword PIN
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   mode: standalone
   metrics:
@@ -774,10 +774,10 @@ spec:
 
 ```bash
 # Delete the LittleRed resource (cleans up all managed resources)
-kubectl delete littlered my-cache
+kubectl delete littlered store
 
 # Verify cleanup
-kubectl get pods -l app.kubernetes.io/instance=my-cache
+kubectl get pods -l app.kubernetes.io/instance=store
 # No resources found
 ```
 
@@ -794,46 +794,46 @@ kubectl logs -n littlered-system deployment/littlered-operator
 ### Check LittleRed status and conditions
 
 ```bash
-kubectl describe littlered my-cache
+kubectl describe littlered store
 ```
 
 ### Check pod events
 
 ```bash
-kubectl describe pod my-cache-redis-0
+kubectl describe pod store-redis-0
 ```
 
 ### Redis logs
 
 ```bash
-kubectl logs my-cache-redis-0 -c redis
+kubectl logs store-redis-0 -c redis
 ```
 
 ### Sentinel logs
 
 ```bash
-kubectl logs my-cache-sentinel-0
+kubectl logs store-sentinel-0
 ```
 
 ### Cluster diagnostics
 
 ```bash
 # Check cluster state
-kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli CLUSTER INFO
+kubectl exec -it store-cluster-0 -c redis -- valkey-cli CLUSTER INFO
 
 # Check for failed slots
-kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli CLUSTER SLOTS
+kubectl exec -it store-cluster-0 -c redis -- valkey-cli CLUSTER SLOTS
 
 # View cluster topology
-kubectl exec -it my-cache-cluster-0 -c redis -- valkey-cli CLUSTER NODES
+kubectl exec -it store-cluster-0 -c redis -- valkey-cli CLUSTER NODES
 
 # Check stored cluster state in CR
-kubectl get littlered my-cache -o jsonpath='{.status.cluster.state}'
+kubectl get littlered store -o jsonpath='{.status.cluster.state}'
 
 # Force cluster re-bootstrap (if cluster is broken)
 # 1. Delete all cluster pods
-kubectl delete pods -l app.kubernetes.io/instance=my-cache,app.kubernetes.io/component=cluster
+kubectl delete pods -l app.kubernetes.io/instance=store,app.kubernetes.io/component=cluster
 # 2. Clear stored state by patching CR
-kubectl patch littlered my-cache --type=merge -p '{"status":{"cluster":null}}'
+kubectl patch littlered store --type=merge -p '{"status":{"cluster":null}}'
 # 3. Operator will re-bootstrap on next reconcile
 ```

@@ -70,7 +70,7 @@ Single CR with mode selector:
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   mode: standalone | sentinel | cluster
   image:
