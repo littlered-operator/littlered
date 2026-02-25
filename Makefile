@@ -27,6 +27,16 @@ endif
 # scaffolded by default. However, you might want to replace it to use other
 # tools. (i.e. podman)
 CONTAINER_TOOL ?= podman
+HELM ?= helm
+
+HELM_DIST ?= dist
+
+# Helm requires strict semver for --version.
+# Strip a leading 'v' from release tags (v0.1.0 → 0.1.0).
+# Untagged commits (short hash) become 0.0.0-<hash> which is valid semver pre-release.
+CHART_VERSION := $(shell v=$$(echo '$(GIT_TAG)' | sed 's/^v//'); \
+                   printf '%s' "$$v" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+' \
+                   && echo "$$v" || echo "0.0.0-$$v")
 
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
@@ -187,6 +197,14 @@ build: manifests generate fmt vet lrctl ## Build manager and lrctl binaries.
 lrctl: manifests generate fmt vet ## Build lrctl binary.
 	go build -o bin/lrctl cmd/lrctl/main.go
 
+.PHONY: helm-package
+helm-package: manifests ## Package the Helm chart into dist/ with the current version tag.
+	mkdir -p $(HELM_DIST)
+	$(HELM) package charts/littlered-operator \
+		--version $(CHART_VERSION) \
+		--app-version $(GIT_TAG) \
+		--destination $(HELM_DIST)
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/littlered/main.go
@@ -250,6 +268,10 @@ deploy: manifests
 .PHONY: undeploy
 undeploy:
 	helm uninstall -n littlered-system littlered
+
+.PHONY: helm-push
+helm-push: helm-package ## Push the Helm chart to the OCI registry (helm registry login first).
+	$(HELM) push $(HELM_DIST)/littlered-operator-$(CHART_VERSION).tgz oci://$(LITTLERED_REGISTRY)
 
 .PHONY: redeploy-all
 redeploy-all: undeploy ## Full reset: uninstall helm chart, delete CRDs, and deploy fresh.
