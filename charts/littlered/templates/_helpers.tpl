@@ -1,14 +1,14 @@
 {{/*
 Expand the name of the chart.
 */}}
-{{- define "littlered-operator.name" -}}
+{{- define "littlered.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Create a default fully qualified app name.
 */}}
-{{- define "littlered-operator.fullname" -}}
+{{- define "littlered.fullname" -}}
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
@@ -24,16 +24,16 @@ Create a default fully qualified app name.
 {{/*
 Create chart name and version as used by the chart label.
 */}}
-{{- define "littlered-operator.chart" -}}
+{{- define "littlered.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Common labels
 */}}
-{{- define "littlered-operator.labels" -}}
-helm.sh/chart: {{ include "littlered-operator.chart" . }}
-{{ include "littlered-operator.selectorLabels" . }}
+{{- define "littlered.labels" -}}
+helm.sh/chart: {{ include "littlered.chart" . }}
+{{ include "littlered.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
@@ -43,17 +43,17 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{/*
 Selector labels
 */}}
-{{- define "littlered-operator.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "littlered-operator.name" . }}
+{{- define "littlered.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "littlered.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
 Create the name of the service account to use
 */}}
-{{- define "littlered-operator.serviceAccountName" -}}
+{{- define "littlered.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
-{{- default (include "littlered-operator.fullname" .) .Values.serviceAccount.name }}
+{{- default (include "littlered.fullname" .) .Values.serviceAccount.name }}
 {{- else }}
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}

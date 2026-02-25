@@ -28,6 +28,7 @@ endif
 # tools. (i.e. podman)
 CONTAINER_TOOL ?= podman
 HELM ?= helm
+SKOPEO ?= skopeo
 
 HELM_DIST ?= dist
 
@@ -69,9 +70,9 @@ help: ## Display this help.
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 	@echo "Syncing CRDs to Helm chart..."
-	@cp config/crd/bases/*.yaml charts/littlered-operator/crds/ 2>/dev/null || true
+	@cp config/crd/bases/*.yaml charts/littlered/crds/ 2>/dev/null || true
 	@echo "Syncing RBAC to Helm chart..."
-	@python3 -c 'import yaml; role = yaml.safe_load(open("config/rbac/role.yaml")); chart_role_path = "charts/littlered-operator/templates/clusterrole.yaml"; lines = open(chart_role_path).readlines(); new_lines = []; [new_lines.append(l) for l in lines]; idx = [i for i, l in enumerate(new_lines) if "rules:" in l][0]; rules_yaml = yaml.dump(role["rules"], indent=2, sort_keys=False); rules_lines = ["  " + l + "\n" for l in rules_yaml.splitlines()]; open(chart_role_path, "w").writelines(new_lines[:idx+1] + rules_lines)'
+	@python3 -c 'import yaml; role = yaml.safe_load(open("config/rbac/role.yaml")); chart_role_path = "charts/littlered/templates/clusterrole.yaml"; lines = open(chart_role_path).readlines(); new_lines = []; [new_lines.append(l) for l in lines]; idx = [i for i, l in enumerate(new_lines) if "rules:" in l][0]; rules_yaml = yaml.dump(role["rules"], indent=2, sort_keys=False); rules_lines = ["  " + l + "\n" for l in rules_yaml.splitlines()]; open(chart_role_path, "w").writelines(new_lines[:idx+1] + rules_lines)'
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -200,7 +201,7 @@ lrctl: manifests generate fmt vet ## Build lrctl binary.
 .PHONY: helm-package
 helm-package: manifests ## Package the Helm chart into dist/ with the current version tag.
 	mkdir -p $(HELM_DIST)
-	$(HELM) package charts/littlered-operator \
+	$(HELM) package charts/littlered \
 		--version $(CHART_VERSION) \
 		--app-version $(GIT_TAG) \
 		--destination $(HELM_DIST)
@@ -259,7 +260,7 @@ endif
 PULL_POLICY ?= Always
 .PHONY: deploy
 deploy: manifests
-	helm upgrade --install littlered ./charts/littlered-operator \
+	helm upgrade --install littlered ./charts/littlered \
 		-n littlered-system --create-namespace \
 		--set image.repository=$(LITTLERED_REGISTRY)/littlered \
 		--set image.tag=$(GIT_TAG) \
@@ -270,8 +271,25 @@ undeploy:
 	helm uninstall -n littlered-system littlered
 
 .PHONY: helm-push
-helm-push: helm-package ## Push the Helm chart to the OCI registry (helm registry login first).
-	$(HELM) push $(HELM_DIST)/littlered-operator-$(CHART_VERSION).tgz oci://$(LITTLERED_REGISTRY)
+helm-push: helm-package ## Push the Helm chart to the OCI registry (run 'helm registry login ghcr.io' first).
+	$(HELM) push $(HELM_DIST)/littlered-$(CHART_VERSION).tgz oci://$(LITTLERED_REGISTRY)/charts
+
+# IS_RELEASE_TAG is non-empty only when GIT_TAG is a proper semver release tag (vX.Y.Z or X.Y.Z).
+IS_RELEASE_TAG := $(shell echo '$(GIT_TAG)' | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+$$' && echo true)
+
+.PHONY: push-latest
+push-latest: ## Re-tag images and Helm chart as :latest (only runs on release tags, no-ops otherwise).
+	@if [ -z "$(IS_RELEASE_TAG)" ]; then \
+		echo "Skipping :latest — '$(GIT_TAG)' is not a release tag (vX.Y.Z)."; \
+		exit 0; \
+	fi
+	@echo "Pushing :latest for release $(GIT_TAG)..."
+	$(foreach img,$(IMAGES), \
+		$(CONTAINER_TOOL) tag $(LITTLERED_REGISTRY)/$(img):$(GIT_TAG) $(LITTLERED_REGISTRY)/$(img):latest && \
+		$(CONTAINER_TOOL) push $(LITTLERED_REGISTRY)/$(img):latest ;)
+	$(SKOPEO) copy \
+		docker://$(LITTLERED_REGISTRY)/charts/littlered:$(CHART_VERSION) \
+		docker://$(LITTLERED_REGISTRY)/charts/littlered:latest
 
 .PHONY: redeploy-all
 redeploy-all: undeploy ## Full reset: uninstall helm chart, delete CRDs, and deploy fresh.

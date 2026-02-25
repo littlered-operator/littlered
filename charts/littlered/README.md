@@ -10,7 +10,7 @@ Helm chart for deploying the LittleRed operator to Kubernetes.
 ## Installation
 
 ```bash
-helm install littlered ./charts/littlered-operator \
+helm install littlered ./charts/littlered \
   -n littlered-system \
   --create-namespace
 ```
@@ -31,7 +31,7 @@ kubectl delete crd littlereds.chuck-chuck-chuck.net
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `image.repository` | Operator image repository | `ghcr.io/littlered-operator/littlered-operator` |
+| `image.repository` | Operator image repository | `ghcr.io/littlered-operator/littlered` |
 | `image.tag` | Operator image tag | `0.1.0` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `replicas` | Number of operator replicas | `1` |
@@ -51,23 +51,23 @@ kubectl delete crd littlereds.chuck-chuck-chuck.net
 ### Basic Installation
 
 ```bash
-helm install littlered ./charts/littlered-operator -n littlered-system --create-namespace
+helm install littlered ./charts/littlered -n littlered-system --create-namespace
 ```
 
 ### Custom Image
 
 ```bash
-helm install littlered ./charts/littlered-operator \
+helm install littlered ./charts/littlered \
   -n littlered-system \
   --create-namespace \
-  --set image.repository=myregistry/littlered-operator \
+  --set image.repository=myregistry/littlered \
   --set image.tag=v0.1.0
 ```
 
 ### With Custom Resources
 
 ```bash
-helm install littlered ./charts/littlered-operator \
+helm install littlered ./charts/littlered \
   -n littlered-system \
   --create-namespace \
   --set resources.limits.memory=256Mi \
@@ -80,7 +80,7 @@ Create `my-values.yaml`:
 
 ```yaml
 image:
-  repository: myregistry/littlered-operator
+  repository: myregistry/littlered
   tag: v0.1.0
 
 resources:
@@ -98,7 +98,7 @@ nodeSelector:
 Install:
 
 ```bash
-helm install littlered ./charts/littlered-operator \
+helm install littlered ./charts/littlered \
   -n littlered-system \
   --create-namespace \
   -f my-values.yaml
@@ -122,7 +122,7 @@ See the [main README](../../README.md) for full LittleRed CR documentation.
 ## Upgrading
 
 ```bash
-helm upgrade littlered ./charts/littlered-operator -n littlered-system
+helm upgrade littlered ./charts/littlered -n littlered-system
 ```
 
 ## RBAC

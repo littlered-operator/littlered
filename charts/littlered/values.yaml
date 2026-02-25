@@ -1,5 +1,5 @@
 image:
-  repository: ghcr.io/littlered-operator/littlered-operator
+  repository: ghcr.io/littlered-operator/littlered
   tag: 0.1.0
   pullPolicy: IfNotPresent
 
