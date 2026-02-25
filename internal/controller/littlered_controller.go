@@ -668,18 +668,7 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 			if password != "" {
 				_ = podSC.Set(ctx, redisclient.SentinelMasterName, "auth-pass", password)
 			}
-			if littleRed.Spec.Sentinel != nil {
-				s := littleRed.Spec.Sentinel
-				if s.DownAfterMilliseconds > 0 {
-					_ = podSC.Set(ctx, redisclient.SentinelMasterName, "down-after-milliseconds", fmt.Sprintf("%d", s.DownAfterMilliseconds))
-				}
-				if s.FailoverTimeout > 0 {
-					_ = podSC.Set(ctx, redisclient.SentinelMasterName, "failover-timeout", fmt.Sprintf("%d", s.FailoverTimeout))
-				}
-				if s.ParallelSyncs > 0 {
-					_ = podSC.Set(ctx, redisclient.SentinelMasterName, "parallel-syncs", fmt.Sprintf("%d", s.ParallelSyncs))
-				}
-			}
+			applySentinelSettings(ctx, podSC, littleRed.Spec.Sentinel)
 		}
 	}
 
@@ -733,18 +722,7 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 				if password != "" {
 					_ = podSC.Set(ctx, redisclient.SentinelMasterName, "auth-pass", password)
 				}
-				if littleRed.Spec.Sentinel != nil {
-					s := littleRed.Spec.Sentinel
-					if s.DownAfterMilliseconds > 0 {
-						_ = podSC.Set(ctx, redisclient.SentinelMasterName, "down-after-milliseconds", fmt.Sprintf("%d", s.DownAfterMilliseconds))
-					}
-					if s.FailoverTimeout > 0 {
-						_ = podSC.Set(ctx, redisclient.SentinelMasterName, "failover-timeout", fmt.Sprintf("%d", s.FailoverTimeout))
-					}
-					if s.ParallelSyncs > 0 {
-						_ = podSC.Set(ctx, redisclient.SentinelMasterName, "parallel-syncs", fmt.Sprintf("%d", s.ParallelSyncs))
-					}
-				}
+				applySentinelSettings(ctx, podSC, littleRed.Spec.Sentinel)
 			}
 
 			ghostMasterFound = true
@@ -764,18 +742,7 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 				if password != "" {
 					_ = podSC.Set(ctx, redisclient.SentinelMasterName, "auth-pass", password)
 				}
-				if littleRed.Spec.Sentinel != nil {
-					s := littleRed.Spec.Sentinel
-					if s.DownAfterMilliseconds > 0 {
-						_ = podSC.Set(ctx, redisclient.SentinelMasterName, "down-after-milliseconds", fmt.Sprintf("%d", s.DownAfterMilliseconds))
-					}
-					if s.FailoverTimeout > 0 {
-						_ = podSC.Set(ctx, redisclient.SentinelMasterName, "failover-timeout", fmt.Sprintf("%d", s.FailoverTimeout))
-					}
-					if s.ParallelSyncs > 0 {
-						_ = podSC.Set(ctx, redisclient.SentinelMasterName, "parallel-syncs", fmt.Sprintf("%d", s.ParallelSyncs))
-					}
-				}
+				applySentinelSettings(ctx, podSC, littleRed.Spec.Sentinel)
 			}
 
 			ghostMasterFound = true // using this flag to trigger requeue
@@ -878,6 +845,25 @@ func (r *LittleRedReconciler) getSentinelAddresses(ctx context.Context, littleRe
 	}
 
 	return addresses
+}
+
+// applySentinelSettings applies tunable sentinel configuration parameters to a
+// specific sentinel pod for the named master. Must be called after SENTINEL MONITOR
+// to apply user-configured thresholds. All Set errors are intentionally swallowed —
+// a failure to apply settings is non-fatal and will be retried on the next reconcile.
+func applySentinelSettings(ctx context.Context, sc *redisclient.SentinelClient, spec *littleredv1alpha1.SentinelSpec) {
+	if spec == nil {
+		return
+	}
+	if spec.DownAfterMilliseconds > 0 {
+		_ = sc.Set(ctx, redisclient.SentinelMasterName, "down-after-milliseconds", fmt.Sprintf("%d", spec.DownAfterMilliseconds))
+	}
+	if spec.FailoverTimeout > 0 {
+		_ = sc.Set(ctx, redisclient.SentinelMasterName, "failover-timeout", fmt.Sprintf("%d", spec.FailoverTimeout))
+	}
+	if spec.ParallelSyncs > 0 {
+		_ = sc.Set(ctx, redisclient.SentinelMasterName, "parallel-syncs", fmt.Sprintf("%d", spec.ParallelSyncs))
+	}
 }
 
 // getMasterPodName queries Sentinel to find the current master pod name.
@@ -1414,28 +1400,17 @@ func (r *LittleRedReconciler) bootstrapSentinel(ctx context.Context, lr *littler
 		}
 
 		auditLog.Info("Bootstrap: issuing SENTINEL MONITOR to pod", "sentinel", pod.Name, "master", masterAddr)
-		if err := podSC.Monitor(ctx, "mymaster", masterAddr, littleredv1alpha1.RedisPort, quorum); err != nil {
+		if err := podSC.Monitor(ctx, redisclient.SentinelMasterName, masterAddr, littleredv1alpha1.RedisPort, quorum); err != nil {
 			auditLog.Error(err, "Bootstrap: failed to configure sentinel", "sentinel", pod.Name)
 			continue // best-effort; don't abort the whole bootstrap
 		}
 
 		if password != "" {
-			_ = podSC.Set(ctx, "mymaster", "auth-pass", password)
+			_ = podSC.Set(ctx, redisclient.SentinelMasterName, "auth-pass", password)
 		}
 
 		// Apply settings to this sentinel.
-		if lr.Spec.Sentinel != nil {
-			s := lr.Spec.Sentinel
-			if s.DownAfterMilliseconds > 0 {
-				_ = podSC.Set(ctx, "mymaster", "down-after-milliseconds", fmt.Sprintf("%d", s.DownAfterMilliseconds))
-			}
-			if s.FailoverTimeout > 0 {
-				_ = podSC.Set(ctx, "mymaster", "failover-timeout", fmt.Sprintf("%d", s.FailoverTimeout))
-			}
-			if s.ParallelSyncs > 0 {
-				_ = podSC.Set(ctx, "mymaster", "parallel-syncs", fmt.Sprintf("%d", s.ParallelSyncs))
-			}
-		}
+		applySentinelSettings(ctx, podSC, lr.Spec.Sentinel)
 		configuredCount++
 	}
 
