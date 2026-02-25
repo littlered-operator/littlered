@@ -1,39 +1,8 @@
 # LittleRed
 
-A Kubernetes operator for deploying Valkey/Redis as a non-persistent, pure in-memory store.
+A Kubernetes operator for deploying Valkey/Redis as a pure in-memory data store.
 
-LittleRed is designed for high-throughput caching and transient data workloads where persistence is explicitly disabled. It addresses the specific lifecycle requirements of non-persistent clusters by using a full reconciliation engine to manage node identities and cluster membership—scenarios where static startup scripts and Helm charts often reach their limits.
-
-## Technical Rationale: The In-Memory Challenge
-
-Operating Redis or Valkey without persistence requires a specialized approach to lifecycle management. Standard deployments often assume data is preserved on disk, which influences how nodes manage their identity and how clusters handle rejoining members.
-
-> **Current Support:** To ensure maximum stability for the initial release, Cluster mode is specifically validated for **3 shards** with **0 or 1 replica** each. Support for variable cluster sizes is planned for future versions.
-
-### The Risk of State Corruption
-In a non-persistent setup, a node restart results in an **empty dataset**. If a node returns with its previous identity (IP or Hostname), the cluster may incorrectly identify it as a "returning master." This can lead the cluster to accept the empty node as the authoritative source of truth, triggering a cascading data wipe across healthy replicas.
-
-### The LittleRed Solution
-LittleRed implements a reconciliation-based approach to ensure cluster stability:
-- **Ephemeral Identity Management**: The operator ensures that every pod restart—whether a graceful deletion, a `SIGKILL`, or an OOM event—is treated as a new entity. 
-- **Automated Topology Correction**: LittleRed identifies and removes stale identities ("Ghost Nodes") from the cluster configuration before new nodes are permitted to join.
-- **Healing via External Visibility**: Unlike internal cluster mechanisms (Sentinel or Gossip), the operator has global visibility into the Kubernetes API. It can identify when a cluster is in a deadlock or an unrecoverable state and intervene precisely to restore consistency.
-- **Chaos-Hardened**: The implementation is validated against an extensive E2E suite simulating diverse failure modes to verify that the cluster remains stable and data is not lost due to identity reuse.
-
-## Operational Philosophy
-
-LittleRed follows a **low-interference** principle:
-1.  **Trust the Native Protocols**: We allow Sentinel and Cluster Gossip to manage the data plane and failovers.
-2.  **Strategic Intervention**: The operator only intervenes when the cluster lacks the context to heal itself (e.g., when all nodes agree on a master that no longer exists in Kubernetes).
-3.  **Heal-ability**: As long as the cluster state is recoverable and data hasn't been lost, the reconciliation loop is designed to return the cluster to a healthy, consistent state.
-
-## Key Features
-
-- **Deployment Modes**: Support for `standalone`, `sentinel` (1 master + 2 replicas), and `cluster` (sharded) modes.
-- **Valkey & Redis Native**: Uses **Valkey 8.0** by default (compatible with Redis 7.2+).
-- **Observability**: Built-in `redis_exporter` sidecars and optional `ServiceMonitor` for Prometheus.
-- **Security**: Support for password authentication and TLS encryption.
-- **Integrated Diagnostics**: Includes `lrctl`, a CLI tool for direct state verification.
+LittleRed is built for workloads where persistence is explicitly disabled and never enabled—not even by accident. It provides a full reconciliation engine to manage node identities and cluster membership across restarts and failures: the class of problem where static Helm charts and startup scripts reach their limits.
 
 ## Quick Start
 
@@ -43,21 +12,24 @@ LittleRed follows a **low-interference** principle:
 helm install littlered charts/littlered-operator -n littlered-system --create-namespace
 ```
 
-### 2. Deploy a Cluster (Sentinel Mode)
+### 2. Deploy an Instance
+
+Set `spec.mode` to choose your deployment type:
 
 ```yaml
-# my-cache.yaml
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: my-store
 spec:
-  mode: sentinel
+  mode: sentinel   # standalone | sentinel | cluster
 ```
 
 ```bash
-kubectl apply -f my-cache.yaml
+kubectl apply -f my-store.yaml
 ```
+
+`standalone` runs a single Redis pod. `sentinel` runs 3 Redis pods (1 master + 2 replicas) monitored by 3 sentinels for automatic failover. `cluster` runs a sharded Redis Cluster across multiple pods for horizontal scaling.
 
 ### 3. Verify Health
 
@@ -66,28 +38,38 @@ kubectl apply -f my-cache.yaml
 make install-plugin
 
 # Check cluster consistency
-kubectl lr verify my-cache
+kubectl lr verify my-store
 ```
 
-## Configuration Reference
+## Key Features
 
-### Spec Reference
+- **Three deployment modes**: `standalone` (single pod), `sentinel` (1 master + 2 replicas monitored by 3 sentinels for automatic failover), and `cluster` (sharded Redis Cluster for horizontal scaling).
+- **Valkey 8.0 by default**, compatible with Redis 7.2+.
+- **Guaranteed QoS**: resource limits always equal requests, preventing OOM surprises and CPU throttling.
+- **`noeviction` by default**: memory exhaustion returns an error rather than silently dropping data. Explicitly configure a different policy if you need eviction semantics.
+- **Security**: password authentication and TLS encryption, both via Kubernetes Secrets.
+- **Observability**: `redis_exporter` sidecar included by default, with optional `ServiceMonitor` for Prometheus.
+- **`lrctl`**: a CLI tool (installable as a `kubectl lr` plugin) for direct state inspection and verification.
+
+> **Current scope:** Cluster mode is validated for **3 shards** with **0 or 1 replica per shard**. Variable shard counts are planned.
+
+## Configuration Reference
 
 ```yaml
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: my-store
 spec:
-  mode: standalone          # standalone, sentinel, or cluster
-  
+  mode: standalone          # standalone | sentinel | cluster
+
   image:
     registry: docker.io
     path: valkey/valkey
     tag: "8.0"
     pullPolicy: IfNotPresent
 
-  resources:                # Guaranteed QoS recommended (requests == limits)
+  resources:                # Guaranteed QoS: keep requests == limits
     requests: { cpu: 250m, memory: 256Mi }
     limits:   { cpu: 250m, memory: 256Mi }
 
@@ -105,16 +87,54 @@ spec:
   cluster:                  # For mode: cluster
     shards: 3
     replicasPerShard: 1
+
+  # Security
+  auth:
+    enabled: false
+    existingSecret: ""      # Secret must have a 'password' key
+
+  tls:
+    enabled: false
+    existingSecret: ""      # Secret must have 'tls.crt' and 'tls.key'
+    caCertSecret: ""        # Optional: separate Secret with 'ca.crt'
+    clientAuth: false       # Require client certificates
+
+  # Observability
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: false
 ```
 
+Full field reference: [docs/API_SPEC.md](docs/API_SPEC.md).
+
+## Why LittleRed?
+
+Running Redis or Valkey without persistence creates a lifecycle problem that standard tooling doesn't handle well.
+
+**The risk:** When a non-persistent node restarts, it comes back with an empty dataset. If it returns with its previous identity—same IP or hostname—the cluster may accept it as the authoritative source of truth and trigger a full sync from it, wiping data on healthy replicas.
+
+**The solution:** LittleRed treats every restart as a new entity. It tracks node identities in Kubernetes, not inside Redis. When a pod disappears and a replacement arrives, the operator:
+
+1. Removes the stale identity ("ghost node") from the cluster before the replacement joins.
+2. Waits for any in-progress replica promotion to complete before healing the partition.
+3. Intervenes with a forced promotion only when the cluster cannot self-recover (e.g., quorum loss).
+
+The core principle is **minimal interference**: trust Sentinel and Cluster Gossip to handle their own state transitions, and intervene only when the cluster lacks the context to heal itself—specifically when it cannot see what the Kubernetes API already knows (that a pod is gone for good).
+
 ## Documentation
-- [Usage Guide](docs/USAGE.md) - Deployment examples.
-- [Architecture](docs/ARCHITECTURE.md) - Reconciliation logic.
-- [E2E Testing](docs/E2E_TESTING.md) - Test suite details.
-- [CLI Reference](docs/LRCTL.md) - `lrctl` guide.
+
+- [Usage Guide](docs/USAGE.md) — deployment examples for all three modes
+- [API Reference](docs/API_SPEC.md) — full spec field documentation
+- [Architecture](docs/ARCHITECTURE.md) — reconciliation design, ADRs, and [terminology conventions](docs/ARCHITECTURE.md#terminology)
+- [E2E Testing](docs/E2E_TESTING.md) — running the test suite and manual chaos testing
+- [Test Cases](docs/TEST_CASES.md) — full list of covered scenarios and their status
+- [CLI Reference](docs/LRCTL.md) — `lrctl` / `kubectl lr` guide
 
 ## Behind the Name
+
 The name **LittleRed** is an homage to the fable of the *Little Red Hen*. When we searched for a tool that handled the complexities of pure in-memory Redis lifecycles with technical rigor, we found that the existing solutions were often unmaintained or focused on different problems. Like the hen in the story, we decided to build it ourselves.
 
 ## License
+
 Apache License 2.0

@@ -14,7 +14,27 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 
 ---
 
-## 2. Architectural Pillars
+## 2. Terminology
+
+"Cluster" is overloaded in the Redis world. Always use these terms to avoid ambiguity:
+
+| Term | Meaning |
+|------|---------|
+| **instance** | Any LittleRed-managed Redis deployment, regardless of mode |
+| **standalone** | A single Redis pod (`mode: standalone`) |
+| **sentinel** | The HA mode: 3 Redis pods (1 master + 2 replicas) monitored by 3 sentinel processes (`mode: sentinel`) |
+| **sentinels** | The 3 monitoring processes within a sentinel instance specifically |
+| **Redis Cluster** | The gossip-based sharding mode (`mode: cluster`) |
+
+**Rules:**
+- "Cluster" on its own always means Redis Cluster mode — never use it as a generic synonym for "a Redis deployment."
+- "Instance" is the generic term for any LittleRed deployment.
+- Do not say "sentinel cluster" — it's ambiguous (could mean the whole sentinel setup, or the sentinel processes themselves).
+- Do not call LittleRed "optimized for caching" — the default policy is `noeviction`, not LRU/LFU. It is a general-purpose in-memory store.
+
+---
+
+## 3. Architectural Pillars
 
 ### 2.1 Strictly No Persistence
 - **Decision**: Persistence (RDB/AOF) is **actively disabled** across all components.
@@ -64,7 +84,7 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 
 ---
 
-## 3. Deployment Modes
+## 4. Deployment Modes
 
 | Mode | Architecture | Use Case |
 | :--- | :--- | :--- |
@@ -82,7 +102,7 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 
 ---
 
-## 4. Tech Stack & Tooling
+## 5. Tech Stack & Tooling
 
 - **Language**: Go (1.24+)
 - **Framework**: Kubebuilder (v4 layout)
@@ -92,7 +112,7 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 
 ---
 
-## 5. Directory Structure
+## 6. Directory Structure
 
 ```text
 api/v1alpha1/               # CRD definitions (LittleRed types)
@@ -122,7 +142,7 @@ test/e2e/                   # End-to-end tests (requires Kind)
 
 ---
 
-## 6. Critical Development Rules
+## 7. Critical Development Rules
 
 1. **Idempotency**: Reconciliation must be idempotent. Always re-fetch the latest object state before updates to avoid conflicts.
 2. **Scaffold Markers**: Never remove `// +kubebuilder:scaffold:*` markers.
@@ -133,7 +153,7 @@ test/e2e/                   # End-to-end tests (requires Kind)
 
 ---
 
-## 7. Useful Commands
+## 8. Useful Commands
 
 ```bash
 make manifests generate # Update CRDs and DeepCopy code
@@ -145,7 +165,7 @@ kubectl apply -f config/samples/ # Try out sample CRs
 
 ---
 
-## 8. Key Resolved Investigations
+## 9. Key Resolved Investigations
 
 ### Sentinel Ghost Master Split-Brain (2026-02-20, LR-007/LR-008)
 **Test:** `Sentinel Advanced Failover Hybrid (Production) Mode > should recover correctly with both mechanisms active (crash)`

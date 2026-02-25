@@ -7,6 +7,22 @@
 
 ---
 
+## Terminology
+
+"Cluster" is overloaded in the Redis world. This project uses these terms consistently:
+
+| Term | Meaning |
+|------|---------|
+| **instance** | Any LittleRed-managed Redis deployment, regardless of mode |
+| **standalone** | A single Redis pod (`mode: standalone`) |
+| **sentinel** | The HA mode: 3 Redis pods (1 master + 2 replicas) monitored by 3 sentinel processes (`mode: sentinel`) |
+| **sentinels** | The 3 monitoring processes within a sentinel instance specifically |
+| **Redis Cluster** | The gossip-based sharding mode (`mode: cluster`) |
+
+"Cluster" on its own always refers to Redis Cluster mode. "Sentinel cluster" is avoided throughout because it is ambiguous — it could mean the whole sentinel setup or the sentinel processes themselves. "Instance" is the generic term for any LittleRed deployment.
+
+---
+
 ## 1. High-Level Overview
 
 ```
