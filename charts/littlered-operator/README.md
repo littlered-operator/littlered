@@ -112,7 +112,7 @@ Once the operator is running, create LittleRed resources:
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   mode: standalone  # or sentinel
 ```

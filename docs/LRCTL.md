@@ -51,18 +51,18 @@ If `name` is omitted, it lists all LittleRed resources in the namespace.
 
 **Example Output (Sentinel Mode):**
 ```text
-Cluster: my-cache-sentinel
+Cluster: store-sentinel
 Namespace: default
 Phase: Running
 Mode: sentinel
-Master: my-cache-sentinel-redis-0 (IP: 10.233.66.107)
+Master: store-sentinel-redis-0 (IP: 10.233.66.107)
 Sentinels: 3/3 Ready
 Redis Nodes: 3/3 Ready
 ```
 
 **Example Output (Cluster Mode):**
 ```text
-Cluster: my-cache-cluster
+Cluster: store-cluster
 Namespace: default
 Phase: Running
 Mode: cluster
@@ -97,51 +97,51 @@ lrctl verify <name> [--json]
 
 **Example Output (Sentinel Mode):**
 ```text
-Verifying Cluster: default/my-cache-sentinel (Mode: sentinel)
+Verifying Cluster: default/store-sentinel (Mode: sentinel)
 Gathering Cluster Ground Truth...
 
 Sentinel Status:
-  - Sentinel my-cache-sentinel-sentinel-1: monitoring 10.233.66.107
-  - Sentinel my-cache-sentinel-sentinel-2: monitoring 10.233.66.107
-  - Sentinel my-cache-sentinel-sentinel-0: monitoring 10.233.66.107
+  - Sentinel store-sentinel-sentinel-1: monitoring 10.233.66.107
+  - Sentinel store-sentinel-sentinel-2: monitoring 10.233.66.107
+  - Sentinel store-sentinel-sentinel-0: monitoring 10.233.66.107
 
 Redis Status:
-  - Redis my-cache-sentinel-redis-0: role:master
-  - Redis my-cache-sentinel-redis-1: role:slave, following:10.233.66.107, link:up
-  - Redis my-cache-sentinel-redis-2: role:slave, following:10.233.66.107, link:up
+  - Redis store-sentinel-redis-0: role:master
+  - Redis store-sentinel-redis-1: role:slave, following:10.233.66.107, link:up
+  - Redis store-sentinel-redis-2: role:slave, following:10.233.66.107, link:up
 
 Ground Truth Summary:
-  [OK] Authority Master: my-cache-sentinel-redis-0 (10.233.66.107)
+  [OK] Authority Master: store-sentinel-redis-0 (10.233.66.107)
 
 [OK] Cluster configuration is consistent.
 ```
 
 **Example Output (Cluster Mode):**
 ```text
-Verifying Cluster: default/my-cache-cluster (Mode: cluster)
+Verifying Cluster: default/store-cluster (Mode: cluster)
 Gathering Cluster Ground Truth...
 
 Cluster State: ok
 Total Slots Assigned: 16384 / 16384
 
 Node Status:
-  - Pod my-cache-cluster-cluster-0: role:master, id:db7c8c37cc2badde942fc5cb37b8f11c05d6996f, slots:0-5461
-  - Pod my-cache-cluster-cluster-1: role:master, id:f8c8f5c33c309771dfca901442d7ace22f006dcd, slots:5462-10922
-  - Pod my-cache-cluster-cluster-2: role:master, id:f450773574d834f4ab549a76f5804fc66bcdf1cb, slots:10923-16383
-  - Pod my-cache-cluster-cluster-3: role:replica, id:4ef162bdbdfba00dfeebaa6c078ed358e0c1a555, following:f8c8f5c33c309771dfca901442d7ace22f006dcd, link:up
-  - Pod my-cache-cluster-cluster-4: role:replica, id:34139e215f431b9582b17fb4fd4d8cf210ba73ce, following:f450773574d834f4ab549a76f5804fc66bcdf1cb, link:up
-  - Pod my-cache-cluster-cluster-5: role:replica, id:b7645a823e77866a607b9557507eed42ba6bac77, following:db7c8c37cc2badde942fc5cb37b8f11c05d6996f, link:up
+  - Pod store-cluster-cluster-0: role:master, id:db7c8c37cc2badde942fc5cb37b8f11c05d6996f, slots:0-5461
+  - Pod store-cluster-cluster-1: role:master, id:f8c8f5c33c309771dfca901442d7ace22f006dcd, slots:5462-10922
+  - Pod store-cluster-cluster-2: role:master, id:f450773574d834f4ab549a76f5804fc66bcdf1cb, slots:10923-16383
+  - Pod store-cluster-cluster-3: role:replica, id:4ef162bdbdfba00dfeebaa6c078ed358e0c1a555, following:f8c8f5c33c309771dfca901442d7ace22f006dcd, link:up
+  - Pod store-cluster-cluster-4: role:replica, id:34139e215f431b9582b17fb4fd4d8cf210ba73ce, following:f450773574d834f4ab549a76f5804fc66bcdf1cb, link:up
+  - Pod store-cluster-cluster-5: role:replica, id:b7645a823e77866a607b9557507eed42ba6bac77, following:db7c8c37cc2badde942fc5cb37b8f11c05d6996f, link:up
 
 Cluster Topology:
-  Master: my-cache-cluster-cluster-0 (db7c8c37cc2badde942fc5cb37b8f11c05d6996f)
+  Master: store-cluster-cluster-0 (db7c8c37cc2badde942fc5cb37b8f11c05d6996f)
     Slots: 0-5461
-    └── Replica: my-cache-cluster-cluster-5 (b7645a823e77866a607b9557507eed42ba6bac77, link:up)
-  Master: my-cache-cluster-cluster-1 (f8c8f5c33c309771dfca901442d7ace22f006dcd)
+    └── Replica: store-cluster-cluster-5 (b7645a823e77866a607b9557507eed42ba6bac77, link:up)
+  Master: store-cluster-cluster-1 (f8c8f5c33c309771dfca901442d7ace22f006dcd)
     Slots: 5462-10922
-    └── Replica: my-cache-cluster-cluster-3 (4ef162bdbdfba00dfeebaa6c078ed358e0c1a555, link:up)
-  Master: my-cache-cluster-cluster-2 (f450773574d834f4ab549a76f5804fc66bcdf1cb)
+    └── Replica: store-cluster-cluster-3 (4ef162bdbdfba00dfeebaa6c078ed358e0c1a555, link:up)
+  Master: store-cluster-cluster-2 (f450773574d834f4ab549a76f5804fc66bcdf1cb)
     Slots: 10923-16383
-    └── Replica: my-cache-cluster-cluster-4 (34139e215f431b9582b17fb4fd4d8cf210ba73ce, link:up)
+    └── Replica: store-cluster-cluster-4 (34139e215f431b9582b17fb4fd4d8cf210ba73ce, link:up)
 
 Summary:
   [OK] Cluster is healthy and consistent.
@@ -172,7 +172,7 @@ All major commands support the `--json` flag. This is ideal for CI/CD pipelines 
 
 ```bash
 # Check if a cluster is healthy via script
-if [ "$(lrctl verify my-cache --json | jq '.[0].healthy')" = "true" ]; then
+if [ "$(lrctl verify store --json | jq '.[0].healthy')" = "true" ]; then
   echo "Cluster is OK"
 fi
 ```

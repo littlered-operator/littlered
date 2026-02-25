@@ -4,7 +4,7 @@ metadata:
   labels:
     app.kubernetes.io/name: littlered-operator
     app.kubernetes.io/managed-by: kustomize
-  name: my-cache-sentinel
+  name: store-sentinel
 spec:
   mode: sentinel
 

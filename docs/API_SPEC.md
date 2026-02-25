@@ -14,7 +14,7 @@
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   # ... specification
 status:
@@ -423,7 +423,7 @@ spec:
 ```yaml
 status:
   phase: Running                # Overall phase
-  status: "my-cache-redis-0"   # Human-readable summary (master pod name when Running)
+  status: "store-redis-0"   # Human-readable summary (master pod name when Running)
   observedGeneration: 1         # Last observed generation
   conditions:                   # Detailed conditions
     - type: Ready
@@ -440,7 +440,7 @@ status:
   # Sentinel mode only
   bootstrapRequired: true       # True on creation, cleared after first master elected
   master:
-    podName: my-cache-redis-0   # Current master pod
+    podName: store-redis-0   # Current master pod
     ip: 10.0.0.5                # Current master IP
   replicas:
     ready: 2
@@ -454,16 +454,16 @@ status:
     state: ok                   # ok, fail, or initializing
     lastBootstrap: "2026-02-03T12:00:00Z"
     nodes:
-      - podName: my-cache-cluster-0
+      - podName: store-cluster-0
         nodeId: abc123def456...
         role: master
         slotRanges: "0-5460"
-      - podName: my-cache-cluster-1
+      - podName: store-cluster-1
         nodeId: ghi789jkl012...
         role: replica
         masterNodeId: abc123def456...
     orphanedReplicas:           # Replicas awaiting force-promotion (transient)
-      - podName: my-cache-cluster-3
+      - podName: store-cluster-3
         nodeId: mno345pqr678...
         masterNodeId: abc123def456...
         detectedAt: "2026-02-03T12:01:00Z"
@@ -487,7 +487,7 @@ status:
 | `cluster.state` | `string` | Cluster state: `ok`, `fail`, `initializing` (cluster mode) |
 | `cluster.lastBootstrap` | `Time` | Timestamp of last full cluster bootstrap (cluster mode) |
 | `cluster.nodes` | `[]ClusterNodeState` | Per-node topology for operator-managed recovery (cluster mode) |
-| `cluster.nodes[].podName` | `string` | Stable pod name (e.g., `my-cache-cluster-0`) |
+| `cluster.nodes[].podName` | `string` | Stable pod name (e.g., `store-cluster-0`) |
 | `cluster.nodes[].nodeId` | `string` | Redis cluster node ID (40-char hex) |
 | `cluster.nodes[].role` | `string` | `master` or `replica` |
 | `cluster.nodes[].masterNodeId` | `string` | Master's node ID (replicas only) |
@@ -547,7 +547,7 @@ status:
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec: {}
 ```
 
@@ -559,7 +559,7 @@ Uses all defaults: standalone mode, `docker.io/valkey/valkey:8.0`, no auth, no T
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   resources:
     requests:
@@ -578,7 +578,7 @@ spec:
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   image:
     path: library/redis
@@ -591,7 +591,7 @@ spec:
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   image:
     registry: docker.io
@@ -605,7 +605,7 @@ spec:
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   auth:
     enabled: true
@@ -626,7 +626,7 @@ stringData:
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   tls:
     enabled: true
@@ -648,7 +648,7 @@ data:
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
   namespace: production
 spec:
   mode: standalone
@@ -719,7 +719,7 @@ spec:
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   mode: sentinel
 ```
@@ -732,7 +732,7 @@ Deploys: 1 master + 2 replicas + 3 sentinels with defaults (`docker.io/valkey/va
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
   namespace: production
 spec:
   mode: sentinel
@@ -784,7 +784,7 @@ spec:
           - labelSelector:
               matchLabels:
                 app.kubernetes.io/name: littlered
-                app.kubernetes.io/instance: my-cache
+                app.kubernetes.io/instance: store
             topologyKey: kubernetes.io/hostname
 ```
 
@@ -794,7 +794,7 @@ spec:
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   mode: cluster
 ```
@@ -807,7 +807,7 @@ Deploys: 3 masters + 3 replicas (6 pods total) with default settings.
 apiVersion: chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
-  name: my-cache
+  name: store
 spec:
   mode: cluster
   cluster:
@@ -845,7 +845,7 @@ spec:
         whenUnsatisfiable: DoNotSchedule
         labelSelector:
           matchLabels:
-            app.kubernetes.io/instance: my-cache
+            app.kubernetes.io/instance: store
 ```
 
 ---
@@ -857,7 +857,7 @@ spec:
 ```yaml
 labels:
   app.kubernetes.io/name: littlered
-  app.kubernetes.io/instance: my-cache
+  app.kubernetes.io/instance: store
   app.kubernetes.io/component: redis | sentinel | exporter
   app.kubernetes.io/managed-by: littlered-operator
   app.kubernetes.io/version: "8.0"

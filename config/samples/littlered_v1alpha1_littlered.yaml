@@ -4,7 +4,7 @@ metadata:
   labels:
     app.kubernetes.io/name: littlered-operator
     app.kubernetes.io/managed-by: kustomize
-  name: my-cache
+  name: store
 spec:
   # Minimal standalone example - uses all defaults:
   # - Image: docker.io/valkey/valkey:8.0
