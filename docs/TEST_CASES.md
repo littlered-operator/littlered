@@ -3,7 +3,7 @@
 > Test case definitions for the LittleRed Kubernetes operator.
 
 **Document Status**: Active
-**Last Updated**: 2026-02-07
+**Last Updated**: 2026-02-25
 
 ---
 
@@ -27,6 +27,8 @@
 
 ## 2. Standalone Mode Tests
 
+*Source: `littlered_test.go`*
+
 ### 2.1 CR Lifecycle & Deployment
 
 | ID | Test Case | Status | Expected Result |
@@ -34,29 +36,31 @@
 | STAN-001 | Create minimal LittleRed CR | ✅ | StatefulSet + Service created, 1 pod running |
 | STAN-002 | Delete LittleRed CR | ✅ | All owned resources (STS, SVC, Pods) cleaned up |
 | STAN-003 | Create CR with invalid spec | ❌ | Admission rejected / status shows error |
-| STAN-004 | Update CR (resources) | ✅ | Rolling update, pod recreated with new limits |
-| STAN-005 | Update CR (config) | ✅ | Rolling update, pod recreated with new config hash |
+| STAN-004 | Rolling update (resource change) | ✅ | Pod recreated with new limits, status returns Running |
+| STAN-005 | Rolling update (config change) | ✅ | ConfigMap hash change triggers pod restart |
 
 ### 2.2 Functional Verification
 
 | ID | Test Case | Status | Expected Result |
 |----|-----------|--------|-----------------|
 | STAN-010 | Redis responds to PING | ✅ | Returns PONG |
-| STAN-011 | SET/GET operations work | ✅ | Data stored and retrieved correctly |
+| STAN-011 | SET/GET operations | ✅ | Data stored and retrieved correctly |
 | STAN-012 | Metrics exposed | ✅ | Prometheus metrics available on port 9121 |
-| STAN-013 | Pod recreation recovery | ✅ | Pod deleted manually is recreated by STS, data lost (expected) |
+| STAN-013 | Pod recreation recovery | ✅ | Pod deleted manually is recreated by STS; data lost (expected) |
 
 ### 2.3 Persistence Disabled (Critical)
 
 | ID | Test Case | Status | Expected Result |
 |----|-----------|--------|-----------------|
 | PERS-001 | No PVCs created | ✅ | `kubectl get pvc` returns none |
-| PERS-002 | RDB/AOF disabled | ❌ | Config checks show persistence disabled |
-| PERS-003 | Data lost on restart | ✅ | Verify empty keyspace after pod restart |
+| PERS-002 | RDB/AOF disabled in config | ❌ | Config shows persistence explicitly disabled |
+| PERS-003 | Data lost on restart | ✅ | Empty keyspace after pod restart |
 
 ---
 
 ## 3. Sentinel Mode Tests
+
+*Source: `littlered_test.go`, `failover_test.go`*
 
 ### 3.1 Deployment & Lifecycle
 
@@ -64,105 +68,167 @@
 |----|-----------|--------|-----------------|
 | SEN-001 | Deploy Sentinel mode | ✅ | 3 Redis + 3 Sentinel pods running |
 | SEN-002 | Services created | ✅ | Master, Replica, and Sentinel services exist |
-| SEN-003 | Sentinel Quorum | ✅ | Sentinels report quorum and correct master |
-| SEN-004 | Status Reporting | ✅ | CR status shows Master Pod name |
-| SEN-005 | Rolling Update (Resources) | ✅ | All pods updated, quorum maintained throughout |
+| SEN-003 | Sentinel quorum established | ✅ | Sentinels report quorum and correct master |
+| SEN-004 | Status reporting | ✅ | CR status shows master pod name, bootstrap flag cleared |
+| SEN-005 | Correct role labels | ✅ | Pods labeled master/replica correctly |
+| SEN-006 | Rolling update (resources) | ✅ | All pods updated, quorum maintained throughout |
+| SEN-007 | Rolling update (quorum survives) | ✅ | Sentinel quorum intact after rolling update |
 
-### 3.2 Replication & Failover
+### 3.2 Replication & Basic Failover
 
 | ID | Test Case | Status | Expected Result |
 |----|-----------|--------|-----------------|
-| SEN-010 | Replication Active | ✅ | Write to master, read from replica |
-| SEN-011 | Master Pod Deletion | ✅ | New master elected, cluster recovers |
-| SEN-012 | Data Survival (Failover) | ✅ | Data exists on new master after failover |
-| SEN-013 | Cluster Recovery | ✅ | All pods eventually return to Ready state |
-| SEN-014 | Rapid Double Failover | ✅ | Traffic follows master through two rapid kills (Event-driven) |
-| SEN-015 | Event-Only Recovery | ✅ | Polling disabled, only Pub/Sub events trigger updates |
-| SEN-016 | Polling-Only Recovery | ✅ | Events disabled, only periodic polling triggers updates |
-| SEN-017 | Hybrid (Prod) Recovery | ✅ | Both events and polling active (standard prod config) |
-| SEN-018 | Sentinel Pod Resilience | ✅ | System survives 1/3 Sentinel loss; failover still works |
+| SEN-010 | Replication active | ✅ | Write to master, read from replica |
+| SEN-011 | Master pod deletion (graceful) | ✅ | New master elected, cluster recovers |
+| SEN-012 | Master pod deletion (kill-9 / force) | ✅ | New master elected, cluster recovers |
+| SEN-013 | Data survival after failover | ✅ | Data on surviving replicas accessible after master election |
+| SEN-014 | Full cluster recovery | ✅ | All pods return to Ready state after failover |
+
+### 3.3 Advanced Failover
+
+| ID | Test Case | Status | Expected Result |
+|----|-----------|--------|-----------------|
+| SEN-020 | Event-driven label update | ✅ | Master role label updated immediately via `+switch-master` pub/sub event |
+| SEN-021 | Event-only recovery | ✅ | Polling disabled; only pub/sub events drive label updates |
+| SEN-022 | Polling-only recovery | ✅ | Events disabled; only periodic polling drives label updates |
+| SEN-023 | Hybrid (production) recovery — graceful | ✅ | Both events and polling active; graceful master kill recovers |
+| SEN-024 | Hybrid (production) recovery — kill-9 | ✅ | Both events and polling active; crash kill recovers |
+| SEN-025 | Sentinel pod resilience | ✅ | Failover still works after 1/3 sentinel pod is restarted |
 
 ---
 
 ## 4. Cluster Mode Tests
 
+*Source: `cluster_functional_test.go`, `cluster_rolling_test.go`*
+
 ### 4.1 Cluster Deployment
 
 | ID | Test Case | Status | Expected Result |
 |----|-----------|--------|-----------------|
-| CLUST-001 | Deploy Redis Cluster | ✅ | 6 pods (3 master, 3 replica) created & running |
-| CLUST-002 | Cluster Services | ✅ | Client (ClusterIP) and Headless services created |
-| CLUST-003 | Cluster State OK | ✅ | `CLUSTER INFO` reports `cluster_state:ok` |
-| CLUST-004 | Slot Assignment | ✅ | All 16384 slots assigned across masters |
-| CLUST-005 | Topology Verification | ✅ | 3 masters, 3 replicas correctly paired |
+| CLUST-001 | Deploy Redis Cluster (3M + 3R) | ✅ | 6 pods running; 3 masters, 3 replicas |
+| CLUST-002 | Services created | ✅ | Client (ClusterIP) and headless services exist |
+| CLUST-003 | Cluster state OK | ✅ | `CLUSTER INFO` reports `cluster_state:ok` |
+| CLUST-004 | Slot assignment | ✅ | All 16384 slots assigned across masters |
+| CLUST-005 | Topology verification | ✅ | 3 masters, 3 replicas correctly paired |
 
 ### 4.2 Functional Verification
 
 | ID | Test Case | Status | Expected Result |
 |----|-----------|--------|-----------------|
-| CLUST-010 | SET/GET (Cluster Mode) | ✅ | Data stored/retrieved using `-c` flag |
-| CLUST-011 | Sharding Distribution | ✅ | Keys distributed across multiple shards/nodes |
-| CLUST-012 | Configuration Apply | ✅ | Custom `maxmemory` and policies applied to all nodes |
+| CLUST-010 | SET/GET with cluster routing | ✅ | Data stored/retrieved using `-c` flag |
+| CLUST-011 | Sharding distribution | ✅ | Keys distributed across multiple shards |
+| CLUST-012 | Custom configuration | ✅ | Custom `maxmemory` and policies applied to all nodes |
 
 ### 4.3 Status & Observability
 
 | ID | Test Case | Status | Expected Result |
 |----|-----------|--------|-----------------|
-| CLUST-020 | Status Tracking | ✅ | CR status tracks all 6 nodes with IDs and Roles |
-| CLUST-021 | Ready Condition | ✅ | `ClusterReady` condition is True |
-| CLUST-022 | Node Details | ✅ | Status includes slot ranges and master links |
+| CLUST-020 | Status tracking | ✅ | CR status tracks all nodes with NodeIDs and roles |
+| CLUST-021 | Ready condition | ✅ | `ClusterReady` condition is True |
+| CLUST-022 | Node details | ✅ | Status includes slot ranges and master links |
 
 ### 4.4 Cluster Recovery
 
 | ID | Test Case | Status | Expected Result |
 |----|-----------|--------|-----------------|
-| CLUST-030 | Replica Pod Deletion | ✅ | Pod recreated, cluster remains OK, data accessible |
-| CLUST-031 | Master Pod Deletion | ✅ | Pod recreated, cluster re-stabilizes, no data loss |
-| CLUST-032 | Multiple Pod Deletion | ✅ | Cluster recovers from losing 3 pods (half cluster) |
-| CLUST-033 | Cluster Cleanup | ✅ | Deleting CR removes all resources (STS, PVCs if any, Pods) |
+| CLUST-030 | Replica pod deletion | ✅ | Pod recreated, cluster remains OK, data accessible |
+| CLUST-031 | Master pod deletion | ✅ | Replica promoted, new pod joins as replica, data preserved |
+| CLUST-032 | 0-replica mode self-healing | ✅ | Ghost forgotten, new pod MEETed, slots reassigned |
+| CLUST-033 | Cluster cleanup | ✅ | Deleting CR removes all resources |
+
+### 4.5 Rolling Update
+
+| ID | Test Case | Status | Expected Result |
+|----|-----------|--------|-----------------|
+| CLUST-040 | Rolling update (resources) | ✅ | All pods updated, cluster remains healthy |
+| CLUST-041 | Data preservation across rolling update | ✅ | Keys written before update readable after |
+| CLUST-042 | Status Running after rolling update | ✅ | CR phase returns to Running |
 
 ---
 
-## 5. Chaos & Resilience Tests
+## 5. Kill-9 / In-Pod Process Crash Tests
 
-These tests use the `chaos-client` to inject faults under load.
+*Source: `kill9_chaos_test.go`*
 
-### 5.1 Cluster Resilience
-
-| ID | Test Case | Status | Expected Result |
-|----|-----------|--------|-----------------|
-| CHAOS-001 | Replica Deletion under Load | ✅ | 0 Data Corruption, High availability |
-| CHAOS-002 | Master Deletion under Load | ✅ | 0 Data Corruption, Cluster recovers automatically |
-| CHAOS-003 | Rolling Restart under Load | ✅ | 0 Data Corruption, >95% availability. Uses `kubectl rollout restart` with minReadySeconds=30s |
-
-### 5.2 Sentinel Resilience
+These tests use `kubectl exec <pod> -- kill -9 1` to simulate OOM / SIGKILL scenarios where the pod continues running (emptyDir survives) but Redis loses all in-memory data.
 
 | ID | Test Case | Status | Expected Result |
 |----|-----------|--------|-----------------|
-| CHAOS-020 | Rapid Double Failover (Service) | ✅ | >40% Availability, 0 Corruption, Client follows Master |
-
-### 5.3 Standalone Resilience
-
-| ID | Test Case | Status | Expected Result |
-|----|-----------|--------|-----------------|
-| CHAOS-010 | Pod Restart under Load | ✅ | 0 Data Corruption (checked against surviving data) |
+| KILL9-001 | Standalone — kill-9 smoke test | ✅ | Redis process killed; container restarts; PING works again |
+| KILL9-002 | Sentinel — master process crash | ✅ | Sentinel detects failure, elects new master, 0 data corruption |
+| KILL9-003 | Cluster — master process crash | ✅ | Replica promoted, cluster heals, 0 data corruption |
 
 ---
 
-## 6. Negative & Security Tests
+## 6. Chaos & Resilience Tests
+
+*Source: `cluster_chaos_test.go`, `sentinel_standalone_chaos_test.go`*
+
+All chaos tests run a continuous-write client (`chaos-client`) and verify zero data corruption and sufficient availability during and after fault injection.
+
+### 6.1 Cluster Chaos
 
 | ID | Test Case | Status | Expected Result |
 |----|-----------|--------|-----------------|
-| NEG-001 | Invalid Mode | ❌ | Admission rejected |
-| NEG-002 | Missing Secret | ❌ | Pods pending / Status Error |
-| SEC-001 | Non-root User | 🚧 | Pods run as non-root (Partial coverage) |
-| SEC-002 | Read-only Root FS | ❌ | Container uses read-only root filesystem |
+| CHAOS-001 | Cluster — baseline stability (0 replicas) | ✅ | 100% availability under stable conditions |
+| CHAOS-002 | Cluster — master failure under load (graceful) | ✅ | High availability, 0 data corruption |
+| CHAOS-003 | Cluster — master failure under load (kill-9) | ✅ | High availability, 0 data corruption |
+| CHAOS-004 | Cluster — replica failure under load (graceful) | ✅ | 100% availability, 0 data corruption |
+| CHAOS-005 | Cluster — replica failure under load (kill-9) | ✅ | 100% availability, 0 data corruption |
+| CHAOS-006 | Cluster — rolling restart under load | ✅ | >95% availability, 0 data corruption; uses `kubectl rollout restart` with `minReadySeconds=30s` |
+| CHAOS-007 | Cluster — multi-pod random deletion | ✅ | Cluster survives multiple rounds of random pod loss, 0 corruption |
+
+### 6.2 Sentinel Chaos
+
+| ID | Test Case | Status | Expected Result |
+|----|-----------|--------|-----------------|
+| CHAOS-020 | Sentinel — rapid double failover (graceful) | ✅ | >40% availability, 0 corruption, client follows master |
+| CHAOS-021 | Sentinel — rapid double failover (kill-9) | ✅ | >40% availability, 0 corruption, client follows master |
+
+### 6.3 Standalone Chaos
+
+| ID | Test Case | Status | Expected Result |
+|----|-----------|--------|-----------------|
+| CHAOS-030 | Standalone — pod restart under load | ✅ | 0 data corruption (checked against surviving data) |
 
 ---
 
-## 7. Performance Benchmarks
+## 7. Security Tests
+
+*Source: `security_test.go`*
+
+### 7.1 Password Authentication
 
 | ID | Test Case | Status | Expected Result |
 |----|-----------|--------|-----------------|
-| PERF-001 | Failover Time | 🚧 | < 30s failover (Observed in logs, not asserted) |
-| PERF-002 | Boot Time | 🚧 | Cluster ready < 4m (Implicit in timeouts) |
+| SEC-001 | Standalone — password auth enforcement | ✅ | Unauthenticated access rejected; authenticated access works |
+| SEC-002 | Sentinel — password auth enforcement | ✅ | Unauthenticated access rejected; authenticated access works |
+| SEC-003 | Cluster — password auth enforcement | ✅ | Unauthenticated access rejected; authenticated access works |
+
+### 7.2 TLS Encryption
+
+| ID | Test Case | Status | Expected Result |
+|----|-----------|--------|-----------------|
+| SEC-010 | Standalone — TLS encryption enforcement | ✅ | Plaintext connections rejected; TLS connections work |
+| SEC-011 | Sentinel — TLS encryption enforcement | ✅ | Plaintext connections rejected; TLS connections work |
+| SEC-012 | Cluster — TLS encryption enforcement | ✅ | Plaintext connections rejected; TLS connections work |
+
+---
+
+## 8. Negative Tests
+
+| ID | Test Case | Status | Expected Result |
+|----|-----------|--------|-----------------|
+| NEG-001 | Invalid mode in spec | ❌ | Admission rejected |
+| NEG-002 | Missing referenced secret | ❌ | Pods pending / status shows error condition |
+
+---
+
+## 9. Performance Benchmarks
+
+These are observed rather than asserted; thresholds are guidelines, not hard test gates.
+
+| ID | Test Case | Status | Expected Result |
+|----|-----------|--------|-----------------|
+| PERF-001 | Sentinel failover time | 🚧 | < 30s from master death to new master serving traffic |
+| PERF-002 | Cluster boot time | 🚧 | Cluster ready < 4 minutes |

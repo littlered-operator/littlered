@@ -1,213 +1,253 @@
 # E2E Testing Guide
 
-This guide explains how to build, deploy, and test the LittleRed operator end-to-end.
+This guide explains how to run the LittleRed E2E test suite and perform manual chaos testing.
+
+For the full list of test cases and their statuses, see [TEST_CASES.md](TEST_CASES.md).
+
+---
 
 ## Overview
 
-E2E (end-to-end) tests verify that the operator works correctly in a real Kubernetes cluster. The tests:
+E2E tests verify the operator in a real Kubernetes cluster (Kind). They:
 
-1. Create LittleRed custom resources
-2. Verify the operator creates the expected Kubernetes resources (StatefulSets, Services, etc.)
-3. Verify Redis is functional (PING, SET/GET operations)
-4. Test failover scenarios in sentinel mode
+1. Create LittleRed CRs across all modes (standalone, sentinel, cluster)
+2. Verify Kubernetes resources are created correctly (StatefulSets, Services, ConfigMaps)
+3. Verify Redis is functional (PING, SET/GET, replication, cluster routing)
+4. Test failover, crash recovery, rolling updates, and security features under load
+
+---
 
 ## Prerequisites
 
-- **Kubernetes cluster** with `kubectl` access
-- **Podman** or **Docker** for building images
-- **Container registry** to push images
-- **Go 1.24+** for running tests
-- **ArgoCD** configured (for GitOps deployment)
+- **Go 1.24+**
+- **Kind** (Kubernetes in Docker)
+- **Docker or Podman**
+- **kubectl**
 
-## Step 1: Build and Push the Operator Image
+The Makefile manages everything else automatically: cluster creation, image builds, loading images into Kind, operator deployment, and teardown.
 
-Build the operator container image and push it to your registry.
+---
 
-```bash
-# Navigate to the project directory
-cd /path/to/littlered-operator
+## Automated E2E Tests
 
-# Build the image (using podman)
-podman build -t ghcr.io/littlered-operator/littlered-operator:0.1.0 .
+### Quick Start
 
-# Or with docker
-docker build -t ghcr.io/littlered-operator/littlered-operator:0.1.0 .
-
-# Push to your registry
-podman push ghcr.io/littlered-operator/littlered-operator:0.1.0
-
-# Or with docker
-docker push ghcr.io/littlered-operator/littlered-operator:0.1.0
-```
-
-Replace `docker.io` with your own registry.
-
-## Step 2: Deploy the Operator via ArgoCD
-
-Add your Git repository to ArgoCD and create an application that deploys the operator.
-
-### Add the Repository
-
-```bash
-argocd repo add https://github.com/littlered-operator/littlered.git
-```
-
-### Create the ArgoCD Application
-
-```bash
-argocd app create littlered-operator \
-  --repo https://github.com/littlered-operator/littlered.git \
-  --path charts/littlered-operator \
-  --dest-server https://kubernetes.default.svc \
-  --dest-namespace littlered-system \
-  --sync-policy automated \
-  --auto-prune \
-  --self-heal \
-  --helm-set image.repository=ghcr.io/littlered-operator/littlered-operator \
-  --helm-set image.tag=0.1.0
-```
-
-**What this does:**
-- `--repo`: Points to your Git repository containing the Helm chart
-- `--path`: Location of the Helm chart within the repo
-- `--dest-namespace`: Kubernetes namespace where the operator will run
-- `--sync-policy automated`: Automatically deploys when you push changes to Git
-- `--auto-prune`: Removes resources that are no longer in Git
-- `--self-heal`: Reverts manual changes made outside of Git
-- `--helm-set`: Overrides values in the Helm chart (your image location)
-
-### Create the Namespace
-
-The namespace must exist before ArgoCD can deploy:
-
-```bash
-kubectl create namespace littlered-system
-```
-
-### Verify Deployment
-
-Check that the operator is running:
-
-```bash
-# Check ArgoCD app status
-argocd app get littlered-operator
-
-# Check the operator pod
-kubectl get pods -n littlered-system
-```
-
-You should see output like:
-```
-NAME                                READY   STATUS    RESTARTS   AGE
-littlered-operator-b7645665-8n9ph   1/1     Running   0          2m
-```
-
-## Step 3: Run the E2E Tests
-
-Once the operator is deployed, run the e2e tests against it using the `Makefile` targets. The `Makefile` ensures all required environment variables (like `CHAOS_CLIENT_IMAGE`) are correctly set.
-
-### Run All Tests
-
-To run the full suite (this will also create/destroy a local Kind cluster if `SKIP_OPERATOR_DEPLOY` is not true):
+Run the full suite against a fresh Kind cluster:
 
 ```bash
 make test-e2e
 ```
 
-### Run with an Existing Deployment
+This automatically:
+1. Creates a Kind cluster (`littlered-test-e2e`) if it doesn't exist
+2. Builds the operator and chaos client images
+3. Loads images into the Kind cluster
+4. Deploys the operator via `make deploy`
+5. Runs all e2e tests (`go test -tags=e2e ./test/e2e/ -timeout 60m`)
+6. Tears down the Kind cluster (only if it was created by this run)
 
-If the operator is already deployed (e.g., via ArgoCD as described in Step 2), use `SKIP_OPERATOR_DEPLOY=true` to run tests against the existing cluster without attempting to manage a local Kind instance:
+### Running Against an Existing Deployment
+
+If the operator is already deployed (e.g., a pre-existing Kind cluster or remote cluster):
 
 ```bash
-make test-e2e SKIP_OPERATOR_DEPLOY=true
+# Reuse existing Kind cluster, redeploy operator
+make test-e2e SKIP_KIND_SETUP=true
+
+# Reuse existing cluster and existing operator deployment
+make test-e2e SKIP_KIND_SETUP=true SKIP_OPERATOR_DEPLOY=true
 ```
 
-### Run Specific Test Suites
+### Filtering Tests
 
-Use the `FOCUS` variable to filter tests by name (regex). This is passed to Ginkgo's `-focus` flag.
+Use `FOCUS` to run a subset of tests (passed to Ginkgo's `-focus` flag):
 
-Run only standalone mode tests:
 ```bash
-make test-e2e SKIP_OPERATOR_DEPLOY=true FOCUS="Standalone"
+# Only standalone tests
+make test-e2e FOCUS="Standalone"
+
+# Only sentinel tests
+make test-e2e FOCUS="Sentinel"
+
+# Only cluster tests
+make test-e2e FOCUS="Cluster Mode"
+
+# Only failover tests
+make test-e2e FOCUS="Failover"
+
+# Only kill-9 / crash tests
+make test-e2e FOCUS="Kill-9"
+
+# Only security tests
+make test-e2e FOCUS="Security"
 ```
 
-Run only sentinel mode tests:
+### Additional Flags
+
+Pass extra arguments to `go test` via `ARGS`:
+
 ```bash
-make test-e2e SKIP_OPERATOR_DEPLOY=true FOCUS="Sentinel Mode"
+make test-e2e ARGS="-timeout 90m"
 ```
 
-Run only failover tests:
-```bash
-make test-e2e SKIP_OPERATOR_DEPLOY=true FOCUS="Failover"
-```
+### Environment Variables Reference
 
-Run only cluster mode tests:
-```bash
-make test-e2e SKIP_OPERATOR_DEPLOY=true FOCUS="Cluster Mode"
-```
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SKIP_KIND_SETUP` | `false` | Skip Kind cluster creation (use existing) |
+| `SKIP_OPERATOR_DEPLOY` | `false` | Skip operator deployment (use existing) |
+| `KIND_CLUSTER` | `littlered-test-e2e` | Kind cluster name |
+| `OPERATOR_IMAGE` | `ghcr.io/littlered-operator/littlered:<git-tag>` | Operator image to deploy |
+| `CHAOS_CLIENT_IMAGE` | `ghcr.io/littlered-operator/littlered-chaos-client:<git-tag>` | Chaos client image |
+| `FOCUS` | (none) | Ginkgo focus filter (regex) |
+| `ARGS` | (none) | Extra arguments passed to `go test` |
 
-The `make` command also supports passing additional arguments to `go test` via the `ARGS` variable:
-```bash
-make test-e2e SKIP_OPERATOR_DEPLOY=true ARGS="-timeout 45m"
-```
+---
 
-## Cluster Mode Testing
+## Test File Organization
 
-Cluster mode testing is organized into functional and chaos-oriented suites to ensure both correct topology management and high availability.
+| File | Describe block | What it covers |
+|------|---------------|----------------|
+| `littlered_test.go` | LittleRed | Standalone CRUD, sentinel deployment, rolling updates (standalone + sentinel), sentinel failover |
+| `failover_test.go` | Sentinel Advanced Failover | Event-driven labels, polling-only recovery, hybrid (graceful + crash), sentinel pod resilience |
+| `kill9_chaos_test.go` | Kill-9 In-Pod Process Crash | Standalone smoke, sentinel master crash, cluster master crash |
+| `cluster_functional_test.go` | Cluster Mode Functional Testing | Cluster formation, data routing, 0-replica healing, failover recovery, custom config, cleanup |
+| `cluster_rolling_test.go` | Cluster Mode Rolling Update | Rolling update correctness, data preservation, status after update |
+| `cluster_chaos_test.go` | Cluster Mode Chaos Testing | Stability baseline, master/replica failure under load, rolling restart, continuous multi-pod failure |
+| `sentinel_standalone_chaos_test.go` | Sentinel and Standalone Chaos Testing | Sentinel rapid double failover under load (graceful + crash), standalone pod restart |
+| `security_test.go` | LittleRed Security Features | Password authentication enforcement, TLS encryption enforcement |
 
-### 1. Functional Testing (`cluster_functional_test.go`)
-Focuses on correct cluster formation, configuration, and self-healing.
-- **Basic Operations**: Cluster creation (3 masters, 3 replicas), data redirection, and status tracking.
-- **0-Replica Mode**: Verifies that the operator can restore slots to new nodes even without replicas.
-- **Functional Recovery**: Validates correct topology (no empty masters, correct replica count) after master or replica pod deletion.
-- **Custom Configuration**: Application of custom Redis settings and node timeouts.
-- **Cleanup**: Ensures all K8s resources are removed when the CR is deleted.
-
-### 2. Chaos Testing (`cluster_chaos_test.go`)
-Validates stability and data integrity under continuous load using a chaos client.
-- **Stability Baseline**: Verifies 100% availability in a stable cluster.
-- **Master/Replica Failure**: Ensures >90% write availability and 0% data corruption during unplanned failovers.
-- **Rolling Restarts**: Verifies that controlled updates (via annotation changes) do not cause data loss or downtime.
+---
 
 ## Reliable Cluster Verification (Lessons Learned)
 
-Testing Redis Cluster state transitions is prone to race conditions due to the lag between Kubernetes actions (deleting a pod) and Redis internal state propagation (Gossip). We implemented several improvements to ensure tests are robust and non-flaky.
+Testing Redis Cluster state transitions is prone to race conditions due to the lag between Kubernetes actions (deleting a pod) and Redis internal state propagation (gossip). Several improvements were made to keep tests robust and non-flaky.
 
-### 1. The "Stale State" Problem
-Redis Cluster gossip can take up to 15 seconds (`cluster-node-timeout`) to detect a failed node. If a test checks for health immediately after killing a pod, it might read **stale pre-failure state** from a node that hasn't noticed the failure yet, leading to false positives.
+### The "Stale State" Problem
 
-### 2. The "Too Fast Operator" Problem
-Conversely, the LittleRed operator uses Kubernetes as its source of truth and can detect a missing pod almost instantly. It may `CLUSTER FORGET` a failed node and begin healing before a test's polling loop even sees the node in a `fail` or `pfail` state.
+Redis Cluster gossip can take up to 15 seconds (`cluster-node-timeout`) to detect a failed node. If a test checks for health immediately after killing a pod, it might read **stale pre-failure state** from a node that hasn't noticed the failure yet, producing false positives.
 
-### 3. Verification Best Practices
-To solve these, we implemented the following strategies in our E2E helpers:
+### The "Too Fast Operator" Problem
+
+The LittleRed operator uses Kubernetes as its source of truth and detects a missing pod almost instantly. It may `CLUSTER FORGET` a failed node and begin healing before a test's polling loop even sees the node in a `fail` or `pfail` state.
+
+### Verification Best Practices
 
 - **NodeID Tracking**: Always record the `NodeID` of a pod before performing chaos actions. Kubernetes pod names are stable (StatefulSet), but Redis NodeIDs are unique to the instance. Verification must ensure the *specific ID* has been replaced or forgotten.
-- **Dynamic Ground Truth**: Helpers like `verifyClusterTopologySync` now query the Redis ground truth (`CLUSTER NODES`) **inside** the `Eventually` loop. This allows the test to synchronize with the cluster's evolution rather than checking against a stale snapshot.
-- **Robust Failure Detection**: The `waitForClusterFailureDetected` helper now considers a failure "detected" if:
-    1. A node is explicitly marked as `fail` or `pfail`.
-    2. **OR** the specific victim NodeID has disappeared from the mesh.
-    3. **OR** the total node count has decreased (indicating the operator already cleaned it up).
-- **Shard Master Verification**: Use `waitForShardMasterChange(slot, oldNodeID)` to verify failover. This helper waits until a specific hash slot is owned by a *different* master ID, proving that healing or promotion has actually occurred.
+- **Dynamic Ground Truth**: Helpers like `verifyClusterTopologySync` query the Redis ground truth (`CLUSTER NODES`) **inside** the `Eventually` loop, synchronizing with the cluster's evolution rather than a stale snapshot.
+- **Robust Failure Detection**: The `waitForClusterFailureDetected` helper considers a failure "detected" if:
+  1. A node is explicitly marked as `fail` or `pfail`
+  2. **OR** the specific victim NodeID has disappeared from the mesh
+  3. **OR** the total node count has decreased (indicating the operator already cleaned it up)
+- **Shard Master Verification**: `waitForShardMasterChange(slot, oldNodeID)` waits until a specific hash slot is owned by a *different* master ID, proving that healing or promotion has actually occurred.
 
 ### Key Topology Guarantees
+
 The E2E tests strictly validate the following cluster invariants after any failure:
-1. **No Empty Masters**: Every master node must have slots assigned.
-2. **Correct Replica Count**: Every shard must have the expected number of healthy replicas.
-3. **Ghost Cleanup**: Nodes that no longer exist in K8s must be forgotten by the cluster gossip.
-4. **Data Integrity**: Chaos clients verify that every successful write can be read back, even during failover events.
 
-## Test Coverage
+1. **No Empty Masters**: Every master node must have slots assigned
+2. **Correct Replica Count**: Every shard must have the expected number of healthy replicas
+3. **Ghost Cleanup**: Nodes that no longer exist in K8s must be forgotten by the cluster gossip
+4. **Data Integrity**: Chaos clients verify that every successful write can be read back, even during failover events
 
-For a detailed list of implemented test cases, scenarios, and their IDs, please refer to [TEST_CASES.md](TEST_CASES.md).
+---
 
-## Running the Tests
+## Manual Chaos Testing
+
+Manual chaos testing deploys a LittleRed CR and a continuous-load chaos client via Helm, then lets you inject faults while observing behavior in real time.
+
+### Deploy the Test Environment
+
+**Option A: Sentinel Mode** (3 Redis + 3 Sentinels + chaos client)
+
+```bash
+helm upgrade --install sentinel-investigation ./charts/sentinel-chaos \
+  --set chaosClient.image.tag=$(git rev-parse --short HEAD) \
+  --namespace default
+
+# Tear down
+helm delete sentinel-investigation
+```
+
+**Option B: Cluster Mode** (3 shards × 2 replicas + chaos client)
+
+```bash
+helm upgrade --install cluster-investigation ./charts/cluster-chaos \
+  --set chaosClient.image.tag=$(git rev-parse --short HEAD) \
+  --namespace default
+
+# Tear down
+helm delete cluster-investigation
+```
+
+### Monitor the System
+
+Open multiple terminal windows (or use `tmux`):
+
+```bash
+# Window 1: Operator logs
+kubectl logs -n littlered-system -l control-plane=controller-manager --tail=-1 -f
+
+# Window 2: Chaos client — throughput, availability, data integrity
+kubectl logs manual-chaos-chaos-client -f
+
+# Window 3: Redis pod logs (one per pod or loop)
+while true; do kubectl logs manual-chaos-redis-0 -f; sleep 1; done         # sentinel
+while true; do kubectl logs manual-chaos-cluster-0 -f; sleep 1; done       # cluster
+
+# Window 4: Sentinel logs (sentinel mode only)
+while true; do kubectl logs manual-chaos-sentinel-0 -f; sleep 1; done
+
+# Window 5: CR status
+while true; do kubectl get littlereds.chuck-chuck-chuck.net manual-chaos -o wide; sleep 1; done
+```
+
+### Inject Faults
+
+```bash
+# Kill the current master (sentinel mode) — find it first:
+kubectl get pods -l chuck-chuck-chuck.net/role=master
+
+# Graceful delete (triggers preStop hook and Sentinel FAILOVER)
+kubectl delete pod <master-pod>
+
+# Crash delete (force, no preStop — tests hard resilience)
+kubectl delete pod <master-pod> --grace-period=0 --force
+
+# Kill the Redis process in-pod (simulates OOM/kill-9)
+kubectl exec <pod> -- kill -9 1
+
+# Kill a shard master (cluster mode)
+kubectl exec <cluster-pod> -- redis-cli CLUSTER NODES  # find a master
+kubectl delete pod <master-cluster-pod> --grace-period=0 --force
+```
+
+**Scenarios to try:**
+- Kill the master (sentinel) — expect failover within `downAfterMilliseconds`
+- Kill master + replica in same shard simultaneously
+- Kill 2 of 3 sentinel pods
+- Rapid double kill (graceful then crash before the cluster settles)
+
+**Recovery criteria:**
+- **Sentinel**: cluster stabilizes, chaos client shows 0 data corruptions, `{name}-master` service routes to new master
+- **Cluster**: all 16384 slots covered, 0 data corruptions, `cluster_state:ok`
+
+### Observe with lrctl
+
+```bash
+# Verify topology health
+lrctl verify <name>
+
+# Watch CR status
+lrctl describe <name>
+```
+
+---
 
 ## Troubleshooting
 
 ### Tests Fail to Connect to Cluster
 
-Verify your kubectl context:
 ```bash
 kubectl config current-context
 kubectl get nodes
@@ -215,66 +255,42 @@ kubectl get nodes
 
 ### Operator Not Running
 
-Check operator logs:
 ```bash
 kubectl logs -n littlered-system deployment/littlered-operator
-```
-
-Check ArgoCD sync status:
-```bash
-argocd app get littlered-operator
+kubectl get pods -n littlered-system
 ```
 
 ### Tests Timeout Waiting for Resources
 
-Increase timeouts by setting Ginkgo flags (the default is 30m):
+The default timeout is 60 minutes. Increase it:
+
 ```bash
-SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 45m
+make test-e2e ARGS="-timeout 90m"
 ```
 
-### View Test Resources
+### Inspect Test Resources
 
-During or after test runs, inspect created resources:
 ```bash
 kubectl get littlered -n littlered-e2e-test
 kubectl get pods -n littlered-e2e-test
 kubectl get svc -n littlered-e2e-test
 ```
 
-### Clean Up Test Resources
+### Clean Up After Interrupted Tests
 
 Tests clean up after themselves, but if interrupted:
+
 ```bash
 kubectl delete namespace littlered-e2e-test --ignore-not-found
+kind delete cluster --name littlered-test-e2e
 ```
 
-## Updating the Operator
+### Debug Artifacts
 
-When you make changes to the operator:
+On test failure, debug artifacts (pod logs, operator logs, `lrctl` output) are written to:
 
-1. **Build and push a new image:**
-   ```bash
-   podman build -t ghcr.io/littlered-operator/littlered-operator:0.1.1 .
-   podman push ghcr.io/littlered-operator/littlered-operator:0.1.1
-   ```
+```
+debug-artifacts-<timestamp>-<test-name>/
+```
 
-2. **Update the ArgoCD application:**
-   ```bash
-   argocd app set littlered-operator --helm-set image.tag=0.1.1
-   ```
-
-   Or update the Helm chart's `values.yaml` in Git and push — ArgoCD will automatically sync.
-
-3. **Run tests again:**
-   ```bash
-   SKIP_OPERATOR_DEPLOY=true go test -tags=e2e ./test/e2e/ -v -ginkgo.v
-   ```
-
-## Environment Variables Reference
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `SKIP_OPERATOR_DEPLOY` | Skip deploying operator (use existing) | `false` |
-| `OPERATOR_IMAGE` | Image to use when deploying | `ghcr.io/littlered-operator/littlered-operator:latest` |
-| `USE_HELM` | Deploy via Helm instead of make | `false` |
-| `KIND_CLUSTER` | Kind cluster name (for local testing) | `kind` |
+in the project root.
