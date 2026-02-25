@@ -9,8 +9,11 @@ LittleRed is built for workloads where persistence is explicitly disabled and ne
 ### 1. Install the Operator
 
 ```bash
-helm install littlered charts/littlered -n littlered-system --create-namespace
+helm install littlered oci://ghcr.io/littlered-operator/charts/littlered \
+  -n littlered-system --create-namespace
 ```
+
+This installs the latest release. For a pinned version, add `--version <version>` — see the [releases page](https://github.com/littlered-operator/littlered-operator/releases).
 
 ### 2. Deploy an Instance
 
@@ -130,6 +133,7 @@ The core principle is **minimal interference**: trust Sentinel and Cluster Gossi
 - [E2E Testing](docs/E2E_TESTING.md) — running the test suite and manual chaos testing
 - [Test Cases](docs/TEST_CASES.md) — full list of covered scenarios and their status
 - [CLI Reference](docs/LRCTL.md) — `lrctl` / `kubectl lr` guide
+- [Development Guide](docs/DEVELOPMENT.md) — building from source, custom registry, local Kind workflow
 
 ## Behind the Name
 

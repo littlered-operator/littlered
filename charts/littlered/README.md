@@ -1,19 +1,22 @@
-# LittleRed Operator Helm Chart
+# LittleRed Helm Chart
 
 Helm chart for deploying the LittleRed operator to Kubernetes.
 
 ## Prerequisites
 
 - Kubernetes 1.28+
-- Helm 3.x
+- Helm 3.13+
 
 ## Installation
 
 ```bash
-helm install littlered ./charts/littlered \
+helm install littlered oci://ghcr.io/littlered-operator/charts/littlered \
+  --version <version> \
   -n littlered-system \
   --create-namespace
 ```
+
+Find available versions on the [releases page](https://github.com/littlered-operator/littlered-operator/releases).
 
 ## Uninstallation
 
@@ -45,60 +48,40 @@ kubectl delete crd littlereds.chuck-chuck-chuck.net
 | `tolerations` | Tolerations for operator pods | `[]` |
 | `affinity` | Affinity rules for operator pods | `{}` |
 | `leaderElection.enabled` | Enable leader election | `true` |
+| `metrics.enabled` | Expose Prometheus metrics endpoint | `false` |
+| `metrics.port` | Metrics port | `8080` |
+| `metrics.serviceMonitor.enabled` | Create a Prometheus Operator ServiceMonitor | `false` |
+| `networkPolicy.enabled` | Restrict metrics port access to labeled namespaces | `false` |
 
 ## Examples
 
-### Basic Installation
+### Custom image (e.g. private registry)
 
 ```bash
-helm install littlered ./charts/littlered -n littlered-system --create-namespace
-```
-
-### Custom Image
-
-```bash
-helm install littlered ./charts/littlered \
+helm install littlered oci://ghcr.io/littlered-operator/charts/littlered \
+  --version <version> \
   -n littlered-system \
   --create-namespace \
   --set image.repository=myregistry/littlered \
   --set image.tag=v0.1.0
 ```
 
-### With Custom Resources
+### With Prometheus monitoring
 
 ```bash
-helm install littlered ./charts/littlered \
+helm install littlered oci://ghcr.io/littlered-operator/charts/littlered \
+  --version <version> \
   -n littlered-system \
   --create-namespace \
-  --set resources.limits.memory=256Mi \
-  --set resources.requests.memory=128Mi
+  --set metrics.enabled=true \
+  --set metrics.serviceMonitor.enabled=true
 ```
 
-### Using a Values File
-
-Create `my-values.yaml`:
-
-```yaml
-image:
-  repository: myregistry/littlered
-  tag: v0.1.0
-
-resources:
-  limits:
-    cpu: 1
-    memory: 256Mi
-  requests:
-    cpu: 100m
-    memory: 128Mi
-
-nodeSelector:
-  kubernetes.io/os: linux
-```
-
-Install:
+### Using a values file
 
 ```bash
-helm install littlered ./charts/littlered \
+helm install littlered oci://ghcr.io/littlered-operator/charts/littlered \
+  --version <version> \
   -n littlered-system \
   --create-namespace \
   -f my-values.yaml
@@ -114,7 +97,7 @@ kind: LittleRed
 metadata:
   name: store
 spec:
-  mode: standalone  # or sentinel
+  mode: standalone  # standalone | sentinel | cluster
 ```
 
 See the [main README](../../README.md) for full LittleRed CR documentation.
@@ -122,7 +105,9 @@ See the [main README](../../README.md) for full LittleRed CR documentation.
 ## Upgrading
 
 ```bash
-helm upgrade littlered ./charts/littlered -n littlered-system
+helm upgrade littlered oci://ghcr.io/littlered-operator/charts/littlered \
+  --version <new-version> \
+  -n littlered-system
 ```
 
 ## RBAC
