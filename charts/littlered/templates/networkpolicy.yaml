@@ -2,13 +2,13 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "littlered-operator.fullname" . }}-allow-metrics
+  name: {{ include "littlered.fullname" . }}-allow-metrics
   labels:
-    {{- include "littlered-operator.labels" . | nindent 4 }}
+    {{- include "littlered.labels" . | nindent 4 }}
 spec:
   podSelector:
     matchLabels:
-      {{- include "littlered-operator.selectorLabels" . | nindent 6 }}
+      {{- include "littlered.selectorLabels" . | nindent 6 }}
       control-plane: controller-manager
   policyTypes:
     - Ingress

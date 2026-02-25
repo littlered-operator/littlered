@@ -2,9 +2,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "littlered-operator.fullname" . }}-metrics
+  name: {{ include "littlered.fullname" . }}-metrics
   labels:
-    {{- include "littlered-operator.labels" . | nindent 4 }}
+    {{- include "littlered.labels" . | nindent 4 }}
     control-plane: controller-manager
 spec:
   ports:
@@ -13,6 +13,6 @@ spec:
       protocol: TCP
       targetPort: {{ .Values.metrics.port }}
   selector:
-    {{- include "littlered-operator.selectorLabels" . | nindent 4 }}
+    {{- include "littlered.selectorLabels" . | nindent 4 }}
     control-plane: controller-manager
 {{- end }}
