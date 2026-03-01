@@ -129,7 +129,7 @@ type TestClient struct {
 
 // expectedValue computes the expected value for a given key (sha256 hash)
 func expectedValue(key int64) string {
-	hash := sha256.Sum256([]byte(fmt.Sprintf("%d", key)))
+	hash := sha256.Sum256(fmt.Appendf(nil, "%d", key))
 	return hex.EncodeToString(hash[:])
 }
 
@@ -324,9 +324,7 @@ func (tc *TestClient) doRead() {
 
 // Start begins the test client operations
 func (tc *TestClient) Start() {
-	tc.wg.Add(1)
-	go func() {
-		defer tc.wg.Done()
+	tc.wg.Go(func() {
 
 		ticker := time.NewTicker(tc.writeRate)
 		defer ticker.Stop()
@@ -351,7 +349,7 @@ func (tc *TestClient) Start() {
 				}()
 			}
 		}
-	}()
+	})
 }
 
 // Stop stops the test client and waits for pending operations

@@ -19,6 +19,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -41,22 +42,12 @@ type ClusterNodeInfo struct {
 
 // IsMaster returns true if this node is a master
 func (n *ClusterNodeInfo) IsMaster() bool {
-	for _, flag := range n.Flags {
-		if flag == "master" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(n.Flags, "master")
 }
 
 // IsReplica returns true if this node is a replica
 func (n *ClusterNodeInfo) IsReplica() bool {
-	for _, flag := range n.Flags {
-		if flag == "slave" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(n.Flags, "slave")
 }
 
 // ClusterInfo contains parsed CLUSTER INFO output
@@ -241,8 +232,8 @@ func (c *ClusterClient) ClusterFailoverTakeover(ctx context.Context, addr string
 // ParseClusterNodes parses the output of CLUSTER NODES command
 // Format: <id> <ip:port@cport,hostname> <flags> <master> <ping-sent> <pong-recv> <config-epoch> <link-state> <slot> ...
 func ParseClusterNodes(output string) []ClusterNodeInfo {
-	var nodes []ClusterNodeInfo
 	lines := strings.Split(strings.TrimSpace(output), "\n")
+	nodes := make([]ClusterNodeInfo, 0, len(lines))
 
 	for _, line := range lines {
 		if line == "" {
@@ -298,9 +289,9 @@ func ParseClusterNodes(output string) []ClusterNodeInfo {
 // ParseClusterInfo parses the output of CLUSTER INFO command
 func ParseClusterInfo(output string) *ClusterInfo {
 	info := &ClusterInfo{}
-	lines := strings.Split(strings.TrimSpace(output), "\n")
+	lines := strings.SplitSeq(strings.TrimSpace(output), "\n")
 
-	for _, line := range lines {
+	for line := range lines {
 		line = strings.TrimSpace(line)
 		parts := strings.SplitN(line, ":", 2)
 		if len(parts) != 2 {
@@ -361,7 +352,7 @@ func GenerateSlotRanges(shards int) []struct {
 	}, shards)
 
 	start := 0
-	for i := 0; i < shards; i++ {
+	for i := range shards {
 		count := slotsPerShard
 		if i < remainder {
 			count++ // Distribute remainder slots

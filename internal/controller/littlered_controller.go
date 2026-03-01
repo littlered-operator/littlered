@@ -156,12 +156,12 @@ func (r *LittleRedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	})
 
 	// Reconcile based on mode
-	if littleRed.Spec.Mode != "sentinel" {
+	if littleRed.Spec.Mode != ComponentSentinel {
 		r.stopSentinelMonitor(req.NamespacedName)
 	}
 
 	// Initialize BootstrapRequired for Sentinel mode
-	if littleRed.Spec.Mode == "sentinel" && littleRed.Status.Phase == "" && !littleRed.Status.BootstrapRequired {
+	if littleRed.Spec.Mode == ComponentSentinel && littleRed.Status.Phase == "" && !littleRed.Status.BootstrapRequired {
 		log.Info("Initializing new Sentinel cluster: setting bootstrapRequired flag")
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			latest := &littleredv1alpha1.LittleRed{}
@@ -186,9 +186,9 @@ func (r *LittleRedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	switch littleRed.Spec.Mode {
 	case "standalone":
 		return r.reconcileStandalone(ctx, littleRed)
-	case "sentinel":
+	case ComponentSentinel:
 		return r.reconcileSentinel(ctx, littleRed)
-	case "cluster":
+	case ComponentCluster:
 		return r.reconcileCluster(ctx, littleRed)
 	default:
 		return r.setFailedStatus(ctx, littleRed, "InvalidMode", fmt.Sprintf("Unknown mode: %s", littleRed.Spec.Mode))
@@ -304,7 +304,7 @@ func (r *LittleRedReconciler) validateSpec(ctx context.Context, littleRed *littl
 	}
 
 	// Validate cluster config
-	if littleRed.Spec.Mode == "cluster" {
+	if littleRed.Spec.Mode == ComponentCluster {
 		if err := r.validateClusterSpec(littleRed); err != nil {
 			return err
 		}
@@ -587,6 +587,8 @@ func (r *LittleRedReconciler) reconcileMasterService(ctx context.Context, little
 
 // reconcileSentinelCluster gathers ground truth from all pods (Redis and Sentinel)
 // and performs atomic healing of the entire cluster state.
+//
+//nolint:gocyclo
 func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
 	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 
@@ -1008,6 +1010,8 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 }
 
 // updateSentinelStatus updates the LittleRed status for sentinel mode
+//
+//nolint:gocyclo
 func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
 	log := r.getLogger(ctx, lr, LogCategoryRecon)
 	stateLog := r.getLogger(ctx, lr, LogCategoryState)
@@ -1220,7 +1224,7 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *litt
 	}
 
 	// Periodically requeue to update master info, unless disabled via annotation
-	if latest.Annotations[AnnotationDisablePolling] == "true" {
+	if latest.Annotations[AnnotationDisablePolling] == annotationTrue {
 		log.Info("Sentinel polling disabled via annotation")
 		return ctrl.Result{}, nil
 	}
@@ -1296,7 +1300,7 @@ func (r *LittleRedReconciler) apply(ctx context.Context, owner *littleredv1alpha
 		return err
 	}
 	obj.GetObjectKind().SetGroupVersionKind(gvk)
-	return r.Patch(ctx, obj, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership)
+	return r.Patch(ctx, obj, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership) //nolint:staticcheck
 }
 
 // getRedisPassword retrieves the Redis password from the secret if auth is enabled

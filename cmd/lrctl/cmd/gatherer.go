@@ -19,6 +19,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"k8s.io/client-go/kubernetes"
@@ -36,7 +37,8 @@ type cliGatherer struct {
 }
 
 func (g *cliGatherer) GetRedisState(ctx context.Context, podName, ip string) (*redisclient.RedisNodeState, error) {
-	stdout, _, err := k8s.Exec(g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.RedisContainer, []string{"redis-cli", "info", "replication"})
+	cmd := []string{"redis-cli", "info", "replication"}
+	stdout, _, err := k8s.Exec(ctx, g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.RedisContainer, cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +53,7 @@ func (g *cliGatherer) GetRedisState(ctx context.Context, podName, ip string) (*r
 	}
 
 	offsetStr := ""
-	if role == "master" {
+	if role == roleMaster {
 		offsetStr = redisclient.ParseInfoField(stdout, "master_repl_offset")
 	} else {
 		offsetStr = redisclient.ParseInfoField(stdout, "slave_repl_offset")
@@ -72,9 +74,12 @@ func (g *cliGatherer) GetRedisState(ctx context.Context, podName, ip string) (*r
 	}, nil
 }
 
-func (g *cliGatherer) GetSentinelState(ctx context.Context, podName, ip string) (*redisclient.SentinelNodeState, error) {
+func (g *cliGatherer) GetSentinelState(
+	ctx context.Context, podName, ip string,
+) (*redisclient.SentinelNodeState, error) {
 	// Get Master
-	stdout, _, err := k8s.Exec(g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.SentinelContainer, []string{"redis-cli", "-p", "26379", "sentinel", "master", "mymaster"})
+	masterCmd := []string{"redis-cli", "-p", "26379", "sentinel", "master", "mymaster"}
+	stdout, _, err := k8s.Exec(ctx, g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.SentinelContainer, masterCmd)
 	if err != nil {
 		if strings.Contains(err.Error(), "ERR No such master") {
 			return &redisclient.SentinelNodeState{
@@ -109,7 +114,9 @@ func (g *cliGatherer) GetSentinelState(ctx context.Context, podName, ip string) 
 	}
 
 	// Get Replicas
-	stdout, _, err = k8s.Exec(g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.SentinelContainer, []string{"redis-cli", "-p", "26379", "sentinel", "replicas", "mymaster"})
+	replicasCmd := []string{"redis-cli", "-p", "26379", "sentinel", "replicas", "mymaster"}
+	stdout, _, err = k8s.Exec(
+		ctx, g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.SentinelContainer, replicasCmd)
 	if err == nil {
 		redisIPs := g.cCtx.GetRedisIPs()
 		for _, rip := range redisIPs {
@@ -125,13 +132,7 @@ func (g *cliGatherer) GetSentinelState(ctx context.Context, podName, ip string) 
 				// Resolve hostname to IP if needed
 				resolvedIP := g.resolveIdentityToIP(potentialIP)
 
-				isValid := false
-				for _, rip := range redisIPs {
-					if rip == resolvedIP {
-						isValid = true
-						break
-					}
-				}
+				isValid := slices.Contains(redisIPs, resolvedIP)
 				if !isValid {
 					state.Replicas = append(state.Replicas, redisclient.ReplicaInfo{IP: resolvedIP, Flags: "s_down,ghost"})
 				}
@@ -192,7 +193,8 @@ func isIP(s string) bool {
 }
 
 func (g *cliGatherer) GetClusterID(ctx context.Context, podName, ip string) (string, error) {
-	stdout, _, err := k8s.Exec(g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.RedisContainer, []string{"redis-cli", "cluster", "myid"})
+	cmd := []string{"redis-cli", "cluster", "myid"}
+	stdout, _, err := k8s.Exec(ctx, g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.RedisContainer, cmd)
 	if err != nil {
 		return "", err
 	}
@@ -200,7 +202,8 @@ func (g *cliGatherer) GetClusterID(ctx context.Context, podName, ip string) (str
 }
 
 func (g *cliGatherer) GetClusterInfo(ctx context.Context, podName, ip string) (*redisclient.ClusterInfo, error) {
-	stdout, _, err := k8s.Exec(g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.RedisContainer, []string{"redis-cli", "cluster", "info"})
+	cmd := []string{"redis-cli", "cluster", "info"}
+	stdout, _, err := k8s.Exec(ctx, g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.RedisContainer, cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +211,8 @@ func (g *cliGatherer) GetClusterInfo(ctx context.Context, podName, ip string) (*
 }
 
 func (g *cliGatherer) GetClusterNodes(ctx context.Context, podName, ip string) ([]redisclient.ClusterNodeInfo, error) {
-	stdout, _, err := k8s.Exec(g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.RedisContainer, []string{"redis-cli", "cluster", "nodes"})
+	cmd := []string{"redis-cli", "cluster", "nodes"}
+	stdout, _, err := k8s.Exec(ctx, g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.RedisContainer, cmd)
 	if err != nil {
 		return nil, err
 	}

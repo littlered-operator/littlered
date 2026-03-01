@@ -63,7 +63,7 @@ var inspectCmd = &cobra.Command{
 			for _, pod := range cCtx.SentinelPods {
 				entry := sentinelPodJSON{Pod: pod.Name, IP: pod.Status.PodIP}
 				cmdArgs := []string{"redis-cli", "-p", "26379", "sentinel", "master", "mymaster"}
-				stdout, stderr, err := k8s.Exec(coreClient, config, cCtx.Namespace, pod.Name, cCtx.SentinelContainer, cmdArgs)
+				stdout, stderr, err := k8s.Exec(ctx, coreClient, config, cCtx.Namespace, pod.Name, cCtx.SentinelContainer, cmdArgs)
 				if err != nil {
 					entry.Error = fmt.Sprintf("%v (stderr: %q)", err, stderr)
 				} else {
@@ -77,17 +77,17 @@ var inspectCmd = &cobra.Command{
 			for _, pod := range cCtx.RedisPods {
 				entry := redisPodJSON{Pod: pod.Name, IP: pod.Status.PodIP}
 				var cmdArgs []string
-				if cCtx.Mode == "cluster" {
+				if cCtx.Mode == modeCluster {
 					cmdArgs = []string{"sh", "-c", "redis-cli cluster nodes && echo --- && redis-cli cluster info"}
 				} else {
 					cmdArgs = []string{"redis-cli", "info", "replication"}
 				}
-				stdout, stderr, err := k8s.Exec(coreClient, config, cCtx.Namespace, pod.Name, cCtx.RedisContainer, cmdArgs)
+				stdout, stderr, err := k8s.Exec(ctx, coreClient, config, cCtx.Namespace, pod.Name, cCtx.RedisContainer, cmdArgs)
 				if err != nil {
 					entry.Error = fmt.Sprintf("%v (stderr: %q)", err, stderr)
 				} else {
 					entry.raw = stdout
-					if cCtx.Mode == "cluster" {
+					if cCtx.Mode == modeCluster {
 						parts := strings.SplitN(stdout, "\n---\n", 2)
 						entry.ClusterNodes = parseClusterNodesJSON(parts[0])
 						if len(parts) > 1 {
@@ -146,8 +146,8 @@ var inspectCmd = &cobra.Command{
 }
 
 func printLines(stdout string) {
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(strings.TrimSpace(stdout), "\n")
+	for line := range lines {
 		fmt.Printf("  %s\n", line)
 	}
 }

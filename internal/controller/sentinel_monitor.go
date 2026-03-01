@@ -34,7 +34,7 @@ func (r *LittleRedReconciler) ensureSentinelMonitor(ctx context.Context, littleR
 	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 	nn := types.NamespacedName{Name: littleRed.Name, Namespace: littleRed.Namespace}
 
-	if littleRed.Annotations[AnnotationDisableEventMonitoring] == "true" {
+	if littleRed.Annotations[AnnotationDisableEventMonitoring] == annotationTrue {
 		log.Info("Sentinel event monitoring disabled via annotation")
 		r.stopSentinelMonitor(nn)
 		return

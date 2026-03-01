@@ -27,6 +27,16 @@ import (
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 )
 
+const (
+	testLRName       = "my-cache"
+	testSentinelName = testLRName + "-sentinel"
+	testReplicasName = testLRName + "-replicas"
+	testNamespace    = "test-ns"
+	testTLSSecret    = "tls-secret"
+	testMaxmemPolicy = "volatile-lru"
+	portMetrics      = "metrics"
+)
+
 // Helper to create a minimal LittleRed for testing
 func newTestLittleRed(name, namespace string) *littleredv1alpha1.LittleRed {
 	lr := &littleredv1alpha1.LittleRed{
@@ -46,7 +56,7 @@ func newTestLittleRed(name, namespace string) *littleredv1alpha1.LittleRed {
 // ============================================================================
 
 func TestConfigMapName(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "default")
+	lr := newTestLittleRed(testLRName, "default")
 	expected := "my-cache-config"
 	if got := configMapName(lr); got != expected {
 		t.Errorf("configMapName() = %q, want %q", got, expected)
@@ -54,7 +64,7 @@ func TestConfigMapName(t *testing.T) {
 }
 
 func TestSentinelConfigMapName(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "default")
+	lr := newTestLittleRed(testLRName, "default")
 	expected := "my-cache-sentinel-config"
 	if got := sentinelConfigMapName(lr); got != expected {
 		t.Errorf("sentinelConfigMapName() = %q, want %q", got, expected)
@@ -62,7 +72,7 @@ func TestSentinelConfigMapName(t *testing.T) {
 }
 
 func TestStatefulSetName(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "default")
+	lr := newTestLittleRed(testLRName, "default")
 	expected := "my-cache-redis"
 	if got := statefulSetName(lr); got != expected {
 		t.Errorf("statefulSetName() = %q, want %q", got, expected)
@@ -70,32 +80,32 @@ func TestStatefulSetName(t *testing.T) {
 }
 
 func TestSentinelStatefulSetName(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "default")
-	expected := "my-cache-sentinel"
+	lr := newTestLittleRed(testLRName, "default")
+	expected := testSentinelName
 	if got := sentinelStatefulSetName(lr); got != expected {
 		t.Errorf("sentinelStatefulSetName() = %q, want %q", got, expected)
 	}
 }
 
 func TestServiceName(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "default")
-	expected := "my-cache"
+	lr := newTestLittleRed(testLRName, "default")
+	expected := testLRName
 	if got := serviceName(lr); got != expected {
 		t.Errorf("serviceName() = %q, want %q", got, expected)
 	}
 }
 
 func TestReplicasServiceName(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "default")
-	expected := "my-cache-replicas"
+	lr := newTestLittleRed(testLRName, "default")
+	expected := testReplicasName
 	if got := replicasServiceName(lr); got != expected {
 		t.Errorf("replicasServiceName() = %q, want %q", got, expected)
 	}
 }
 
 func TestSentinelServiceName(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "default")
-	expected := "my-cache-sentinel"
+	lr := newTestLittleRed(testLRName, "default")
+	expected := testSentinelName
 	if got := sentinelServiceName(lr); got != expected {
 		t.Errorf("sentinelServiceName() = %q, want %q", got, expected)
 	}
@@ -106,7 +116,7 @@ func TestSentinelServiceName(t *testing.T) {
 // ============================================================================
 
 func TestCommonLabels(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "default")
+	lr := newTestLittleRed(testLRName, "default")
 	labels := commonLabels(lr)
 
 	tests := []struct {
@@ -114,7 +124,7 @@ func TestCommonLabels(t *testing.T) {
 		expected string
 	}{
 		{"app.kubernetes.io/name", "littlered"},
-		{"app.kubernetes.io/instance", "my-cache"},
+		{"app.kubernetes.io/instance", testLRName},
 		{"app.kubernetes.io/managed-by", "littlered-operator"},
 		{"app.kubernetes.io/version", "8.0"},
 		{"chuck-chuck-chuck.net/mode", "standalone"},
@@ -130,13 +140,13 @@ func TestCommonLabels(t *testing.T) {
 }
 
 func TestSelectorLabels(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "default")
+	lr := newTestLittleRed(testLRName, "default")
 	labels := selectorLabels(lr)
 
 	if labels["app.kubernetes.io/name"] != "littlered" {
 		t.Errorf("selectorLabels() missing app.kubernetes.io/name")
 	}
-	if labels["app.kubernetes.io/instance"] != "my-cache" {
+	if labels["app.kubernetes.io/instance"] != testLRName {
 		t.Errorf("selectorLabels() missing app.kubernetes.io/instance")
 	}
 	// Should not have other labels
@@ -146,31 +156,31 @@ func TestSelectorLabels(t *testing.T) {
 }
 
 func TestRedisSelectorLabels(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "default")
+	lr := newTestLittleRed(testLRName, "default")
 	labels := redisSelectorLabels(lr)
 
-	if labels["app.kubernetes.io/component"] != "redis" {
+	if labels["app.kubernetes.io/component"] != ComponentRedis {
 		t.Errorf("redisSelectorLabels() missing component=redis")
 	}
 }
 
 func TestSentinelSelectorLabels(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "default")
+	lr := newTestLittleRed(testLRName, "default")
 	labels := sentinelSelectorLabels(lr)
 
-	if labels["app.kubernetes.io/component"] != "sentinel" {
+	if labels["app.kubernetes.io/component"] != ComponentSentinel {
 		t.Errorf("sentinelSelectorLabels() missing component=sentinel")
 	}
 }
 
 func TestMasterSelectorLabels(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "default")
+	lr := newTestLittleRed(testLRName, "default")
 	labels := masterSelectorLabels(lr)
 
 	if labels[LabelRole] != RoleMaster {
 		t.Errorf("masterSelectorLabels() missing role=master")
 	}
-	if labels["app.kubernetes.io/component"] != "redis" {
+	if labels["app.kubernetes.io/component"] != ComponentRedis {
 		t.Errorf("masterSelectorLabels() missing component=redis")
 	}
 }
@@ -180,15 +190,15 @@ func TestMasterSelectorLabels(t *testing.T) {
 // ============================================================================
 
 func TestBuildConfigMap(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	cm := buildConfigMap(lr)
 
 	// Check metadata
 	if cm.Name != "my-cache-config" {
 		t.Errorf("ConfigMap name = %q, want %q", cm.Name, "my-cache-config")
 	}
-	if cm.Namespace != "test-ns" {
-		t.Errorf("ConfigMap namespace = %q, want %q", cm.Namespace, "test-ns")
+	if cm.Namespace != testNamespace {
+		t.Errorf("ConfigMap namespace = %q, want %q", cm.Namespace, testNamespace)
 	}
 
 	// Check data has redis.conf
@@ -219,7 +229,7 @@ func TestBuildRedisConfig(t *testing.T) {
 			name: "with TLS enabled",
 			setupLR: func(lr *littleredv1alpha1.LittleRed) {
 				lr.Spec.TLS.Enabled = true
-				lr.Spec.TLS.ExistingSecret = "tls-secret"
+				lr.Spec.TLS.ExistingSecret = testTLSSecret
 			},
 			mustHave: []string{
 				"tls-port 6379",
@@ -232,8 +242,8 @@ func TestBuildRedisConfig(t *testing.T) {
 			name: "with TLS client auth",
 			setupLR: func(lr *littleredv1alpha1.LittleRed) {
 				lr.Spec.TLS.Enabled = true
-				lr.Spec.TLS.ExistingSecret = "tls-secret"
-				lr.Spec.TLS.CACertSecret = "tls-secret" // CA is in the same secret → mounted at /tls
+				lr.Spec.TLS.ExistingSecret = testTLSSecret
+				lr.Spec.TLS.CACertSecret = testTLSSecret // CA is in the same secret → mounted at /tls
 				lr.Spec.TLS.ClientAuth = true
 			},
 			mustHave: []string{
@@ -253,7 +263,7 @@ func TestBuildRedisConfig(t *testing.T) {
 		{
 			name: "with custom maxmemory policy",
 			setupLR: func(lr *littleredv1alpha1.LittleRed) {
-				lr.Spec.Config.MaxmemoryPolicy = "volatile-lru"
+				lr.Spec.Config.MaxmemoryPolicy = testMaxmemPolicy
 			},
 			mustHave: []string{
 				"maxmemory-policy volatile-lru",
@@ -316,7 +326,7 @@ func TestComputeConfigHash(t *testing.T) {
 func TestConfigHashChangesWithConfig(t *testing.T) {
 	lr1 := newTestLittleRed("test", "default")
 	lr2 := newTestLittleRed("test", "default")
-	lr2.Spec.Config.MaxmemoryPolicy = "volatile-lru"
+	lr2.Spec.Config.MaxmemoryPolicy = testMaxmemPolicy
 
 	config1 := buildRedisConfig(lr1)
 	config2 := buildRedisConfig(lr2)
@@ -334,15 +344,15 @@ func TestConfigHashChangesWithConfig(t *testing.T) {
 // ============================================================================
 
 func TestBuildStatefulSet(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	sts := buildStatefulSet(lr)
 
 	// Check metadata
 	if sts.Name != "my-cache-redis" {
 		t.Errorf("StatefulSet name = %q, want %q", sts.Name, "my-cache-redis")
 	}
-	if sts.Namespace != "test-ns" {
-		t.Errorf("StatefulSet namespace = %q, want %q", sts.Namespace, "test-ns")
+	if sts.Namespace != testNamespace {
+		t.Errorf("StatefulSet namespace = %q, want %q", sts.Namespace, testNamespace)
 	}
 
 	// Check replicas
@@ -351,8 +361,8 @@ func TestBuildStatefulSet(t *testing.T) {
 	}
 
 	// Check serviceName
-	if sts.Spec.ServiceName != "my-cache" {
-		t.Errorf("StatefulSet serviceName = %q, want %q", sts.Spec.ServiceName, "my-cache")
+	if sts.Spec.ServiceName != testLRName {
+		t.Errorf("StatefulSet serviceName = %q, want %q", sts.Spec.ServiceName, testLRName)
 	}
 
 	// Check containers (should have redis + exporter by default)
@@ -364,7 +374,7 @@ func TestBuildStatefulSet(t *testing.T) {
 	// Verify redis container exists
 	var hasRedis bool
 	for _, c := range containers {
-		if c.Name == "redis" {
+		if c.Name == ComponentRedis {
 			hasRedis = true
 			// Check image
 			if c.Image != "docker.io/valkey/valkey:8.0" {
@@ -402,9 +412,9 @@ func TestBuildStatefulSet(t *testing.T) {
 }
 
 func TestBuildStatefulSetConfigHashChangesOnConfigChange(t *testing.T) {
-	lr1 := newTestLittleRed("my-cache", "test-ns")
-	lr2 := newTestLittleRed("my-cache", "test-ns")
-	lr2.Spec.Config.MaxmemoryPolicy = "volatile-lru"
+	lr1 := newTestLittleRed(testLRName, testNamespace)
+	lr2 := newTestLittleRed(testLRName, testNamespace)
+	lr2.Spec.Config.MaxmemoryPolicy = testMaxmemPolicy
 
 	sts1 := buildStatefulSet(lr1)
 	sts2 := buildStatefulSet(lr2)
@@ -418,7 +428,7 @@ func TestBuildStatefulSetConfigHashChangesOnConfigChange(t *testing.T) {
 }
 
 func TestBuildStatefulSetWithoutMetrics(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	enabled := false
 	lr.Spec.Metrics.Enabled = &enabled
 	sts := buildStatefulSet(lr)
@@ -428,13 +438,13 @@ func TestBuildStatefulSetWithoutMetrics(t *testing.T) {
 	if len(containers) != 1 {
 		t.Errorf("StatefulSet has %d containers, want 1 (redis only)", len(containers))
 	}
-	if containers[0].Name != "redis" {
+	if containers[0].Name != ComponentRedis {
 		t.Errorf("Container name = %q, want redis", containers[0].Name)
 	}
 }
 
 func TestBuildStatefulSetWithAuth(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.Auth.Enabled = true
 	lr.Spec.Auth.ExistingSecret = "redis-password"
 	sts := buildStatefulSet(lr)
@@ -442,7 +452,7 @@ func TestBuildStatefulSetWithAuth(t *testing.T) {
 	// Find redis container
 	var redisContainer *corev1.Container
 	for i := range sts.Spec.Template.Spec.Containers {
-		if sts.Spec.Template.Spec.Containers[i].Name == "redis" {
+		if sts.Spec.Template.Spec.Containers[i].Name == ComponentRedis {
 			redisContainer = &sts.Spec.Template.Spec.Containers[i]
 			break
 		}
@@ -471,7 +481,7 @@ func TestBuildStatefulSetWithAuth(t *testing.T) {
 }
 
 func TestBuildStatefulSetWithCustomResources(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.Resources = corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("500m"),
@@ -487,7 +497,7 @@ func TestBuildStatefulSetWithCustomResources(t *testing.T) {
 	// Find redis container
 	var redisContainer *corev1.Container
 	for i := range sts.Spec.Template.Spec.Containers {
-		if sts.Spec.Template.Spec.Containers[i].Name == "redis" {
+		if sts.Spec.Template.Spec.Containers[i].Name == ComponentRedis {
 			redisContainer = &sts.Spec.Template.Spec.Containers[i]
 			break
 		}
@@ -511,15 +521,15 @@ func TestBuildStatefulSetWithCustomResources(t *testing.T) {
 // ============================================================================
 
 func TestBuildService(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	svc := buildService(lr)
 
 	// Check metadata
-	if svc.Name != "my-cache" {
-		t.Errorf("Service name = %q, want %q", svc.Name, "my-cache")
+	if svc.Name != testLRName {
+		t.Errorf("Service name = %q, want %q", svc.Name, testLRName)
 	}
-	if svc.Namespace != "test-ns" {
-		t.Errorf("Service namespace = %q, want %q", svc.Namespace, "test-ns")
+	if svc.Namespace != testNamespace {
+		t.Errorf("Service namespace = %q, want %q", svc.Namespace, testNamespace)
 	}
 
 	// Check type
@@ -534,10 +544,10 @@ func TestBuildService(t *testing.T) {
 
 	var hasRedisPort, hasMetricsPort bool
 	for _, p := range svc.Spec.Ports {
-		if p.Name == "redis" && p.Port == 6379 {
+		if p.Name == ComponentRedis && p.Port == 6379 {
 			hasRedisPort = true
 		}
-		if p.Name == "metrics" && p.Port == 9121 {
+		if p.Name == portMetrics && p.Port == 9121 {
 			hasMetricsPort = true
 		}
 	}
@@ -550,7 +560,7 @@ func TestBuildService(t *testing.T) {
 }
 
 func TestBuildServiceWithoutMetrics(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	enabled := false
 	lr.Spec.Metrics.Enabled = &enabled
 	svc := buildService(lr)
@@ -559,13 +569,13 @@ func TestBuildServiceWithoutMetrics(t *testing.T) {
 	if len(svc.Spec.Ports) != 1 {
 		t.Errorf("Service has %d ports, want 1", len(svc.Spec.Ports))
 	}
-	if svc.Spec.Ports[0].Name != "redis" {
+	if svc.Spec.Ports[0].Name != ComponentRedis {
 		t.Errorf("Port name = %q, want redis", svc.Spec.Ports[0].Name)
 	}
 }
 
 func TestBuildServiceWithCustomLabels(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.Service.Labels = map[string]string{
 		"custom-label": "custom-value",
 	}
@@ -581,7 +591,7 @@ func TestBuildServiceWithCustomLabels(t *testing.T) {
 // ============================================================================
 
 func TestBuildVolumes(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	volumes := buildVolumes(lr)
 
 	// Should have config and data volumes
@@ -613,9 +623,9 @@ func TestBuildVolumes(t *testing.T) {
 }
 
 func TestBuildVolumesWithTLS(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.TLS.Enabled = true
-	lr.Spec.TLS.ExistingSecret = "tls-secret"
+	lr.Spec.TLS.ExistingSecret = testTLSSecret
 	volumes := buildVolumes(lr)
 
 	// Should have config, data, and tls volumes
@@ -627,7 +637,7 @@ func TestBuildVolumesWithTLS(t *testing.T) {
 	for _, v := range volumes {
 		if v.Name == "tls" {
 			hasTLS = true
-			if v.Secret == nil || v.Secret.SecretName != "tls-secret" {
+			if v.Secret == nil || v.Secret.SecretName != testTLSSecret {
 				t.Error("tls volume should reference tls-secret")
 			}
 		}
@@ -642,7 +652,7 @@ func TestBuildVolumesWithTLS(t *testing.T) {
 // ============================================================================
 
 func TestBuildLivenessProbe(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	probe := buildLivenessProbe(lr)
 
 	if probe.Exec == nil {
@@ -660,7 +670,7 @@ func TestBuildLivenessProbe(t *testing.T) {
 }
 
 func TestBuildLivenessProbeWithAuth(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.Auth.Enabled = true
 	probe := buildLivenessProbe(lr)
 
@@ -671,7 +681,7 @@ func TestBuildLivenessProbeWithAuth(t *testing.T) {
 }
 
 func TestBuildLivenessProbeWithTLS(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.TLS.Enabled = true
 	probe := buildLivenessProbe(lr)
 
@@ -686,7 +696,7 @@ func TestBuildLivenessProbeWithTLS(t *testing.T) {
 // ============================================================================
 
 func TestBuildSentinelLivenessProbe(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.Sentinel = &littleredv1alpha1.SentinelSpec{
 		Quorum:                2,
 		DownAfterMilliseconds: 5000,
@@ -727,7 +737,7 @@ func TestBuildSentinelLivenessProbe(t *testing.T) {
 
 func TestBuildSentinelLivenessProbeDefaultTimings(t *testing.T) {
 	// When Sentinel spec is nil, probe uses hardcoded defaults (30s + 180s + 15s buffer).
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	probe := buildSentinelLivenessProbe(lr)
 
 	// ceil((30000 + 180000 + 15000) / 10000) = ceil(22.5) = 23
@@ -737,7 +747,7 @@ func TestBuildSentinelLivenessProbeDefaultTimings(t *testing.T) {
 }
 
 func TestBuildSentinelLivenessProbeWithTLS(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.TLS.Enabled = true
 	probe := buildSentinelLivenessProbe(lr)
 
@@ -748,7 +758,7 @@ func TestBuildSentinelLivenessProbeWithTLS(t *testing.T) {
 }
 
 func TestBuildSentinelReadinessProbe(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	probe := buildSentinelReadinessProbe(lr)
 
 	if probe.Exec == nil {
@@ -781,7 +791,7 @@ func TestBuildSentinelReadinessProbe(t *testing.T) {
 }
 
 func TestBuildSentinelReadinessProbeWithTLS(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.TLS.Enabled = true
 	probe := buildSentinelReadinessProbe(lr)
 
@@ -797,8 +807,8 @@ func TestBuildSentinelConfig(t *testing.T) {
 	// Rule 0), so timing parameters (quorum, downAfterMs, failoverTimeout) are not baked
 	// into the config file. IP-only mode (ADR-001) means resolve/announce-hostnames are
 	// both set to "no".
-	lr := newTestLittleRed("my-cache", "test-ns")
-	lr.Spec.Mode = "sentinel"
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ComponentSentinel
 	lr.Spec.Sentinel = &littleredv1alpha1.SentinelSpec{
 		Quorum:                2,
 		DownAfterMilliseconds: 5000,
@@ -833,8 +843,8 @@ func TestBuildSentinelConfig(t *testing.T) {
 }
 
 func TestBuildSentinelConfigMap(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
-	lr.Spec.Mode = "sentinel"
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ComponentSentinel
 	cm := buildSentinelConfigMap(lr)
 
 	if cm.Name != "my-cache-sentinel-config" {
@@ -845,14 +855,14 @@ func TestBuildSentinelConfigMap(t *testing.T) {
 		t.Error("ConfigMap missing sentinel.conf key")
 	}
 
-	if cm.Labels["app.kubernetes.io/component"] != "sentinel" {
+	if cm.Labels["app.kubernetes.io/component"] != ComponentSentinel {
 		t.Error("ConfigMap missing component=sentinel label")
 	}
 }
 
 func TestBuildRedisStatefulSetSentinel(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
-	lr.Spec.Mode = "sentinel"
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ComponentSentinel
 	sts := buildRedisStatefulSetSentinel(lr)
 
 	// Check replicas (should be 3 for sentinel mode)
@@ -861,8 +871,8 @@ func TestBuildRedisStatefulSetSentinel(t *testing.T) {
 	}
 
 	// Check serviceName (should be headless replicas service)
-	if sts.Spec.ServiceName != "my-cache-replicas" {
-		t.Errorf("StatefulSet serviceName = %q, want %q", sts.Spec.ServiceName, "my-cache-replicas")
+	if sts.Spec.ServiceName != testReplicasName {
+		t.Errorf("StatefulSet serviceName = %q, want %q", sts.Spec.ServiceName, testReplicasName)
 	}
 
 	// Check PodManagementPolicy
@@ -871,7 +881,7 @@ func TestBuildRedisStatefulSetSentinel(t *testing.T) {
 	}
 
 	// Verify selector uses redisSelectorLabels
-	if sts.Spec.Selector.MatchLabels["app.kubernetes.io/component"] != "redis" {
+	if sts.Spec.Selector.MatchLabels["app.kubernetes.io/component"] != ComponentRedis {
 		t.Error("StatefulSet selector should have component=redis")
 	}
 
@@ -886,13 +896,13 @@ func TestBuildRedisStatefulSetSentinel(t *testing.T) {
 }
 
 func TestBuildSentinelStatefulSet(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
-	lr.Spec.Mode = "sentinel"
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ComponentSentinel
 	sts := buildSentinelStatefulSet(lr)
 
 	// Check name
-	if sts.Name != "my-cache-sentinel" {
-		t.Errorf("StatefulSet name = %q, want %q", sts.Name, "my-cache-sentinel")
+	if sts.Name != testSentinelName {
+		t.Errorf("StatefulSet name = %q, want %q", sts.Name, testSentinelName)
 	}
 
 	// Check replicas
@@ -901,8 +911,8 @@ func TestBuildSentinelStatefulSet(t *testing.T) {
 	}
 
 	// Check serviceName
-	if sts.Spec.ServiceName != "my-cache-sentinel" {
-		t.Errorf("StatefulSet serviceName = %q, want %q", sts.Spec.ServiceName, "my-cache-sentinel")
+	if sts.Spec.ServiceName != testSentinelName {
+		t.Errorf("StatefulSet serviceName = %q, want %q", sts.Spec.ServiceName, testSentinelName)
 	}
 
 	// Check container
@@ -910,14 +920,14 @@ func TestBuildSentinelStatefulSet(t *testing.T) {
 	if len(containers) != 1 {
 		t.Errorf("StatefulSet has %d containers, want 1", len(containers))
 	}
-	if containers[0].Name != "sentinel" {
+	if containers[0].Name != ComponentSentinel {
 		t.Errorf("Container name = %q, want sentinel", containers[0].Name)
 	}
 
 	// Check sentinel port
 	var hasSentinelPort bool
 	for _, p := range containers[0].Ports {
-		if p.Name == "sentinel" && p.ContainerPort == 26379 {
+		if p.Name == ComponentSentinel && p.ContainerPort == 26379 {
 			hasSentinelPort = true
 		}
 	}
@@ -936,13 +946,13 @@ func TestBuildSentinelStatefulSet(t *testing.T) {
 }
 
 func TestBuildMasterService(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
-	lr.Spec.Mode = "sentinel"
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ComponentSentinel
 	svc := buildMasterService(lr)
 
 	// Check name (same as standalone)
-	if svc.Name != "my-cache" {
-		t.Errorf("Service name = %q, want %q", svc.Name, "my-cache")
+	if svc.Name != testLRName {
+		t.Errorf("Service name = %q, want %q", svc.Name, testLRName)
 	}
 
 	// Check selector includes role=master
@@ -952,13 +962,13 @@ func TestBuildMasterService(t *testing.T) {
 }
 
 func TestBuildReplicasHeadlessService(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
-	lr.Spec.Mode = "sentinel"
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ComponentSentinel
 	svc := buildReplicasHeadlessService(lr)
 
 	// Check name
-	if svc.Name != "my-cache-replicas" {
-		t.Errorf("Service name = %q, want %q", svc.Name, "my-cache-replicas")
+	if svc.Name != testReplicasName {
+		t.Errorf("Service name = %q, want %q", svc.Name, testReplicasName)
 	}
 
 	// Check ClusterIP is None (headless)
@@ -973,13 +983,13 @@ func TestBuildReplicasHeadlessService(t *testing.T) {
 }
 
 func TestBuildSentinelHeadlessService(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
-	lr.Spec.Mode = "sentinel"
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ComponentSentinel
 	svc := buildSentinelHeadlessService(lr)
 
 	// Check name
-	if svc.Name != "my-cache-sentinel" {
-		t.Errorf("Service name = %q, want %q", svc.Name, "my-cache-sentinel")
+	if svc.Name != testSentinelName {
+		t.Errorf("Service name = %q, want %q", svc.Name, testSentinelName)
 	}
 
 	// Check ClusterIP is None (headless)
@@ -998,31 +1008,31 @@ func TestBuildSentinelHeadlessService(t *testing.T) {
 // ============================================================================
 
 func TestBuildServiceMonitor(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.Metrics.ServiceMonitor.Enabled = true
 	sm := buildServiceMonitor(lr)
 
 	// Check name
-	if sm.Name != "my-cache" {
-		t.Errorf("ServiceMonitor name = %q, want %q", sm.Name, "my-cache")
+	if sm.Name != testLRName {
+		t.Errorf("ServiceMonitor name = %q, want %q", sm.Name, testLRName)
 	}
 
 	// Check namespace (defaults to LittleRed namespace)
-	if sm.Namespace != "test-ns" {
-		t.Errorf("ServiceMonitor namespace = %q, want %q", sm.Namespace, "test-ns")
+	if sm.Namespace != testNamespace {
+		t.Errorf("ServiceMonitor namespace = %q, want %q", sm.Namespace, testNamespace)
 	}
 
 	// Check endpoints
 	if len(sm.Spec.Endpoints) != 1 {
 		t.Errorf("ServiceMonitor has %d endpoints, want 1", len(sm.Spec.Endpoints))
 	}
-	if sm.Spec.Endpoints[0].Port != "metrics" {
+	if sm.Spec.Endpoints[0].Port != portMetrics {
 		t.Errorf("ServiceMonitor endpoint port = %q, want metrics", sm.Spec.Endpoints[0].Port)
 	}
 }
 
 func TestBuildServiceMonitorWithCustomNamespace(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.Metrics.ServiceMonitor.Enabled = true
 	lr.Spec.Metrics.ServiceMonitor.Namespace = "monitoring"
 	sm := buildServiceMonitor(lr)
@@ -1033,7 +1043,7 @@ func TestBuildServiceMonitorWithCustomNamespace(t *testing.T) {
 }
 
 func TestBuildServiceMonitorWithCustomLabels(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.Metrics.ServiceMonitor.Enabled = true
 	lr.Spec.Metrics.ServiceMonitor.Labels = map[string]string{
 		"release": "prometheus",
@@ -1050,7 +1060,7 @@ func TestBuildServiceMonitorWithCustomLabels(t *testing.T) {
 // ============================================================================
 
 func TestBuildExporterContainer(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	container := buildExporterContainer(lr)
 
 	// Check name
@@ -1081,7 +1091,7 @@ func TestBuildExporterContainer(t *testing.T) {
 	// Check metrics port
 	var hasMetricsPort bool
 	for _, p := range container.Ports {
-		if p.Name == "metrics" && p.ContainerPort == 9121 {
+		if p.Name == portMetrics && p.ContainerPort == 9121 {
 			hasMetricsPort = true
 		}
 	}
@@ -1091,7 +1101,7 @@ func TestBuildExporterContainer(t *testing.T) {
 }
 
 func TestBuildExporterContainerWithTLS(t *testing.T) {
-	lr := newTestLittleRed("my-cache", "test-ns")
+	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.TLS.Enabled = true
 	container := buildExporterContainer(lr)
 

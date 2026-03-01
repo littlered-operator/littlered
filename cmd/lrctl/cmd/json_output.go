@@ -44,7 +44,7 @@ func parseAlternatingKV(output string) map[string]string {
 // section headers starting with # are ignored).
 func parseInfoKV(output string) map[string]string {
 	result := make(map[string]string)
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		line = strings.TrimRight(strings.TrimSpace(line), "\r")
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -219,7 +219,10 @@ type clusterVerifyJSON struct {
 	Healthy      bool                    `json:"healthy"`
 }
 
-func buildSentinelVerifyJSON(name, namespace string, redisMap map[string]string, state *redisclient.SentinelClusterState) sentinelVerifyJSON {
+func buildSentinelVerifyJSON(
+	name, namespace string, redisMap map[string]string,
+	state *redisclient.SentinelClusterState,
+) sentinelVerifyJSON {
 	actions := state.GetHealActions()
 	if actions == nil {
 		actions = []string{}
@@ -276,7 +279,7 @@ func buildClusterVerifyJSON(name, namespace string, gt *redisclient.ClusterGroun
 	result := clusterVerifyJSON{
 		Name:         name,
 		Namespace:    namespace,
-		Mode:         "cluster",
+		Mode:         modeCluster,
 		ClusterState: gt.ClusterState,
 		TotalSlots:   gt.TotalSlots,
 		GhostNodes:   ghostNodes,

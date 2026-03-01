@@ -64,19 +64,15 @@ var verifyCmd = &cobra.Command{
 			if jsonOutput {
 				switch cCtx.Mode {
 				case "sentinel":
-					r, err := verifySentinelJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace)
-					if err != nil {
-						errCount++
-					}
-					jsonResults = append(jsonResults, r)
-				case "cluster":
-					r, err := verifyClusterJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace)
-					if err != nil {
-						errCount++
-					}
-					jsonResults = append(jsonResults, r)
+					jsonResults = append(jsonResults,
+						verifySentinelJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace))
+				case modeCluster:
+					jsonResults = append(jsonResults,
+						verifyClusterJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace))
 				default:
-					fmt.Fprintf(os.Stderr, "error: %s/%s: JSON output for mode %q not yet implemented\n", key.Namespace, key.Name, cCtx.Mode)
+					fmt.Fprintf(os.Stderr,
+						"error: %s/%s: JSON output for mode %q not yet implemented\n",
+						key.Namespace, key.Name, cCtx.Mode)
 					errCount++
 				}
 				continue
@@ -88,11 +84,12 @@ var verifyCmd = &cobra.Command{
 			fmt.Printf("Verifying Cluster: %s/%s (Mode: %s)\n", cCtx.Namespace, cCtx.Name, cCtx.Mode)
 
 			var verifyErr error
-			if cCtx.Mode == "sentinel" {
+			switch cCtx.Mode {
+			case "sentinel":
 				verifyErr = verifySentinel(ctx, coreClient, config, cCtx)
-			} else if cCtx.Mode == "cluster" {
+			case modeCluster:
 				verifyErr = verifyCluster(ctx, coreClient, config, cCtx)
-			} else {
+			default:
 				fmt.Printf("Verification for mode %q not yet fully implemented\n", cCtx.Mode)
 			}
 			if verifyErr != nil {
@@ -112,7 +109,10 @@ var verifyCmd = &cobra.Command{
 	},
 }
 
-func verifyCluster(ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config, cCtx *types.ClusterContext) error {
+func verifyCluster(
+	ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config,
+	cCtx *types.ClusterContext,
+) error {
 	clusterPods := make(map[string]string)
 	for _, p := range cCtx.RedisPods {
 		if p.Status.PodIP != "" {
@@ -137,7 +137,7 @@ func verifyCluster(ctx context.Context, coreClient *kubernetes.Clientset, config
 
 		role := node.Role
 		details := ""
-		if role == "master" {
+		if role == roleMaster {
 			details = fmt.Sprintf("slots:%s", strings.Join(node.Slots, ","))
 		} else {
 			details = fmt.Sprintf("following:%s, link:%s", node.MasterNodeID, node.LinkStatus)
@@ -169,7 +169,7 @@ func verifyCluster(ctx context.Context, coreClient *kubernetes.Clientset, config
 	}
 
 	for _, n := range gt.Nodes {
-		if n.Role != "master" {
+		if n.Role != roleMaster {
 			continue
 		}
 		fmt.Printf("  Master: %s (%s)\n", n.PodName, n.NodeID)
@@ -198,7 +198,10 @@ func verifyCluster(ctx context.Context, coreClient *kubernetes.Clientset, config
 	return fmt.Errorf("cluster %s/%s has topology or health issues", cCtx.Namespace, cCtx.Name)
 }
 
-func verifySentinel(ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config, cCtx *types.ClusterContext) error {
+func verifySentinel(
+	ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config,
+	cCtx *types.ClusterContext,
+) error {
 	redisMap := make(map[string]string)
 	for _, p := range cCtx.RedisPods {
 		if p.Status.PodIP != "" {
@@ -279,7 +282,10 @@ func init() {
 
 // verifySentinelJSON gathers sentinel cluster state and returns it as a
 // JSON-serialisable struct without printing anything.
-func verifySentinelJSON(ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config, cCtx *types.ClusterContext, name, namespace string) (sentinelVerifyJSON, error) {
+func verifySentinelJSON(
+	ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config,
+	cCtx *types.ClusterContext, name, namespace string,
+) sentinelVerifyJSON {
 	redisMap := make(map[string]string)
 	for _, p := range cCtx.RedisPods {
 		if p.Status.PodIP != "" {
@@ -294,12 +300,15 @@ func verifySentinelJSON(ctx context.Context, coreClient *kubernetes.Clientset, c
 	}
 	g := &cliGatherer{coreClient: coreClient, config: config, cCtx: cCtx}
 	state := redisclient.GatherClusterState(ctx, g, redisMap, sentinelMap)
-	return buildSentinelVerifyJSON(name, namespace, redisMap, state), nil
+	return buildSentinelVerifyJSON(name, namespace, redisMap, state)
 }
 
 // verifyClusterJSON gathers cluster ground truth and returns it as a
 // JSON-serialisable struct without printing anything.
-func verifyClusterJSON(ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config, cCtx *types.ClusterContext, name, namespace string) (clusterVerifyJSON, error) {
+func verifyClusterJSON(
+	ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config,
+	cCtx *types.ClusterContext, name, namespace string,
+) clusterVerifyJSON {
 	clusterPods := make(map[string]string)
 	for _, p := range cCtx.RedisPods {
 		if p.Status.PodIP != "" {
@@ -308,5 +317,5 @@ func verifyClusterJSON(ctx context.Context, coreClient *kubernetes.Clientset, co
 	}
 	g := &cliGatherer{coreClient: coreClient, config: config, cCtx: cCtx}
 	gt := redisclient.GatherClusterGroundTruth(ctx, g, clusterPods)
-	return buildClusterVerifyJSON(name, namespace, gt), nil
+	return buildClusterVerifyJSON(name, namespace, gt)
 }

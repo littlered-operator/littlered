@@ -107,7 +107,7 @@ func (s *SentinelClusterState) DetermineRealMaster() {
 	// issue RESETs that wipe Sentinel's failover state.
 	if !s.FailoverActive && ghostMasterCount < (reachableSentinels/2)+1 {
 		for _, rn := range s.RedisNodes {
-			if rn.Reachable && rn.Role == "master" {
+			if rn.Reachable && rn.Role == roleMaster {
 				s.RealMasterIP = rn.IP
 				return
 			}
@@ -140,7 +140,7 @@ func (s *SentinelClusterState) GetHealActions() []string {
 		if !rn.Reachable || rn.IP == s.RealMasterIP {
 			continue
 		}
-		if rn.Role == "master" || rn.MasterHost != s.RealMasterIP || rn.LinkStatus == "down" {
+		if rn.Role == roleMaster || rn.MasterHost != s.RealMasterIP || rn.LinkStatus == "down" {
 			actions = append(actions, "SLAVEOF "+s.RealMasterIP+" ON "+rn.PodName)
 		}
 	}

@@ -12,6 +12,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const (
+	modeCluster = "cluster"
+	roleMaster  = "master"
+)
+
 var (
 	namespace     string
 	kubeconfig    string
@@ -54,7 +59,9 @@ func listLittleReds(ctx context.Context, k8sClient client.Client, namespace stri
 
 // resolveTargets returns the set of (namespace, name) pairs a command should operate on.
 // It honours --all-namespaces / -A and the positional name argument.
-func resolveTargets(ctx context.Context, k8sClient client.Client, args []string, targetNS string) ([]client.ObjectKey, error) {
+func resolveTargets(
+	ctx context.Context, k8sClient client.Client, args []string, targetNS string,
+) ([]client.ObjectKey, error) {
 	if allNamespaces && len(args) > 0 {
 		return nil, fmt.Errorf("a resource name may not be specified when --all-namespaces (-A) is set")
 	}
@@ -114,11 +121,16 @@ func completeNamespaces(_ *cobra.Command, _ []string, _ string) ([]string, cobra
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "", "If present, the namespace scope for this CLI request")
-	rootCmd.PersistentFlags().StringVar(&kubeconfig, "kubeconfig", "", "Path to the kubeconfig file to use for CLI requests")
-	rootCmd.PersistentFlags().BoolVar(&unmanaged, "unmanaged", false, "If true, skip looking for a LittleRed CR and use heuristics to find pods")
-	rootCmd.PersistentFlags().StringVar(&kind, "kind", "sentinel", "The cluster kind (sentinel|cluster) when using --unmanaged")
-	rootCmd.PersistentFlags().BoolVarP(&allNamespaces, "all-namespaces", "A", false, "If present, list resources across all namespaces")
+	rootCmd.PersistentFlags().StringVarP(
+		&namespace, "namespace", "n", "", "If present, the namespace scope for this CLI request")
+	rootCmd.PersistentFlags().StringVar(
+		&kubeconfig, "kubeconfig", "", "Path to the kubeconfig file to use for CLI requests")
+	rootCmd.PersistentFlags().BoolVar(
+		&unmanaged, "unmanaged", false, "If true, skip looking for a LittleRed CR and use heuristics to find pods")
+	rootCmd.PersistentFlags().StringVar(
+		&kind, "kind", "sentinel", "The cluster kind (sentinel|cluster) when using --unmanaged")
+	rootCmd.PersistentFlags().BoolVarP(
+		&allNamespaces, "all-namespaces", "A", false, "If present, list resources across all namespaces")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "If true, output as JSON")
 
 	// Register completions for persistent flags defined here.
@@ -126,9 +138,10 @@ func init() {
 	if err := rootCmd.RegisterFlagCompletionFunc("namespace", completeNamespaces); err != nil {
 		panic(err)
 	}
-	if err := rootCmd.RegisterFlagCompletionFunc("kind", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
-		return []string{"sentinel", "cluster"}, cobra.ShellCompDirectiveNoFileComp
-	}); err != nil {
+	kindCompletion := func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"sentinel", modeCluster}, cobra.ShellCompDirectiveNoFileComp
+	}
+	if err := rootCmd.RegisterFlagCompletionFunc("kind", kindCompletion); err != nil {
 		panic(err)
 	}
 }

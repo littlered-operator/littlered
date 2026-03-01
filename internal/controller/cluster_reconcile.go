@@ -115,6 +115,8 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 }
 
 // repairCluster handles healing: partitions, ghost nodes, slot restoration, and replication topology
+//
+//nolint:gocyclo
 func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, gt *redisclient.ClusterGroundTruth) (ctrl.Result, error) {
 	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 	fast, _ := littleRed.GetRequeueIntervals()
@@ -143,7 +145,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 
 		promotedCount := 0
 		for _, node := range gt.Nodes {
-			if node.Role == "replica" {
+			if node.Role == RoleReplica {
 				// Skip if master is known/live or if master ID is invalid
 				if node.MasterNodeID == "" || node.MasterNodeID == "-" || liveNodes[node.MasterNodeID] {
 					continue
@@ -205,7 +207,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		promotedCount := 0
 
 		for _, node := range gt.Nodes {
-			if node.Role != "replica" {
+			if node.Role != RoleReplica {
 				continue
 			}
 			if node.MasterNodeID == "" || node.MasterNodeID == "-" || liveNodes[node.MasterNodeID] {
@@ -227,7 +229,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 				}
 			}
 
-			age := now.Time.Sub(orphanInfo.DetectedAt.Time)
+			age := now.Sub(orphanInfo.DetectedAt.Time)
 			if age >= orphanTimeout {
 				// Timeout exceeded — force-promote
 				auditLog.Info("Force-promoting stuck orphan replica",
@@ -292,7 +294,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		// We should wait for the replica to be promoted (Step 0) instead.
 		protectedMasters := make(map[string]bool)
 		for _, n := range gt.Nodes {
-			if n.Role == "replica" && n.MasterNodeID != "" && n.MasterNodeID != "-" {
+			if n.Role == RoleReplica && n.MasterNodeID != "" && n.MasterNodeID != "-" {
 				protectedMasters[n.MasterNodeID] = true
 			}
 		}
@@ -376,9 +378,9 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		// Never assign a shard to a different master — that causes split-ownership
 		// and "Slot already busy" errors. If the intended master isn't available, wait.
 		intendedMasters := make(map[int]*redisclient.ClusterNodeState) // shardIdx -> Node
-		for i := 0; i < shards; i++ {
+		for i := range shards {
 			podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
-			if node, ok := gt.Nodes[podName]; ok && node.Role == "master" {
+			if node, ok := gt.Nodes[podName]; ok && node.Role == RoleMaster {
 				intendedMasters[i] = node
 			}
 		}
@@ -415,10 +417,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 	}
 
 	// 4. Replication Repair (Non-Zero Replica Mode)
-	isZeroReplicaMode := false
-	if littleRed.Spec.Cluster.ReplicasPerShard != nil && *littleRed.Spec.Cluster.ReplicasPerShard == 0 {
-		isZeroReplicaMode = true
-	}
+	isZeroReplicaMode := littleRed.Spec.Cluster.ReplicasPerShard != nil && *littleRed.Spec.Cluster.ReplicasPerShard == 0
 
 	if !isZeroReplicaMode {
 		emptyMasters := gt.GetEmptyMasters()
@@ -435,7 +434,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 			for _, em := range emptyMasters {
 				var targetMaster *redisclient.ClusterNodeState
 				for _, m := range gt.Nodes {
-					if m.Role == "master" && len(m.Slots) > 0 {
+					if m.Role == RoleMaster && len(m.Slots) > 0 {
 						if len(shardsWithReplicas[m.NodeID]) < expectedReplicas {
 							targetMaster = m
 							break
@@ -461,7 +460,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		// If we have replicas, it implies a previous state existed, and we shouldn't overwrite it.
 		hasReplicas := false
 		for _, n := range gt.Nodes {
-			if n.Role == "replica" {
+			if n.Role == RoleReplica {
 				hasReplicas = true
 				break
 			}
@@ -485,7 +484,7 @@ func (r *LittleRedReconciler) gatherGroundTruth(ctx context.Context, littleRed *
 	password := r.getRedisPassword(ctx, littleRed)
 
 	clusterPods := make(map[string]string)
-	for i := 0; i < totalNodes; i++ {
+	for i := range totalNodes {
 		podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
 		pod := &corev1.Pod{}
 		if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: littleRed.Namespace}, pod); err == nil && pod.Status.PodIP != "" {
@@ -517,7 +516,7 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 	podIPs := make([]string, totalNodes)
 	nodeIDs := make([]string, totalNodes)
 
-	for i := 0; i < totalNodes; i++ {
+	for i := range totalNodes {
 		podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
 		pod := &corev1.Pod{}
 		if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: littleRed.Namespace}, pod); err != nil {
@@ -550,7 +549,7 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 	time.Sleep(2 * time.Second)
 
 	// 2. Assign Slots to Masters
-	if littleRed.Annotations[AnnotationDebugSkipSlotAssignment] == "true" {
+	if littleRed.Annotations[AnnotationDebugSkipSlotAssignment] == annotationTrue {
 		auditLog.Info("DEBUG: Skipping slot assignment due to annotation")
 	} else {
 		slotRanges := redisclient.GenerateSlotRanges(cluster.Shards)

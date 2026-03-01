@@ -363,7 +363,7 @@ func (c *SentinelClient) getReplicasFromSentinel(ctx context.Context, sentinelAd
 		return nil, fmt.Errorf("failed to get replicas: %w", err)
 	}
 
-	var replicas []ReplicaInfo
+	replicas := make([]ReplicaInfo, 0, len(result))
 	for _, raw := range result {
 		// go-redis returns []map[string]string for SENTINEL REPLICAS
 		replica := ReplicaInfo{
