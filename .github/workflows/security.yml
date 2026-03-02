@@ -27,6 +27,8 @@ jobs:
 
       - name: Run govulncheck
         uses: golang/govulncheck-action@v1
+        with:
+          repo-checkout: false
 
   trivy:
     name: Trivy filesystem scan
@@ -35,14 +37,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Run Trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: sarif
-          output: trivy.sarif
-          severity: CRITICAL,HIGH
+      - name: Install Trivy
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download --repo aquasecurity/trivy --pattern '*Linux-64bit.tar.gz' --dir /tmp
+          tar -xzf /tmp/*Linux-64bit.tar.gz -C /tmp trivy
+          sudo mv /tmp/trivy /usr/local/bin/
+
+      - name: Run Trivy scan
+        run: trivy fs --format sarif --output trivy.sarif --severity CRITICAL,HIGH --exit-code 0 .
 
       - name: Upload results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
