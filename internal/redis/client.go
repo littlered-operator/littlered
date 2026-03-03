@@ -115,7 +115,7 @@ func (c *SentinelClient) GetMasterState(ctx context.Context, name string) (*Mast
 			TLSConfig:   makeTLSConfig(c.tlsEnabled),
 		})
 		result, err := client.Master(ctx, name).Result()
-		client.Close()
+		_ = client.Close()
 
 		if err != nil {
 			lastErr = err
@@ -149,7 +149,7 @@ func (c *SentinelClient) IsFailoverInProgress(ctx context.Context, name string) 
 			TLSConfig:   makeTLSConfig(c.tlsEnabled),
 		})
 		result, err := client.Master(ctx, name).Result()
-		client.Close()
+		_ = client.Close()
 
 		if err != nil {
 			continue
@@ -213,7 +213,7 @@ func (c *SentinelClient) Subscribe(ctx context.Context, channels ...string) (<-c
 			break
 		} else {
 			lastErr = err
-			rdb.Close()
+			_ = rdb.Close()
 		}
 	}
 
@@ -228,15 +228,15 @@ func (c *SentinelClient) Subscribe(ctx context.Context, channels ...string) (<-c
 
 	// Verify subscription
 	if _, err := pubsub.Receive(ctx); err != nil {
-		pubsub.Close()
-		client.Close()
+		_ = pubsub.Close()
+		_ = client.Close()
 		return nil, nil, fmt.Errorf("failed to subscribe: %w", err)
 	}
 
 	// Return the channel and a cleanup function
 	return pubsub.Channel(), func() {
-		pubsub.Close()
-		client.Close()
+		_ = pubsub.Close()
+		_ = client.Close()
 	}, nil
 }
 
@@ -252,7 +252,7 @@ func (c *SentinelClient) Monitor(ctx context.Context, name, ip string, port int,
 			TLSConfig:   makeTLSConfig(c.tlsEnabled),
 		})
 		err := client.Process(ctx, redis.NewStatusCmd(ctx, "SENTINEL", "MONITOR", name, ip, port, quorum))
-		client.Close()
+		_ = client.Close()
 		if err != nil {
 			// If it's already monitored, that's fine
 			if strings.Contains(err.Error(), "ERR Duplicate master name") {
@@ -279,7 +279,7 @@ func (c *SentinelClient) Set(ctx context.Context, name, option, value string) er
 			TLSConfig:   makeTLSConfig(c.tlsEnabled),
 		})
 		err := client.Process(ctx, redis.NewStatusCmd(ctx, "SENTINEL", "SET", name, option, value))
-		client.Close()
+		_ = client.Close()
 		if err != nil {
 			// If master not found on this node, we'll try again later
 			if strings.Contains(err.Error(), "ERR No such master") {
@@ -303,7 +303,7 @@ func (c *SentinelClient) getMasterFromSentinel(ctx context.Context, addr string)
 		ReadTimeout: DefaultTimeout,
 		TLSConfig:   makeTLSConfig(c.tlsEnabled),
 	})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// SENTINEL GET-MASTER-ADDR-BY-NAME mymaster
 	result, err := client.GetMasterAddrByName(ctx, SentinelMasterName).Result()
@@ -355,7 +355,7 @@ func (c *SentinelClient) getReplicasFromSentinel(ctx context.Context, sentinelAd
 		ReadTimeout: DefaultTimeout,
 		TLSConfig:   makeTLSConfig(c.tlsEnabled),
 	})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// SENTINEL REPLICAS mymaster
 	result, err := client.Replicas(ctx, masterName).Result()
@@ -390,7 +390,7 @@ func (c *SentinelClient) Reset(ctx context.Context, masterName string) error {
 		})
 		// SENTINEL RESET masterName
 		err := client.Process(ctx, redis.NewIntCmd(ctx, "SENTINEL", "RESET", masterName))
-		client.Close()
+		_ = client.Close()
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("%s: %v", addr, err))
 		}
@@ -414,7 +414,7 @@ func (c *SentinelClient) Remove(ctx context.Context, masterName string) error {
 		})
 		// SENTINEL REMOVE masterName
 		err := client.Process(ctx, redis.NewStatusCmd(ctx, "SENTINEL", "REMOVE", masterName))
-		client.Close()
+		_ = client.Close()
 		if err != nil {
 			// If it's already removed, that's fine
 			if strings.Contains(err.Error(), "ERR No such master") {
@@ -438,7 +438,7 @@ func (c *SentinelClient) IsMonitoring(ctx context.Context, sentinelAddr, masterN
 		ReadTimeout: DefaultTimeout,
 		TLSConfig:   makeTLSConfig(c.tlsEnabled),
 	})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, err := client.GetMasterAddrByName(ctx, masterName).Result()
 	if err != nil {
@@ -459,7 +459,7 @@ func Ping(ctx context.Context, addr, password string, tlsEnabled bool) error {
 		ReadTimeout: DefaultTimeout,
 		TLSConfig:   makeTLSConfig(tlsEnabled),
 	})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	return client.Ping(ctx).Err()
 }
@@ -473,7 +473,7 @@ func SlaveOf(ctx context.Context, addr, password, masterIP, masterPort string, t
 		ReadTimeout: DefaultTimeout,
 		TLSConfig:   makeTLSConfig(tlsEnabled),
 	})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if masterIP == "" {
 		return client.SlaveOf(ctx, "NO", "ONE").Err()
@@ -490,7 +490,7 @@ func GetReplicationInfo(ctx context.Context, addr, password string, tlsEnabled b
 		ReadTimeout: DefaultTimeout,
 		TLSConfig:   makeTLSConfig(tlsEnabled),
 	})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	info, err := client.Info(ctx, "replication").Result()
 	if err != nil {

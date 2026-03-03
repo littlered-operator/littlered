@@ -103,7 +103,7 @@ func (c *ClusterClient) getClient(addr string) *redis.Client {
 // GetMyID returns the cluster node ID for the node at the given address
 func (c *ClusterClient) GetMyID(ctx context.Context, addr string) (string, error) {
 	client := c.getClient(addr)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	result, err := client.Do(ctx, "CLUSTER", "MYID").Result()
 	if err != nil {
@@ -121,7 +121,7 @@ func (c *ClusterClient) GetMyID(ctx context.Context, addr string) (string, error
 // GetClusterNodes returns parsed CLUSTER NODES output
 func (c *ClusterClient) GetClusterNodes(ctx context.Context, addr string) ([]ClusterNodeInfo, error) {
 	client := c.getClient(addr)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	result, err := client.ClusterNodes(ctx).Result()
 	if err != nil {
@@ -134,7 +134,7 @@ func (c *ClusterClient) GetClusterNodes(ctx context.Context, addr string) ([]Clu
 // GetClusterInfo returns parsed CLUSTER INFO output
 func (c *ClusterClient) GetClusterInfo(ctx context.Context, addr string) (*ClusterInfo, error) {
 	client := c.getClient(addr)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	result, err := client.ClusterInfo(ctx).Result()
 	if err != nil {
@@ -147,7 +147,7 @@ func (c *ClusterClient) GetClusterInfo(ctx context.Context, addr string) (*Clust
 // ClusterMeet introduces a new node to the cluster
 func (c *ClusterClient) ClusterMeet(ctx context.Context, addr, newHost string, newPort int) error {
 	client := c.getClient(addr)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	err := client.ClusterMeet(ctx, newHost, strconv.Itoa(newPort)).Err()
 	if err != nil {
@@ -160,7 +160,7 @@ func (c *ClusterClient) ClusterMeet(ctx context.Context, addr, newHost string, n
 // ClusterForget removes a node from the cluster's known nodes
 func (c *ClusterClient) ClusterForget(ctx context.Context, addr, nodeIDToForget string) error {
 	client := c.getClient(addr)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	err := client.ClusterForget(ctx, nodeIDToForget).Err()
 	if err != nil {
@@ -173,7 +173,7 @@ func (c *ClusterClient) ClusterForget(ctx context.Context, addr, nodeIDToForget 
 // ClusterAddSlots assigns slots to the node at the given address
 func (c *ClusterClient) ClusterAddSlots(ctx context.Context, addr string, slots ...int) error {
 	client := c.getClient(addr)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	err := client.ClusterAddSlots(ctx, slots...).Err()
 	if err != nil {
@@ -186,7 +186,7 @@ func (c *ClusterClient) ClusterAddSlots(ctx context.Context, addr string, slots 
 // ClusterReplicate makes the node at replicaAddr a replica of the given master
 func (c *ClusterClient) ClusterReplicate(ctx context.Context, replicaAddr, masterNodeID string) error {
 	client := c.getClient(replicaAddr)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	err := client.ClusterReplicate(ctx, masterNodeID).Err()
 	if err != nil {
@@ -199,7 +199,7 @@ func (c *ClusterClient) ClusterReplicate(ctx context.Context, replicaAddr, maste
 // ClusterResetSoft performs a soft reset of the cluster node
 func (c *ClusterClient) ClusterResetSoft(ctx context.Context, addr string) error {
 	client := c.getClient(addr)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	err := client.Do(ctx, "CLUSTER", "RESET", "SOFT").Err()
 	if err != nil {
@@ -212,7 +212,7 @@ func (c *ClusterClient) ClusterResetSoft(ctx context.Context, addr string) error
 // ClusterFailover initiates a manual failover
 func (c *ClusterClient) ClusterFailover(ctx context.Context, addr string) error {
 	client := c.getClient(addr)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	err := client.ClusterFailover(ctx).Err()
 	if err != nil {
@@ -226,7 +226,7 @@ func (c *ClusterClient) ClusterFailover(ctx context.Context, addr string) error 
 // This is used when the master is not available or quorum is lost
 func (c *ClusterClient) ClusterFailoverTakeover(ctx context.Context, addr string) error {
 	client := c.getClient(addr)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// go-redis ClusterFailover doesn't easily support arguments in all versions/wrappers,
 	// so we use Do command directly to be safe and explicit.

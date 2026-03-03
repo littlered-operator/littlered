@@ -58,7 +58,7 @@ func (g *cliGatherer) GetRedisState(ctx context.Context, podName, ip string) (*r
 	}
 	var offset int64
 	if offsetStr != "" {
-		fmt.Sscanf(offsetStr, "%d", &offset)
+		_, _ = fmt.Sscanf(offsetStr, "%d", &offset)
 	}
 
 	return &redisclient.RedisNodeState{
