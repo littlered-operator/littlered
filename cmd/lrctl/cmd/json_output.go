@@ -12,7 +12,7 @@ import (
 )
 
 // printJSON marshals v as indented JSON and writes it to stdout.
-func printJSON(v interface{}) error {
+func printJSON(v any) error {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("json marshal: %w", err)

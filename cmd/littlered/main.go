@@ -221,6 +221,6 @@ func newRedisLogger(log logr.Logger) *redisLogger {
 	return &redisLogger{log: log.WithName("redis")}
 }
 
-func (l *redisLogger) Printf(ctx context.Context, format string, v ...interface{}) {
+func (l *redisLogger) Printf(ctx context.Context, format string, v ...any) {
 	l.log.Info(fmt.Sprintf(format, v...))
 }

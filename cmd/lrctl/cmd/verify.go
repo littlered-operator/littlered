@@ -50,7 +50,7 @@ var verifyCmd = &cobra.Command{
 			return nil
 		}
 
-		var jsonResults []interface{}
+		var jsonResults []any
 		errCount := 0
 
 		for i, key := range targets {

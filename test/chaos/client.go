@@ -386,7 +386,7 @@ func (tc *TestClient) GetMetrics() MetricsSnapshot {
 // ConfirmedKeyCount returns the number of keys that were confirmed written
 func (tc *TestClient) ConfirmedKeyCount() int64 {
 	var count int64
-	tc.confirmedKeys.Range(func(_, _ interface{}) bool {
+	tc.confirmedKeys.Range(func(_, _ any) bool {
 		count++
 		return true
 	})
