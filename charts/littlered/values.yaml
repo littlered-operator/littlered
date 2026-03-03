@@ -42,3 +42,7 @@ networkPolicy:
   # Create a NetworkPolicy restricting metrics port access to labeled namespaces.
   # Requires metrics.enabled=true.
   enabled: false
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
