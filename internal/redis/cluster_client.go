@@ -19,6 +19,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -41,22 +42,12 @@ type ClusterNodeInfo struct {
 
 // IsMaster returns true if this node is a master
 func (n *ClusterNodeInfo) IsMaster() bool {
-	for _, flag := range n.Flags {
-		if flag == "master" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(n.Flags, "master")
 }
 
 // IsReplica returns true if this node is a replica
 func (n *ClusterNodeInfo) IsReplica() bool {
-	for _, flag := range n.Flags {
-		if flag == "slave" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(n.Flags, "slave")
 }
 
 // ClusterInfo contains parsed CLUSTER INFO output

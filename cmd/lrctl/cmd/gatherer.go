@@ -19,6 +19,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"k8s.io/client-go/kubernetes"
@@ -125,13 +126,7 @@ func (g *cliGatherer) GetSentinelState(ctx context.Context, podName, ip string) 
 				// Resolve hostname to IP if needed
 				resolvedIP := g.resolveIdentityToIP(potentialIP)
 
-				isValid := false
-				for _, rip := range redisIPs {
-					if rip == resolvedIP {
-						isValid = true
-						break
-					}
-				}
+				isValid := slices.Contains(redisIPs, resolvedIP)
 				if !isValid {
 					state.Replicas = append(state.Replicas, redisclient.ReplicaInfo{IP: resolvedIP, Flags: "s_down,ghost"})
 				}
