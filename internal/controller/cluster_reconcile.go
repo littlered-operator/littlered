@@ -229,7 +229,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 				}
 			}
 
-			age := now.Time.Sub(orphanInfo.DetectedAt.Time)
+			age := now.Sub(orphanInfo.DetectedAt.Time)
 			if age >= orphanTimeout {
 				// Timeout exceeded — force-promote
 				auditLog.Info("Force-promoting stuck orphan replica",
