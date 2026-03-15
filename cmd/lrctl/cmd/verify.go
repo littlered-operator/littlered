@@ -76,7 +76,9 @@ var verifyCmd = &cobra.Command{
 					}
 					jsonResults = append(jsonResults, r)
 				default:
-					fmt.Fprintf(os.Stderr, "error: %s/%s: JSON output for mode %q not yet implemented\n", key.Namespace, key.Name, cCtx.Mode)
+					fmt.Fprintf(os.Stderr,
+						"error: %s/%s: JSON output for mode %q not yet implemented\n",
+						key.Namespace, key.Name, cCtx.Mode)
 					errCount++
 				}
 				continue

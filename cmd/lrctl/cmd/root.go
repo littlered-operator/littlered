@@ -133,9 +133,10 @@ func init() {
 	if err := rootCmd.RegisterFlagCompletionFunc("namespace", completeNamespaces); err != nil {
 		panic(err)
 	}
-	if err := rootCmd.RegisterFlagCompletionFunc("kind", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+	kindCompletion := func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 		return []string{"sentinel", "cluster"}, cobra.ShellCompDirectiveNoFileComp
-	}); err != nil {
+	}
+	if err := rootCmd.RegisterFlagCompletionFunc("kind", kindCompletion); err != nil {
 		panic(err)
 	}
 }
