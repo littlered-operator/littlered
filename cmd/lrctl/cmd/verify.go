@@ -64,9 +64,11 @@ var verifyCmd = &cobra.Command{
 			if jsonOutput {
 				switch cCtx.Mode {
 				case modeSentinel:
-					jsonResults = append(jsonResults, verifySentinelJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace))
+					jsonResults = append(jsonResults,
+						verifySentinelJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace))
 				case modeCluster:
-					jsonResults = append(jsonResults, verifyClusterJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace))
+					jsonResults = append(jsonResults,
+						verifyClusterJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace))
 				default:
 					fmt.Fprintf(os.Stderr,
 						"error: %s/%s: JSON output for mode %q not yet implemented\n",

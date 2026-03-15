@@ -257,7 +257,7 @@ func buildStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSet {
 
 	podLabels := make(map[string]string)
 	maps.Copy(podLabels, selectorLabels(lr))
-	podLabels["app.kubernetes.io/component"] = "redis"
+	podLabels["app.kubernetes.io/component"] = ComponentRedis
 	// Add user-defined pod labels
 	maps.Copy(podLabels, lr.Spec.PodTemplate.Labels)
 
