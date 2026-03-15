@@ -33,6 +33,7 @@ const (
 	testReplicasName = testLRName + "-replicas"
 	testNamespace    = "test-ns"
 	testTLSSecret    = "tls-secret"
+	testMaxmemPolicy = "volatile-lru"
 	portNameMetrics  = "metrics"
 )
 
@@ -262,7 +263,7 @@ func TestBuildRedisConfig(t *testing.T) {
 		{
 			name: "with custom maxmemory policy",
 			setupLR: func(lr *littleredv1alpha1.LittleRed) {
-				lr.Spec.Config.MaxmemoryPolicy = "volatile-lru"
+				lr.Spec.Config.MaxmemoryPolicy = testMaxmemPolicy
 			},
 			mustHave: []string{
 				"maxmemory-policy volatile-lru",
@@ -325,7 +326,7 @@ func TestComputeConfigHash(t *testing.T) {
 func TestConfigHashChangesWithConfig(t *testing.T) {
 	lr1 := newTestLittleRed("test", "default")
 	lr2 := newTestLittleRed("test", "default")
-	lr2.Spec.Config.MaxmemoryPolicy = "volatile-lru"
+	lr2.Spec.Config.MaxmemoryPolicy = testMaxmemPolicy
 
 	config1 := buildRedisConfig(lr1)
 	config2 := buildRedisConfig(lr2)
@@ -413,7 +414,7 @@ func TestBuildStatefulSet(t *testing.T) {
 func TestBuildStatefulSetConfigHashChangesOnConfigChange(t *testing.T) {
 	lr1 := newTestLittleRed(testLRName, testNamespace)
 	lr2 := newTestLittleRed(testLRName, testNamespace)
-	lr2.Spec.Config.MaxmemoryPolicy = "volatile-lru"
+	lr2.Spec.Config.MaxmemoryPolicy = testMaxmemPolicy
 
 	sts1 := buildStatefulSet(lr1)
 	sts2 := buildStatefulSet(lr2)
