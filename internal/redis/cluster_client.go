@@ -232,8 +232,8 @@ func (c *ClusterClient) ClusterFailoverTakeover(ctx context.Context, addr string
 // ParseClusterNodes parses the output of CLUSTER NODES command
 // Format: <id> <ip:port@cport,hostname> <flags> <master> <ping-sent> <pong-recv> <config-epoch> <link-state> <slot> ...
 func ParseClusterNodes(output string) []ClusterNodeInfo {
-	var nodes []ClusterNodeInfo
 	lines := strings.Split(strings.TrimSpace(output), "\n")
+	nodes := make([]ClusterNodeInfo, 0, len(lines))
 
 	for _, line := range lines {
 		if line == "" {

@@ -63,7 +63,7 @@ var inspectCmd = &cobra.Command{
 			for _, pod := range cCtx.SentinelPods {
 				entry := sentinelPodJSON{Pod: pod.Name, IP: pod.Status.PodIP}
 				cmdArgs := []string{"redis-cli", "-p", "26379", "sentinel", "master", "mymaster"}
-				stdout, stderr, err := k8s.Exec(coreClient, config, cCtx.Namespace, pod.Name, cCtx.SentinelContainer, cmdArgs)
+				stdout, stderr, err := k8s.Exec(ctx, coreClient, config, cCtx.Namespace, pod.Name, cCtx.SentinelContainer, cmdArgs)
 				if err != nil {
 					entry.Error = fmt.Sprintf("%v (stderr: %q)", err, stderr)
 				} else {
@@ -82,7 +82,7 @@ var inspectCmd = &cobra.Command{
 				} else {
 					cmdArgs = []string{"redis-cli", "info", "replication"}
 				}
-				stdout, stderr, err := k8s.Exec(coreClient, config, cCtx.Namespace, pod.Name, cCtx.RedisContainer, cmdArgs)
+				stdout, stderr, err := k8s.Exec(ctx, coreClient, config, cCtx.Namespace, pod.Name, cCtx.RedisContainer, cmdArgs)
 				if err != nil {
 					entry.Error = fmt.Sprintf("%v (stderr: %q)", err, stderr)
 				} else {

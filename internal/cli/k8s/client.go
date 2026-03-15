@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
@@ -55,7 +56,7 @@ func NewClient(kubeconfigPath string) (client.Client, *kubernetes.Clientset, *re
 }
 
 // Exec executes a command in a pod and returns stdout and stderr.
-func Exec(clientset *kubernetes.Clientset, config *rest.Config, namespace, podName, containerName string, command []string) (string, string, error) {
+func Exec(ctx context.Context, clientset *kubernetes.Clientset, config *rest.Config, namespace, podName, containerName string, command []string) (string, string, error) {
 	req := clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).
@@ -82,7 +83,7 @@ func Exec(clientset *kubernetes.Clientset, config *rest.Config, namespace, podNa
 	}
 
 	var stdout, stderr bytes.Buffer
-	err = exec.Stream(remotecommand.StreamOptions{
+	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
 		Stdout: &stdout,
 		Stderr: &stderr,
 	})
