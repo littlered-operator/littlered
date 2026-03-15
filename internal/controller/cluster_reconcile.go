@@ -417,10 +417,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 	}
 
 	// 4. Replication Repair (Non-Zero Replica Mode)
-	isZeroReplicaMode := false
-	if littleRed.Spec.Cluster.ReplicasPerShard != nil && *littleRed.Spec.Cluster.ReplicasPerShard == 0 {
-		isZeroReplicaMode = true
-	}
+	isZeroReplicaMode := littleRed.Spec.Cluster.ReplicasPerShard != nil && *littleRed.Spec.Cluster.ReplicasPerShard == 0
 
 	if !isZeroReplicaMode {
 		emptyMasters := gt.GetEmptyMasters()
