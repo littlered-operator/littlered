@@ -77,7 +77,7 @@ var inspectCmd = &cobra.Command{
 			for _, pod := range cCtx.RedisPods {
 				entry := redisPodJSON{Pod: pod.Name, IP: pod.Status.PodIP}
 				var cmdArgs []string
-				if cCtx.Mode == "cluster" {
+				if cCtx.Mode == modeCluster {
 					cmdArgs = []string{"sh", "-c", "redis-cli cluster nodes && echo --- && redis-cli cluster info"}
 				} else {
 					cmdArgs = []string{"redis-cli", "info", "replication"}
@@ -87,7 +87,7 @@ var inspectCmd = &cobra.Command{
 					entry.Error = fmt.Sprintf("%v (stderr: %q)", err, stderr)
 				} else {
 					entry.raw = stdout
-					if cCtx.Mode == "cluster" {
+					if cCtx.Mode == modeCluster {
 						parts := strings.SplitN(stdout, "\n---\n", 2)
 						entry.ClusterNodes = parseClusterNodesJSON(parts[0])
 						if len(parts) > 1 {

@@ -53,7 +53,7 @@ func (g *cliGatherer) GetRedisState(ctx context.Context, podName, ip string) (*r
 	}
 
 	offsetStr := ""
-	if role == "master" {
+	if role == roleMaster {
 		offsetStr = redisclient.ParseInfoField(stdout, "master_repl_offset")
 	} else {
 		offsetStr = redisclient.ParseInfoField(stdout, "slave_repl_offset")

@@ -279,7 +279,7 @@ func buildClusterVerifyJSON(name, namespace string, gt *redisclient.ClusterGroun
 	result := clusterVerifyJSON{
 		Name:         name,
 		Namespace:    namespace,
-		Mode:         "cluster",
+		Mode:         modeCluster,
 		ClusterState: gt.ClusterState,
 		TotalSlots:   gt.TotalSlots,
 		GhostNodes:   ghostNodes,

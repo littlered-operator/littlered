@@ -63,13 +63,13 @@ var verifyCmd = &cobra.Command{
 
 			if jsonOutput {
 				switch cCtx.Mode {
-				case "sentinel":
+				case modeSentinel:
 					r, err := verifySentinelJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace)
 					if err != nil {
 						errCount++
 					}
 					jsonResults = append(jsonResults, r)
-				case "cluster":
+				case modeCluster:
 					r, err := verifyClusterJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace)
 					if err != nil {
 						errCount++
@@ -91,9 +91,9 @@ var verifyCmd = &cobra.Command{
 
 			var verifyErr error
 			switch cCtx.Mode {
-			case "sentinel":
+			case modeSentinel:
 				verifyErr = verifySentinel(ctx, coreClient, config, cCtx)
-			case "cluster":
+			case modeCluster:
 				verifyErr = verifyCluster(ctx, coreClient, config, cCtx)
 			default:
 				fmt.Printf("Verification for mode %q not yet fully implemented\n", cCtx.Mode)
@@ -143,7 +143,7 @@ func verifyCluster(
 
 		role := node.Role
 		details := ""
-		if role == "master" {
+		if role == roleMaster {
 			details = fmt.Sprintf("slots:%s", strings.Join(node.Slots, ","))
 		} else {
 			details = fmt.Sprintf("following:%s, link:%s", node.MasterNodeID, node.LinkStatus)
@@ -175,7 +175,7 @@ func verifyCluster(
 	}
 
 	for _, n := range gt.Nodes {
-		if n.Role != "master" {
+		if n.Role != roleMaster {
 			continue
 		}
 		fmt.Printf("  Master: %s (%s)\n", n.PodName, n.NodeID)

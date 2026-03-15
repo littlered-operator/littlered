@@ -145,7 +145,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 
 		promotedCount := 0
 		for _, node := range gt.Nodes {
-			if node.Role == "replica" {
+			if node.Role == RoleReplica {
 				// Skip if master is known/live or if master ID is invalid
 				if node.MasterNodeID == "" || node.MasterNodeID == "-" || liveNodes[node.MasterNodeID] {
 					continue
@@ -207,7 +207,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		promotedCount := 0
 
 		for _, node := range gt.Nodes {
-			if node.Role != "replica" {
+			if node.Role != RoleReplica {
 				continue
 			}
 			if node.MasterNodeID == "" || node.MasterNodeID == "-" || liveNodes[node.MasterNodeID] {
@@ -294,7 +294,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		// We should wait for the replica to be promoted (Step 0) instead.
 		protectedMasters := make(map[string]bool)
 		for _, n := range gt.Nodes {
-			if n.Role == "replica" && n.MasterNodeID != "" && n.MasterNodeID != "-" {
+			if n.Role == RoleReplica && n.MasterNodeID != "" && n.MasterNodeID != "-" {
 				protectedMasters[n.MasterNodeID] = true
 			}
 		}
@@ -380,7 +380,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		intendedMasters := make(map[int]*redisclient.ClusterNodeState) // shardIdx -> Node
 		for i := range shards {
 			podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
-			if node, ok := gt.Nodes[podName]; ok && node.Role == "master" {
+			if node, ok := gt.Nodes[podName]; ok && node.Role == RoleMaster {
 				intendedMasters[i] = node
 			}
 		}
@@ -434,7 +434,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 			for _, em := range emptyMasters {
 				var targetMaster *redisclient.ClusterNodeState
 				for _, m := range gt.Nodes {
-					if m.Role == "master" && len(m.Slots) > 0 {
+					if m.Role == RoleMaster && len(m.Slots) > 0 {
 						if len(shardsWithReplicas[m.NodeID]) < expectedReplicas {
 							targetMaster = m
 							break
@@ -460,7 +460,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		// If we have replicas, it implies a previous state existed, and we shouldn't overwrite it.
 		hasReplicas := false
 		for _, n := range gt.Nodes {
-			if n.Role == "replica" {
+			if n.Role == RoleReplica {
 				hasReplicas = true
 				break
 			}

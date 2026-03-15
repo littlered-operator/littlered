@@ -12,6 +12,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const (
+	modeCluster  = "cluster"
+	modeSentinel = "sentinel"
+	roleMaster   = "master"
+)
+
 var (
 	namespace     string
 	kubeconfig    string
@@ -134,7 +140,7 @@ func init() {
 		panic(err)
 	}
 	kindCompletion := func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
-		return []string{"sentinel", "cluster"}, cobra.ShellCompDirectiveNoFileComp
+		return []string{"sentinel", modeCluster}, cobra.ShellCompDirectiveNoFileComp
 	}
 	if err := rootCmd.RegisterFlagCompletionFunc("kind", kindCompletion); err != nil {
 		panic(err)

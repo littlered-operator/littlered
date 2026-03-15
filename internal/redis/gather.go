@@ -129,7 +129,7 @@ func GatherClusterGroundTruth(ctx context.Context, g Gatherer, clusterPods map[s
 
 			if knownNode.NodeID == n.NodeID {
 				n.Slots = knownNode.Slots
-				n.Role = "master"
+				n.Role = roleMaster
 				if knownNode.IsReplica() {
 					n.Role = "replica"
 				}

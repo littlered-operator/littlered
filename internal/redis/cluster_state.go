@@ -16,6 +16,8 @@ limitations under the License.
 
 package redis
 
+const roleMaster = "master"
+
 // ClusterNodeState represents the state of a single node in the Redis Cluster
 type ClusterNodeState struct {
 	PodName      string
@@ -77,7 +79,7 @@ func (gt *ClusterGroundTruth) HasOrphanedSlots() bool {
 func (gt *ClusterGroundTruth) CountMasters() int {
 	count := 0
 	for _, n := range gt.Nodes {
-		if n.Role == "master" && len(n.Slots) > 0 {
+		if n.Role == roleMaster && len(n.Slots) > 0 {
 			count++
 		}
 	}
@@ -113,7 +115,7 @@ func (gt *ClusterGroundTruth) GetLargestPartitionSeed() *ClusterNodeState {
 func (gt *ClusterGroundTruth) GetEmptyMasters() []*ClusterNodeState {
 	var empty []*ClusterNodeState
 	for _, n := range gt.Nodes {
-		if n.Role == "master" && len(n.Slots) == 0 {
+		if n.Role == roleMaster && len(n.Slots) == 0 {
 			empty = append(empty, n)
 		}
 	}
@@ -123,7 +125,7 @@ func (gt *ClusterGroundTruth) GetEmptyMasters() []*ClusterNodeState {
 // HasEmptyMasters returns true if any node is a master with no slots assigned.
 func (gt *ClusterGroundTruth) HasEmptyMasters() bool {
 	for _, n := range gt.Nodes {
-		if n.Role == "master" && len(n.Slots) == 0 {
+		if n.Role == roleMaster && len(n.Slots) == 0 {
 			return true
 		}
 	}

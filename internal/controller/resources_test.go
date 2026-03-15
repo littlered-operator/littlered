@@ -30,6 +30,7 @@ import (
 const (
 	testLRName       = "my-cache"
 	testNamespace    = "test-ns"
+	portNameMetrics  = "metrics"
 )
 
 // Helper to create a minimal LittleRed for testing
@@ -122,7 +123,7 @@ func TestCommonLabels(t *testing.T) {
 		{"app.kubernetes.io/instance", testLRName},
 		{"app.kubernetes.io/managed-by", "littlered-operator"},
 		{"app.kubernetes.io/version", "8.0"},
-		{"chuck-chuck-chuck.net/mode", "standalone"},
+		{"chuck-chuck-chuck.net/mode", ModeStandalone},
 	}
 
 	for _, tt := range tests {
@@ -539,10 +540,10 @@ func TestBuildService(t *testing.T) {
 
 	var hasRedisPort, hasMetricsPort bool
 	for _, p := range svc.Spec.Ports {
-		if p.Name == "redis" && p.Port == 6379 {
+		if p.Name == ComponentRedis && p.Port == 6379 {
 			hasRedisPort = true
 		}
-		if p.Name == "metrics" && p.Port == 9121 {
+		if p.Name == portNameMetrics && p.Port == 9121 {
 			hasMetricsPort = true
 		}
 	}
@@ -803,7 +804,7 @@ func TestBuildSentinelConfig(t *testing.T) {
 	// into the config file. IP-only mode (ADR-001) means resolve/announce-hostnames are
 	// both set to "no".
 	lr := newTestLittleRed(testLRName, testNamespace)
-	lr.Spec.Mode = "sentinel"
+	lr.Spec.Mode = ModeSentinel
 	lr.Spec.Sentinel = &littleredv1alpha1.SentinelSpec{
 		Quorum:                2,
 		DownAfterMilliseconds: 5000,
@@ -839,7 +840,7 @@ func TestBuildSentinelConfig(t *testing.T) {
 
 func TestBuildSentinelConfigMap(t *testing.T) {
 	lr := newTestLittleRed(testLRName, testNamespace)
-	lr.Spec.Mode = "sentinel"
+	lr.Spec.Mode = ModeSentinel
 	cm := buildSentinelConfigMap(lr)
 
 	if cm.Name != "my-cache-sentinel-config" {
@@ -857,7 +858,7 @@ func TestBuildSentinelConfigMap(t *testing.T) {
 
 func TestBuildRedisStatefulSetSentinel(t *testing.T) {
 	lr := newTestLittleRed(testLRName, testNamespace)
-	lr.Spec.Mode = "sentinel"
+	lr.Spec.Mode = ModeSentinel
 	sts := buildRedisStatefulSetSentinel(lr)
 
 	// Check replicas (should be 3 for sentinel mode)
@@ -892,7 +893,7 @@ func TestBuildRedisStatefulSetSentinel(t *testing.T) {
 
 func TestBuildSentinelStatefulSet(t *testing.T) {
 	lr := newTestLittleRed(testLRName, testNamespace)
-	lr.Spec.Mode = "sentinel"
+	lr.Spec.Mode = ModeSentinel
 	sts := buildSentinelStatefulSet(lr)
 
 	// Check name
@@ -922,7 +923,7 @@ func TestBuildSentinelStatefulSet(t *testing.T) {
 	// Check sentinel port
 	var hasSentinelPort bool
 	for _, p := range containers[0].Ports {
-		if p.Name == "sentinel" && p.ContainerPort == 26379 {
+		if p.Name == ComponentSentinel && p.ContainerPort == 26379 {
 			hasSentinelPort = true
 		}
 	}
@@ -942,7 +943,7 @@ func TestBuildSentinelStatefulSet(t *testing.T) {
 
 func TestBuildMasterService(t *testing.T) {
 	lr := newTestLittleRed(testLRName, testNamespace)
-	lr.Spec.Mode = "sentinel"
+	lr.Spec.Mode = ModeSentinel
 	svc := buildMasterService(lr)
 
 	// Check name (same as standalone)
@@ -958,7 +959,7 @@ func TestBuildMasterService(t *testing.T) {
 
 func TestBuildReplicasHeadlessService(t *testing.T) {
 	lr := newTestLittleRed(testLRName, testNamespace)
-	lr.Spec.Mode = "sentinel"
+	lr.Spec.Mode = ModeSentinel
 	svc := buildReplicasHeadlessService(lr)
 
 	// Check name
@@ -979,7 +980,7 @@ func TestBuildReplicasHeadlessService(t *testing.T) {
 
 func TestBuildSentinelHeadlessService(t *testing.T) {
 	lr := newTestLittleRed(testLRName, testNamespace)
-	lr.Spec.Mode = "sentinel"
+	lr.Spec.Mode = ModeSentinel
 	svc := buildSentinelHeadlessService(lr)
 
 	// Check name
@@ -1021,8 +1022,8 @@ func TestBuildServiceMonitor(t *testing.T) {
 	if len(sm.Spec.Endpoints) != 1 {
 		t.Errorf("ServiceMonitor has %d endpoints, want 1", len(sm.Spec.Endpoints))
 	}
-	if sm.Spec.Endpoints[0].Port != "metrics" {
-		t.Errorf("ServiceMonitor endpoint port = %q, want metrics", sm.Spec.Endpoints[0].Port)
+	if sm.Spec.Endpoints[0].Port != portNameMetrics {
+		t.Errorf("ServiceMonitor endpoint port = %q, want %q", sm.Spec.Endpoints[0].Port, portNameMetrics)
 	}
 }
 
@@ -1086,7 +1087,7 @@ func TestBuildExporterContainer(t *testing.T) {
 	// Check metrics port
 	var hasMetricsPort bool
 	for _, p := range container.Ports {
-		if p.Name == "metrics" && p.ContainerPort == 9121 {
+		if p.Name == portNameMetrics && p.ContainerPort == 9121 {
 			hasMetricsPort = true
 		}
 	}

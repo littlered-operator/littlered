@@ -90,10 +90,19 @@ const (
 	ComponentSentinel = "sentinel"
 	ComponentCluster  = "cluster"
 	LabelRole         = "chuck-chuck-chuck.net/role"
+	ModeStandalone    = "standalone"
+	ModeSentinel      = "sentinel"
+	ModeCluster       = "cluster"
 	RoleMaster        = "master"
 	RoleReplica       = "replica"
 	RoleOrphan        = "orphan"
 	RoleUndefined     = "undefined"
+)
+
+// Component names used in app.kubernetes.io/component labels, container names, and port names
+const (
+	tlsInsecureFlags = "--tls --insecure"
+	annotationTrue   = "true"
 )
 
 // computeConfigHash computes a SHA256 hash of the ConfigMap data
@@ -808,11 +817,6 @@ func buildSentinelConfigMap(lr *littleredv1alpha1.LittleRed) *corev1.ConfigMap {
 func buildSentinelConfig(lr *littleredv1alpha1.LittleRed) string {
 	var sb strings.Builder
 
-	sentinel := lr.Spec.Sentinel
-	if sentinel == nil {
-		sentinel = &littleredv1alpha1.SentinelSpec{}
-	}
-
 	sb.WriteString("# LittleRed Sentinel configuration\n")
 	sb.WriteString(fmt.Sprintf("port %d\n", littleredv1alpha1.SentinelPort))
 	sb.WriteString("dir /data\n")
@@ -1147,7 +1151,7 @@ log "Starting Redis node $HOSTNAME. Waiting for Sentinel authorization..."
 	var buf bytes.Buffer
 	tlsFlags := ""
 	if lr.Spec.TLS.Enabled {
-		tlsFlags = "--tls --insecure"
+		tlsFlags = tlsInsecureFlags
 	}
 	err := tmpl.Execute(&buf, struct {
 		Name      string
@@ -1214,7 +1218,7 @@ fi`))
 	var preStopBuf bytes.Buffer
 	sentinelPreStopTLSFlags := ""
 	if lr.Spec.TLS.Enabled {
-		sentinelPreStopTLSFlags = "--tls --insecure"
+		sentinelPreStopTLSFlags = tlsInsecureFlags
 	}
 	err = preStopTmpl.Execute(&preStopBuf, struct {
 		Name      string
@@ -1392,11 +1396,6 @@ func buildSentinelStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulS
 	}
 
 	replicas := int32(3)
-
-	sentinel := lr.Spec.Sentinel
-	if sentinel == nil {
-		sentinel = &littleredv1alpha1.SentinelSpec{}
-	}
 
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1983,7 +1982,7 @@ exec redis-server /data/redis.conf \
 	var buf bytes.Buffer
 	tlsFlags := ""
 	if lr.Spec.TLS.Enabled {
-		tlsFlags = "--tls --insecure"
+		tlsFlags = tlsInsecureFlags
 	}
 	err := tmpl.Execute(&buf, struct {
 		Name           string
@@ -2050,7 +2049,7 @@ done`))
 	var preStopBuf bytes.Buffer
 	clusterPreStopTLSFlags := ""
 	if lr.Spec.TLS.Enabled {
-		clusterPreStopTLSFlags = "--tls --insecure"
+		clusterPreStopTLSFlags = tlsInsecureFlags
 	}
 	err = preStopTmpl.Execute(&preStopBuf, struct {
 		TLSFlags string

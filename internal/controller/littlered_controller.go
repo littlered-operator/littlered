@@ -156,12 +156,12 @@ func (r *LittleRedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	})
 
 	// Reconcile based on mode
-	if littleRed.Spec.Mode != "sentinel" {
+	if littleRed.Spec.Mode != ModeSentinel {
 		r.stopSentinelMonitor(req.NamespacedName)
 	}
 
 	// Initialize BootstrapRequired for Sentinel mode
-	if littleRed.Spec.Mode == "sentinel" && littleRed.Status.Phase == "" && !littleRed.Status.BootstrapRequired {
+	if littleRed.Spec.Mode == ModeSentinel && littleRed.Status.Phase == "" && !littleRed.Status.BootstrapRequired {
 		log.Info("Initializing new Sentinel cluster: setting bootstrapRequired flag")
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			latest := &littleredv1alpha1.LittleRed{}
@@ -184,11 +184,11 @@ func (r *LittleRedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	switch littleRed.Spec.Mode {
-	case "standalone":
+	case ModeStandalone:
 		return r.reconcileStandalone(ctx, littleRed)
-	case "sentinel":
+	case ModeSentinel:
 		return r.reconcileSentinel(ctx, littleRed)
-	case "cluster":
+	case ModeCluster:
 		return r.reconcileCluster(ctx, littleRed)
 	default:
 		return r.setFailedStatus(ctx, littleRed, "InvalidMode", fmt.Sprintf("Unknown mode: %s", littleRed.Spec.Mode))
@@ -304,7 +304,7 @@ func (r *LittleRedReconciler) validateSpec(ctx context.Context, littleRed *littl
 	}
 
 	// Validate cluster config
-	if littleRed.Spec.Mode == "cluster" {
+	if littleRed.Spec.Mode == ModeCluster {
 		if err := r.validateClusterSpec(littleRed); err != nil {
 			return err
 		}
