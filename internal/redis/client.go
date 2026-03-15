@@ -476,9 +476,9 @@ func SlaveOf(ctx context.Context, addr, password, masterIP, masterPort string, t
 	defer func() { _ = client.Close() }()
 
 	if masterIP == "" {
-		return client.SlaveOf(ctx, "NO", "ONE").Err()
+		return client.Do(ctx, "REPLICAOF", "NO", "ONE").Err()
 	}
-	return client.SlaveOf(ctx, masterIP, masterPort).Err()
+	return client.Do(ctx, "REPLICAOF", masterIP, masterPort).Err()
 }
 
 // GetReplicationInfo gets replication info from a redis instance
