@@ -90,11 +90,12 @@ var verifyCmd = &cobra.Command{
 			fmt.Printf("Verifying Cluster: %s/%s (Mode: %s)\n", cCtx.Namespace, cCtx.Name, cCtx.Mode)
 
 			var verifyErr error
-			if cCtx.Mode == "sentinel" {
+			switch cCtx.Mode {
+			case "sentinel":
 				verifyErr = verifySentinel(ctx, coreClient, config, cCtx)
-			} else if cCtx.Mode == "cluster" {
+			case "cluster":
 				verifyErr = verifyCluster(ctx, coreClient, config, cCtx)
-			} else {
+			default:
 				fmt.Printf("Verification for mode %q not yet fully implemented\n", cCtx.Mode)
 			}
 			if verifyErr != nil {
