@@ -1300,7 +1300,7 @@ func (r *LittleRedReconciler) apply(ctx context.Context, owner *littleredv1alpha
 		return err
 	}
 	obj.GetObjectKind().SetGroupVersionKind(gvk)
-	return r.Patch(ctx, obj, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership)
+	return r.Patch(ctx, obj, client.Apply, client.FieldOwner(fieldManager), client.ForceOwnership) //nolint:staticcheck
 }
 
 // getRedisPassword retrieves the Redis password from the secret if auth is enabled
