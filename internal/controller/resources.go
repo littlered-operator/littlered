@@ -86,11 +86,14 @@ func serviceMonitorName(lr *littleredv1alpha1.LittleRed) string {
 
 // Label keys
 const (
-	LabelRole     = "chuck-chuck-chuck.net/role"
-	RoleMaster    = "master"
-	RoleReplica   = "replica"
-	RoleOrphan    = "orphan"
-	RoleUndefined = "undefined"
+	ComponentRedis    = "redis"
+	ComponentSentinel = "sentinel"
+	ComponentCluster  = "cluster"
+	LabelRole         = "chuck-chuck-chuck.net/role"
+	RoleMaster        = "master"
+	RoleReplica       = "replica"
+	RoleOrphan        = "orphan"
+	RoleUndefined     = "undefined"
 )
 
 // computeConfigHash computes a SHA256 hash of the ConfigMap data
@@ -134,7 +137,7 @@ func redisSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/name":      "littlered",
 		"app.kubernetes.io/instance":  lr.Name,
-		"app.kubernetes.io/component": "redis",
+		"app.kubernetes.io/component": ComponentRedis,
 	}
 }
 
@@ -143,7 +146,7 @@ func sentinelSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/name":      "littlered",
 		"app.kubernetes.io/instance":  lr.Name,
-		"app.kubernetes.io/component": "sentinel",
+		"app.kubernetes.io/component": ComponentSentinel,
 	}
 }
 
@@ -152,7 +155,7 @@ func masterSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/name":      "littlered",
 		"app.kubernetes.io/instance":  lr.Name,
-		"app.kubernetes.io/component": "redis",
+		"app.kubernetes.io/component": ComponentRedis,
 		LabelRole:                     RoleMaster,
 	}
 }
@@ -162,7 +165,7 @@ func clusterSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/name":      "littlered",
 		"app.kubernetes.io/instance":  lr.Name,
-		"app.kubernetes.io/component": "cluster",
+		"app.kubernetes.io/component": ComponentCluster,
 	}
 }
 
@@ -245,7 +248,7 @@ func buildRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 // buildStatefulSet creates the StatefulSet for Redis
 func buildStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSet {
 	labels := commonLabels(lr)
-	labels["app.kubernetes.io/component"] = "redis"
+	labels["app.kubernetes.io/component"] = ComponentRedis
 
 	podLabels := make(map[string]string)
 	maps.Copy(podLabels, selectorLabels(lr))
@@ -315,13 +318,13 @@ func buildRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 	}
 
 	container := corev1.Container{
-		Name:            "redis",
+		Name:            ComponentRedis,
 		Image:           lr.Spec.Image.FullImage(),
 		ImagePullPolicy: lr.Spec.Image.PullPolicy,
 		Args:            args,
 		Ports: []corev1.ContainerPort{
 			{
-				Name:          "redis",
+				Name:          ComponentRedis,
 				ContainerPort: int32(littleredv1alpha1.RedisPort),
 				Protocol:      corev1.ProtocolTCP,
 			},
@@ -699,9 +702,9 @@ func buildService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 
 	ports := []corev1.ServicePort{
 		{
-			Name:       "redis",
+			Name:       ComponentRedis,
 			Port:       int32(littleredv1alpha1.RedisPort),
-			TargetPort: intstr.FromString("redis"),
+			TargetPort: intstr.FromString(ComponentRedis),
 			Protocol:   corev1.ProtocolTCP,
 		},
 	}
@@ -787,7 +790,7 @@ func buildServiceMonitor(lr *littleredv1alpha1.LittleRed) *monitoringv1.ServiceM
 // buildSentinelConfigMap creates the ConfigMap for sentinel.conf
 func buildSentinelConfigMap(lr *littleredv1alpha1.LittleRed) *corev1.ConfigMap {
 	labels := commonLabels(lr)
-	labels["app.kubernetes.io/component"] = "sentinel"
+	labels["app.kubernetes.io/component"] = ComponentSentinel
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -933,7 +936,7 @@ func buildRedisConfigSentinel(lr *littleredv1alpha1.LittleRed) string {
 // buildConfigMapSentinelMode creates the ConfigMap for redis.conf in sentinel mode
 func buildConfigMapSentinelMode(lr *littleredv1alpha1.LittleRed) *corev1.ConfigMap {
 	labels := commonLabels(lr)
-	labels["app.kubernetes.io/component"] = "redis"
+	labels["app.kubernetes.io/component"] = ComponentRedis
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -950,7 +953,7 @@ func buildConfigMapSentinelMode(lr *littleredv1alpha1.LittleRed) *corev1.ConfigM
 // buildRedisStatefulSetSentinel creates the Redis StatefulSet for sentinel mode (3 replicas)
 func buildRedisStatefulSetSentinel(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSet {
 	labels := commonLabels(lr)
-	labels["app.kubernetes.io/component"] = "redis"
+	labels["app.kubernetes.io/component"] = ComponentRedis
 
 	podLabels := make(map[string]string)
 	maps.Copy(podLabels, redisSelectorLabels(lr))
@@ -1228,13 +1231,13 @@ fi`))
 	preStopScript := preStopBuf.String()
 
 	container := corev1.Container{
-		Name:            "redis",
+		Name:            ComponentRedis,
 		Image:           lr.Spec.Image.FullImage(),
 		ImagePullPolicy: lr.Spec.Image.PullPolicy,
 		Command:         []string{"sh", "-c", finalScript},
 		Ports: []corev1.ContainerPort{
 			{
-				Name:          "redis",
+				Name:          ComponentRedis,
 				ContainerPort: int32(littleredv1alpha1.RedisPort),
 				Protocol:      corev1.ProtocolTCP,
 			},
@@ -1375,7 +1378,7 @@ func buildSentinelVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 // buildSentinelStatefulSet creates the Sentinel StatefulSet
 func buildSentinelStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSet {
 	labels := commonLabels(lr)
-	labels["app.kubernetes.io/component"] = "sentinel"
+	labels["app.kubernetes.io/component"] = ComponentSentinel
 
 	podLabels := make(map[string]string)
 	maps.Copy(podLabels, sentinelSelectorLabels(lr))
@@ -1467,13 +1470,13 @@ exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_A
 	script := buf.String()
 
 	container := corev1.Container{
-		Name:            "sentinel",
+		Name:            ComponentSentinel,
 		Image:           lr.Spec.Image.FullImage(),
 		ImagePullPolicy: lr.Spec.Image.PullPolicy,
 		Command:         []string{"sh", "-c", script},
 		Ports: []corev1.ContainerPort{
 			{
-				Name:          "sentinel",
+				Name:          ComponentSentinel,
 				ContainerPort: int32(littleredv1alpha1.SentinelPort),
 				Protocol:      corev1.ProtocolTCP,
 			},
@@ -1578,9 +1581,9 @@ func buildMasterService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 
 	ports := []corev1.ServicePort{
 		{
-			Name:       "redis",
+			Name:       ComponentRedis,
 			Port:       int32(littleredv1alpha1.RedisPort),
-			TargetPort: intstr.FromString("redis"),
+			TargetPort: intstr.FromString(ComponentRedis),
 			Protocol:   corev1.ProtocolTCP,
 		},
 	}
@@ -1612,7 +1615,7 @@ func buildMasterService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 // buildReplicasHeadlessService creates the headless Service for all Redis pods
 func buildReplicasHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 	labels := commonLabels(lr)
-	labels["app.kubernetes.io/component"] = "redis"
+	labels["app.kubernetes.io/component"] = ComponentRedis
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1627,9 +1630,9 @@ func buildReplicasHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Servi
 			PublishNotReadyAddresses: true,
 			Ports: []corev1.ServicePort{
 				{
-					Name:       "redis",
+					Name:       ComponentRedis,
 					Port:       int32(littleredv1alpha1.RedisPort),
-					TargetPort: intstr.FromString("redis"),
+					TargetPort: intstr.FromString(ComponentRedis),
 					Protocol:   corev1.ProtocolTCP,
 				},
 			},
@@ -1640,7 +1643,7 @@ func buildReplicasHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Servi
 // buildSentinelHeadlessService creates the headless Service for Sentinel pods
 func buildSentinelHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 	labels := commonLabels(lr)
-	labels["app.kubernetes.io/component"] = "sentinel"
+	labels["app.kubernetes.io/component"] = ComponentSentinel
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1655,9 +1658,9 @@ func buildSentinelHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Servi
 			PublishNotReadyAddresses: true,
 			Ports: []corev1.ServicePort{
 				{
-					Name:       "sentinel",
+					Name:       ComponentSentinel,
 					Port:       int32(littleredv1alpha1.SentinelPort),
-					TargetPort: intstr.FromString("sentinel"),
+					TargetPort: intstr.FromString(ComponentSentinel),
 					Protocol:   corev1.ProtocolTCP,
 				},
 			},
@@ -1676,7 +1679,7 @@ func ptr[T any](v T) *T {
 // buildClusterConfigMap creates the ConfigMap for cluster mode redis.conf
 func buildClusterConfigMap(lr *littleredv1alpha1.LittleRed) *corev1.ConfigMap {
 	labels := commonLabels(lr)
-	labels["app.kubernetes.io/component"] = "cluster"
+	labels["app.kubernetes.io/component"] = ComponentCluster
 
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1772,7 +1775,7 @@ func buildClusterRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 // buildClusterStatefulSet creates the StatefulSet for cluster mode
 func buildClusterStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSet {
 	labels := commonLabels(lr)
-	labels["app.kubernetes.io/component"] = "cluster"
+	labels["app.kubernetes.io/component"] = ComponentCluster
 
 	podLabels := make(map[string]string)
 	maps.Copy(podLabels, clusterSelectorLabels(lr))
@@ -2060,13 +2063,13 @@ done`))
 	preStopScript := preStopBuf.String()
 
 	container := corev1.Container{
-		Name:            "redis",
+		Name:            ComponentRedis,
 		Image:           lr.Spec.Image.FullImage(),
 		ImagePullPolicy: lr.Spec.Image.PullPolicy,
 		Command:         []string{"sh", "-c", script},
 		Ports: []corev1.ContainerPort{
 			{
-				Name:          "redis",
+				Name:          ComponentRedis,
 				ContainerPort: int32(littleredv1alpha1.RedisPort),
 				Protocol:      corev1.ProtocolTCP,
 			},
@@ -2285,7 +2288,7 @@ func buildClusterReadinessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 // buildClusterHeadlessService creates the headless Service for cluster pods
 func buildClusterHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 	labels := commonLabels(lr)
-	labels["app.kubernetes.io/component"] = "cluster"
+	labels["app.kubernetes.io/component"] = ComponentCluster
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2300,9 +2303,9 @@ func buildClusterHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Servic
 			PublishNotReadyAddresses: true,
 			Ports: []corev1.ServicePort{
 				{
-					Name:       "redis",
+					Name:       ComponentRedis,
 					Port:       int32(littleredv1alpha1.RedisPort),
-					TargetPort: intstr.FromString("redis"),
+					TargetPort: intstr.FromString(ComponentRedis),
 					Protocol:   corev1.ProtocolTCP,
 				},
 				{
@@ -2323,9 +2326,9 @@ func buildClusterClientService(lr *littleredv1alpha1.LittleRed) *corev1.Service 
 
 	ports := []corev1.ServicePort{
 		{
-			Name:       "redis",
+			Name:       ComponentRedis,
 			Port:       int32(littleredv1alpha1.RedisPort),
-			TargetPort: intstr.FromString("redis"),
+			TargetPort: intstr.FromString(ComponentRedis),
 			Protocol:   corev1.ProtocolTCP,
 		},
 	}

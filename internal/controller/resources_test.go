@@ -154,7 +154,7 @@ func TestRedisSelectorLabels(t *testing.T) {
 	lr := newTestLittleRed(testLRName, "default")
 	labels := redisSelectorLabels(lr)
 
-	if labels["app.kubernetes.io/component"] != "redis" {
+	if labels["app.kubernetes.io/component"] != ComponentRedis {
 		t.Errorf("redisSelectorLabels() missing component=redis")
 	}
 }
@@ -163,7 +163,7 @@ func TestSentinelSelectorLabels(t *testing.T) {
 	lr := newTestLittleRed(testLRName, "default")
 	labels := sentinelSelectorLabels(lr)
 
-	if labels["app.kubernetes.io/component"] != "sentinel" {
+	if labels["app.kubernetes.io/component"] != ComponentSentinel {
 		t.Errorf("sentinelSelectorLabels() missing component=sentinel")
 	}
 }
@@ -175,7 +175,7 @@ func TestMasterSelectorLabels(t *testing.T) {
 	if labels[LabelRole] != RoleMaster {
 		t.Errorf("masterSelectorLabels() missing role=master")
 	}
-	if labels["app.kubernetes.io/component"] != "redis" {
+	if labels["app.kubernetes.io/component"] != ComponentRedis {
 		t.Errorf("masterSelectorLabels() missing component=redis")
 	}
 }
@@ -369,7 +369,7 @@ func TestBuildStatefulSet(t *testing.T) {
 	// Verify redis container exists
 	var hasRedis bool
 	for _, c := range containers {
-		if c.Name == "redis" {
+		if c.Name == ComponentRedis {
 			hasRedis = true
 			// Check image
 			if c.Image != "docker.io/valkey/valkey:8.0" {
@@ -433,7 +433,7 @@ func TestBuildStatefulSetWithoutMetrics(t *testing.T) {
 	if len(containers) != 1 {
 		t.Errorf("StatefulSet has %d containers, want 1 (redis only)", len(containers))
 	}
-	if containers[0].Name != "redis" {
+	if containers[0].Name != ComponentRedis {
 		t.Errorf("Container name = %q, want redis", containers[0].Name)
 	}
 }
@@ -447,7 +447,7 @@ func TestBuildStatefulSetWithAuth(t *testing.T) {
 	// Find redis container
 	var redisContainer *corev1.Container
 	for i := range sts.Spec.Template.Spec.Containers {
-		if sts.Spec.Template.Spec.Containers[i].Name == "redis" {
+		if sts.Spec.Template.Spec.Containers[i].Name == ComponentRedis {
 			redisContainer = &sts.Spec.Template.Spec.Containers[i]
 			break
 		}
@@ -492,7 +492,7 @@ func TestBuildStatefulSetWithCustomResources(t *testing.T) {
 	// Find redis container
 	var redisContainer *corev1.Container
 	for i := range sts.Spec.Template.Spec.Containers {
-		if sts.Spec.Template.Spec.Containers[i].Name == "redis" {
+		if sts.Spec.Template.Spec.Containers[i].Name == ComponentRedis {
 			redisContainer = &sts.Spec.Template.Spec.Containers[i]
 			break
 		}
@@ -564,7 +564,7 @@ func TestBuildServiceWithoutMetrics(t *testing.T) {
 	if len(svc.Spec.Ports) != 1 {
 		t.Errorf("Service has %d ports, want 1", len(svc.Spec.Ports))
 	}
-	if svc.Spec.Ports[0].Name != "redis" {
+	if svc.Spec.Ports[0].Name != ComponentRedis {
 		t.Errorf("Port name = %q, want redis", svc.Spec.Ports[0].Name)
 	}
 }
@@ -850,7 +850,7 @@ func TestBuildSentinelConfigMap(t *testing.T) {
 		t.Error("ConfigMap missing sentinel.conf key")
 	}
 
-	if cm.Labels["app.kubernetes.io/component"] != "sentinel" {
+	if cm.Labels["app.kubernetes.io/component"] != ComponentSentinel {
 		t.Error("ConfigMap missing component=sentinel label")
 	}
 }
@@ -876,7 +876,7 @@ func TestBuildRedisStatefulSetSentinel(t *testing.T) {
 	}
 
 	// Verify selector uses redisSelectorLabels
-	if sts.Spec.Selector.MatchLabels["app.kubernetes.io/component"] != "redis" {
+	if sts.Spec.Selector.MatchLabels["app.kubernetes.io/component"] != ComponentRedis {
 		t.Error("StatefulSet selector should have component=redis")
 	}
 
@@ -915,7 +915,7 @@ func TestBuildSentinelStatefulSet(t *testing.T) {
 	if len(containers) != 1 {
 		t.Errorf("StatefulSet has %d containers, want 1", len(containers))
 	}
-	if containers[0].Name != "sentinel" {
+	if containers[0].Name != ComponentSentinel {
 		t.Errorf("Container name = %q, want sentinel", containers[0].Name)
 	}
 
