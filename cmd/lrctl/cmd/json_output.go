@@ -219,7 +219,10 @@ type clusterVerifyJSON struct {
 	Healthy      bool                    `json:"healthy"`
 }
 
-func buildSentinelVerifyJSON(name, namespace string, redisMap map[string]string, state *redisclient.SentinelClusterState) sentinelVerifyJSON {
+func buildSentinelVerifyJSON(
+	name, namespace string, redisMap map[string]string,
+	state *redisclient.SentinelClusterState,
+) sentinelVerifyJSON {
 	actions := state.GetHealActions()
 	if actions == nil {
 		actions = []string{}

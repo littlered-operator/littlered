@@ -73,7 +73,9 @@ func (g *cliGatherer) GetRedisState(ctx context.Context, podName, ip string) (*r
 	}, nil
 }
 
-func (g *cliGatherer) GetSentinelState(ctx context.Context, podName, ip string) (*redisclient.SentinelNodeState, error) {
+func (g *cliGatherer) GetSentinelState(
+	ctx context.Context, podName, ip string,
+) (*redisclient.SentinelNodeState, error) {
 	// Get Master
 	stdout, _, err := k8s.Exec(g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.SentinelContainer, []string{"redis-cli", "-p", "26379", "sentinel", "master", "mymaster"})
 	if err != nil {

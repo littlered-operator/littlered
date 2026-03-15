@@ -112,7 +112,10 @@ var verifyCmd = &cobra.Command{
 	},
 }
 
-func verifyCluster(ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config, cCtx *types.ClusterContext) error {
+func verifyCluster(
+	ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config,
+	cCtx *types.ClusterContext,
+) error {
 	clusterPods := make(map[string]string)
 	for _, p := range cCtx.RedisPods {
 		if p.Status.PodIP != "" {
@@ -198,7 +201,10 @@ func verifyCluster(ctx context.Context, coreClient *kubernetes.Clientset, config
 	return fmt.Errorf("cluster %s/%s has topology or health issues", cCtx.Namespace, cCtx.Name)
 }
 
-func verifySentinel(ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config, cCtx *types.ClusterContext) error {
+func verifySentinel(
+	ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config,
+	cCtx *types.ClusterContext,
+) error {
 	redisMap := make(map[string]string)
 	for _, p := range cCtx.RedisPods {
 		if p.Status.PodIP != "" {
@@ -279,7 +285,10 @@ func init() {
 
 // verifySentinelJSON gathers sentinel cluster state and returns it as a
 // JSON-serialisable struct without printing anything.
-func verifySentinelJSON(ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config, cCtx *types.ClusterContext, name, namespace string) (sentinelVerifyJSON, error) {
+func verifySentinelJSON(
+	ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config,
+	cCtx *types.ClusterContext, name, namespace string,
+) (sentinelVerifyJSON, error) {
 	redisMap := make(map[string]string)
 	for _, p := range cCtx.RedisPods {
 		if p.Status.PodIP != "" {
@@ -299,7 +308,10 @@ func verifySentinelJSON(ctx context.Context, coreClient *kubernetes.Clientset, c
 
 // verifyClusterJSON gathers cluster ground truth and returns it as a
 // JSON-serialisable struct without printing anything.
-func verifyClusterJSON(ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config, cCtx *types.ClusterContext, name, namespace string) (clusterVerifyJSON, error) {
+func verifyClusterJSON(
+	ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config,
+	cCtx *types.ClusterContext, name, namespace string,
+) (clusterVerifyJSON, error) {
 	clusterPods := make(map[string]string)
 	for _, p := range cCtx.RedisPods {
 		if p.Status.PodIP != "" {
