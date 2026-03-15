@@ -115,6 +115,8 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 }
 
 // repairCluster handles healing: partitions, ghost nodes, slot restoration, and replication topology
+//
+//nolint:gocyclo
 func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, gt *redisclient.ClusterGroundTruth) (ctrl.Result, error) {
 	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 	fast, _ := littleRed.GetRequeueIntervals()

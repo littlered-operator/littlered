@@ -587,6 +587,8 @@ func (r *LittleRedReconciler) reconcileMasterService(ctx context.Context, little
 
 // reconcileSentinelCluster gathers ground truth from all pods (Redis and Sentinel)
 // and performs atomic healing of the entire cluster state.
+//
+//nolint:gocyclo
 func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
 	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 
@@ -1008,6 +1010,8 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 }
 
 // updateSentinelStatus updates the LittleRed status for sentinel mode
+//
+//nolint:gocyclo
 func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
 	log := r.getLogger(ctx, lr, LogCategoryRecon)
 	stateLog := r.getLogger(ctx, lr, LogCategoryState)
