@@ -29,6 +29,8 @@ import (
 
 const (
 	testLRName       = "my-cache"
+	testSentinelName = testLRName + "-sentinel"
+	testReplicasName = testLRName + "-replicas"
 	testNamespace    = "test-ns"
 	portNameMetrics  = "metrics"
 )
@@ -77,7 +79,7 @@ func TestStatefulSetName(t *testing.T) {
 
 func TestSentinelStatefulSetName(t *testing.T) {
 	lr := newTestLittleRed(testLRName, "default")
-	expected := "my-cache-sentinel"
+	expected := testSentinelName
 	if got := sentinelStatefulSetName(lr); got != expected {
 		t.Errorf("sentinelStatefulSetName() = %q, want %q", got, expected)
 	}
@@ -93,7 +95,7 @@ func TestServiceName(t *testing.T) {
 
 func TestReplicasServiceName(t *testing.T) {
 	lr := newTestLittleRed(testLRName, "default")
-	expected := "my-cache-replicas"
+	expected := testReplicasName
 	if got := replicasServiceName(lr); got != expected {
 		t.Errorf("replicasServiceName() = %q, want %q", got, expected)
 	}
@@ -101,7 +103,7 @@ func TestReplicasServiceName(t *testing.T) {
 
 func TestSentinelServiceName(t *testing.T) {
 	lr := newTestLittleRed(testLRName, "default")
-	expected := "my-cache-sentinel"
+	expected := testSentinelName
 	if got := sentinelServiceName(lr); got != expected {
 		t.Errorf("sentinelServiceName() = %q, want %q", got, expected)
 	}
@@ -867,8 +869,8 @@ func TestBuildRedisStatefulSetSentinel(t *testing.T) {
 	}
 
 	// Check serviceName (should be headless replicas service)
-	if sts.Spec.ServiceName != "my-cache-replicas" {
-		t.Errorf("StatefulSet serviceName = %q, want %q", sts.Spec.ServiceName, "my-cache-replicas")
+	if sts.Spec.ServiceName != testReplicasName {
+		t.Errorf("StatefulSet serviceName = %q, want %q", sts.Spec.ServiceName, testReplicasName)
 	}
 
 	// Check PodManagementPolicy
@@ -897,8 +899,8 @@ func TestBuildSentinelStatefulSet(t *testing.T) {
 	sts := buildSentinelStatefulSet(lr)
 
 	// Check name
-	if sts.Name != "my-cache-sentinel" {
-		t.Errorf("StatefulSet name = %q, want %q", sts.Name, "my-cache-sentinel")
+	if sts.Name != testSentinelName {
+		t.Errorf("StatefulSet name = %q, want %q", sts.Name, testSentinelName)
 	}
 
 	// Check replicas
@@ -907,8 +909,8 @@ func TestBuildSentinelStatefulSet(t *testing.T) {
 	}
 
 	// Check serviceName
-	if sts.Spec.ServiceName != "my-cache-sentinel" {
-		t.Errorf("StatefulSet serviceName = %q, want %q", sts.Spec.ServiceName, "my-cache-sentinel")
+	if sts.Spec.ServiceName != testSentinelName {
+		t.Errorf("StatefulSet serviceName = %q, want %q", sts.Spec.ServiceName, testSentinelName)
 	}
 
 	// Check container
@@ -963,8 +965,8 @@ func TestBuildReplicasHeadlessService(t *testing.T) {
 	svc := buildReplicasHeadlessService(lr)
 
 	// Check name
-	if svc.Name != "my-cache-replicas" {
-		t.Errorf("Service name = %q, want %q", svc.Name, "my-cache-replicas")
+	if svc.Name != testReplicasName {
+		t.Errorf("Service name = %q, want %q", svc.Name, testReplicasName)
 	}
 
 	// Check ClusterIP is None (headless)
@@ -984,8 +986,8 @@ func TestBuildSentinelHeadlessService(t *testing.T) {
 	svc := buildSentinelHeadlessService(lr)
 
 	// Check name
-	if svc.Name != "my-cache-sentinel" {
-		t.Errorf("Service name = %q, want %q", svc.Name, "my-cache-sentinel")
+	if svc.Name != testSentinelName {
+		t.Errorf("Service name = %q, want %q", svc.Name, testSentinelName)
 	}
 
 	// Check ClusterIP is None (headless)
