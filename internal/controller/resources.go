@@ -86,23 +86,19 @@ func serviceMonitorName(lr *littleredv1alpha1.LittleRed) string {
 
 // Label keys
 const (
-	ComponentRedis    = "redis"
-	ComponentSentinel = "sentinel"
-	ComponentCluster  = "cluster"
-	LabelRole         = "chuck-chuck-chuck.net/role"
-	ModeStandalone    = "standalone"
-	ModeSentinel      = "sentinel"
-	ModeCluster       = "cluster"
-	RoleMaster        = "master"
-	RoleReplica       = "replica"
-	RoleOrphan        = "orphan"
-	RoleUndefined     = "undefined"
-)
-
-// Component names used in app.kubernetes.io/component labels, container names, and port names
-const (
-	tlsInsecureFlags = "--tls --insecure"
-	annotationTrue   = "true"
+	ComponentRedis      = "redis"
+	ComponentSentinel   = "sentinel"
+	ComponentCluster    = "cluster"
+	LabelRole           = "chuck-chuck-chuck.net/role"
+	ModeStandalone      = "standalone"
+	ModeSentinel        = "sentinel"
+	ModeCluster         = "cluster"
+	RoleMaster          = "master"
+	RoleReplica         = "replica"
+	RoleOrphan          = "orphan"
+	RoleUndefined       = "undefined"
+	annotationValueTrue = "true"
+	tlsInsecureFlags    = "--tls --insecure"
 )
 
 // computeConfigHash computes a SHA256 hash of the ConfigMap data

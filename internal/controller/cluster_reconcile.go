@@ -549,7 +549,7 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 	time.Sleep(2 * time.Second)
 
 	// 2. Assign Slots to Masters
-	if littleRed.Annotations[AnnotationDebugSkipSlotAssignment] == "true" {
+	if littleRed.Annotations[AnnotationDebugSkipSlotAssignment] == annotationValueTrue {
 		auditLog.Info("DEBUG: Skipping slot assignment due to annotation")
 	} else {
 		slotRanges := redisclient.GenerateSlotRanges(cluster.Shards)

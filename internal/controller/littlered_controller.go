@@ -1224,7 +1224,7 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *litt
 	}
 
 	// Periodically requeue to update master info, unless disabled via annotation
-	if latest.Annotations[AnnotationDisablePolling] == "true" {
+	if latest.Annotations[AnnotationDisablePolling] == annotationValueTrue {
 		log.Info("Sentinel polling disabled via annotation")
 		return ctrl.Result{}, nil
 	}
