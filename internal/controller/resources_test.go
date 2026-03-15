@@ -32,6 +32,7 @@ const (
 	testSentinelName = testLRName + "-sentinel"
 	testReplicasName = testLRName + "-replicas"
 	testNamespace    = "test-ns"
+	testTLSSecret    = "tls-secret"
 	portNameMetrics  = "metrics"
 )
 
@@ -227,7 +228,7 @@ func TestBuildRedisConfig(t *testing.T) {
 			name: "with TLS enabled",
 			setupLR: func(lr *littleredv1alpha1.LittleRed) {
 				lr.Spec.TLS.Enabled = true
-				lr.Spec.TLS.ExistingSecret = "tls-secret"
+				lr.Spec.TLS.ExistingSecret = testTLSSecret
 			},
 			mustHave: []string{
 				"tls-port 6379",
@@ -240,8 +241,8 @@ func TestBuildRedisConfig(t *testing.T) {
 			name: "with TLS client auth",
 			setupLR: func(lr *littleredv1alpha1.LittleRed) {
 				lr.Spec.TLS.Enabled = true
-				lr.Spec.TLS.ExistingSecret = "tls-secret"
-				lr.Spec.TLS.CACertSecret = "tls-secret" // CA is in the same secret → mounted at /tls
+				lr.Spec.TLS.ExistingSecret = testTLSSecret
+				lr.Spec.TLS.CACertSecret = testTLSSecret // CA is in the same secret → mounted at /tls
 				lr.Spec.TLS.ClientAuth = true
 			},
 			mustHave: []string{
@@ -623,7 +624,7 @@ func TestBuildVolumes(t *testing.T) {
 func TestBuildVolumesWithTLS(t *testing.T) {
 	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.TLS.Enabled = true
-	lr.Spec.TLS.ExistingSecret = "tls-secret"
+	lr.Spec.TLS.ExistingSecret = testTLSSecret
 	volumes := buildVolumes(lr)
 
 	// Should have config, data, and tls volumes
@@ -635,7 +636,7 @@ func TestBuildVolumesWithTLS(t *testing.T) {
 	for _, v := range volumes {
 		if v.Name == "tls" {
 			hasTLS = true
-			if v.Secret == nil || v.Secret.SecretName != "tls-secret" {
+			if v.Secret == nil || v.Secret.SecretName != testTLSSecret {
 				t.Error("tls volume should reference tls-secret")
 			}
 		}
