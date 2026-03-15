@@ -376,7 +376,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		// Never assign a shard to a different master — that causes split-ownership
 		// and "Slot already busy" errors. If the intended master isn't available, wait.
 		intendedMasters := make(map[int]*redisclient.ClusterNodeState) // shardIdx -> Node
-		for i := 0; i < shards; i++ {
+		for i := range shards {
 			podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
 			if node, ok := gt.Nodes[podName]; ok && node.Role == "master" {
 				intendedMasters[i] = node
@@ -485,7 +485,7 @@ func (r *LittleRedReconciler) gatherGroundTruth(ctx context.Context, littleRed *
 	password := r.getRedisPassword(ctx, littleRed)
 
 	clusterPods := make(map[string]string)
-	for i := 0; i < totalNodes; i++ {
+	for i := range totalNodes {
 		podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
 		pod := &corev1.Pod{}
 		if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: littleRed.Namespace}, pod); err == nil && pod.Status.PodIP != "" {
@@ -517,7 +517,7 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 	podIPs := make([]string, totalNodes)
 	nodeIDs := make([]string, totalNodes)
 
-	for i := 0; i < totalNodes; i++ {
+	for i := range totalNodes {
 		podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
 		pod := &corev1.Pod{}
 		if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: littleRed.Namespace}, pod); err != nil {

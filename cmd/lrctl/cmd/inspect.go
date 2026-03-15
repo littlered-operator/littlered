@@ -146,8 +146,8 @@ var inspectCmd = &cobra.Command{
 }
 
 func printLines(stdout string) {
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(strings.TrimSpace(stdout), "\n")
+	for line := range lines {
 		fmt.Printf("  %s\n", line)
 	}
 }

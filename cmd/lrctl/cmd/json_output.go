@@ -44,7 +44,7 @@ func parseAlternatingKV(output string) map[string]string {
 // section headers starting with # are ignored).
 func parseInfoKV(output string) map[string]string {
 	result := make(map[string]string)
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		line = strings.TrimRight(strings.TrimSpace(line), "\r")
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue

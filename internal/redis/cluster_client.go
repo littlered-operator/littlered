@@ -289,9 +289,9 @@ func ParseClusterNodes(output string) []ClusterNodeInfo {
 // ParseClusterInfo parses the output of CLUSTER INFO command
 func ParseClusterInfo(output string) *ClusterInfo {
 	info := &ClusterInfo{}
-	lines := strings.Split(strings.TrimSpace(output), "\n")
+	lines := strings.SplitSeq(strings.TrimSpace(output), "\n")
 
-	for _, line := range lines {
+	for line := range lines {
 		line = strings.TrimSpace(line)
 		parts := strings.SplitN(line, ":", 2)
 		if len(parts) != 2 {
@@ -352,7 +352,7 @@ func GenerateSlotRanges(shards int) []struct {
 	}, shards)
 
 	start := 0
-	for i := 0; i < shards; i++ {
+	for i := range shards {
 		count := slotsPerShard
 		if i < remainder {
 			count++ // Distribute remainder slots

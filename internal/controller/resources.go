@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"text/template"
@@ -247,23 +248,17 @@ func buildStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSet {
 	labels["app.kubernetes.io/component"] = "redis"
 
 	podLabels := make(map[string]string)
-	for k, v := range selectorLabels(lr) {
-		podLabels[k] = v
-	}
+	maps.Copy(podLabels, selectorLabels(lr))
 	podLabels["app.kubernetes.io/component"] = "redis"
 	// Add user-defined pod labels
-	for k, v := range lr.Spec.PodTemplate.Labels {
-		podLabels[k] = v
-	}
+	maps.Copy(podLabels, lr.Spec.PodTemplate.Labels)
 
 	// Compute config hash for pod annotations to trigger rolling update on config change
 	configData := map[string]string{"redis.conf": buildRedisConfig(lr)}
 	configHash := computeConfigHash(configData)
 
 	podAnnotations := make(map[string]string)
-	for k, v := range lr.Spec.PodTemplate.Annotations {
-		podAnnotations[k] = v
-	}
+	maps.Copy(podAnnotations, lr.Spec.PodTemplate.Annotations)
 	podAnnotations[AnnotationConfigHash] = configHash
 
 	replicas := int32(1)
@@ -616,10 +611,7 @@ func buildSentinelLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 	}
 	const bufferMs = int64(15000)
 	failoverWindowMs := downAfterMs + failoverTimeoutMs + bufferMs
-	failureThreshold := int32((failoverWindowMs + periodSeconds*1000 - 1) / (periodSeconds * 1000))
-	if failureThreshold < 3 {
-		failureThreshold = 3
-	}
+	failureThreshold := max(int32((failoverWindowMs+periodSeconds*1000-1)/(periodSeconds*1000)), 3)
 
 	tmpl := template.Must(template.New("sentinel-liveness").Delims("[[", "]]").Parse(
 		`if [ -f /data/bootstrap-in-progress ]; then exit 0; fi
@@ -703,9 +695,7 @@ exit 1`))
 func buildService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 	labels := commonLabels(lr)
 	// Add user-defined labels
-	for k, v := range lr.Spec.Service.Labels {
-		labels[k] = v
-	}
+	maps.Copy(labels, lr.Spec.Service.Labels)
 
 	ports := []corev1.ServicePort{
 		{
@@ -747,9 +737,7 @@ func buildService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 func buildServiceMonitor(lr *littleredv1alpha1.LittleRed) *monitoringv1.ServiceMonitor {
 	labels := commonLabels(lr)
 	// Add user-defined labels
-	for k, v := range lr.Spec.Metrics.ServiceMonitor.Labels {
-		labels[k] = v
-	}
+	maps.Copy(labels, lr.Spec.Metrics.ServiceMonitor.Labels)
 
 	namespace := lr.Namespace
 	if lr.Spec.Metrics.ServiceMonitor.Namespace != "" {
@@ -965,21 +953,15 @@ func buildRedisStatefulSetSentinel(lr *littleredv1alpha1.LittleRed) *appsv1.Stat
 	labels["app.kubernetes.io/component"] = "redis"
 
 	podLabels := make(map[string]string)
-	for k, v := range redisSelectorLabels(lr) {
-		podLabels[k] = v
-	}
-	for k, v := range lr.Spec.PodTemplate.Labels {
-		podLabels[k] = v
-	}
+	maps.Copy(podLabels, redisSelectorLabels(lr))
+	maps.Copy(podLabels, lr.Spec.PodTemplate.Labels)
 
 	// Compute config hash for pod annotations to trigger rolling update on config change
 	configData := map[string]string{"redis.conf": buildRedisConfigSentinel(lr)}
 	configHash := computeConfigHash(configData)
 
 	podAnnotations := make(map[string]string)
-	for k, v := range lr.Spec.PodTemplate.Annotations {
-		podAnnotations[k] = v
-	}
+	maps.Copy(podAnnotations, lr.Spec.PodTemplate.Annotations)
 	podAnnotations[AnnotationConfigHash] = configHash
 
 	replicas := int32(3)
@@ -1396,9 +1378,7 @@ func buildSentinelStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulS
 	labels["app.kubernetes.io/component"] = "sentinel"
 
 	podLabels := make(map[string]string)
-	for k, v := range sentinelSelectorLabels(lr) {
-		podLabels[k] = v
-	}
+	maps.Copy(podLabels, sentinelSelectorLabels(lr))
 
 	// Compute config hash for pod annotations to trigger rolling update on config change
 	configData := map[string]string{"sentinel.conf": buildSentinelConfig(lr)}
@@ -1594,9 +1574,7 @@ exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_A
 // buildMasterService creates the Service that points to the current master
 func buildMasterService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 	labels := commonLabels(lr)
-	for k, v := range lr.Spec.Service.Labels {
-		labels[k] = v
-	}
+	maps.Copy(labels, lr.Spec.Service.Labels)
 
 	ports := []corev1.ServicePort{
 		{
@@ -1797,21 +1775,15 @@ func buildClusterStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSe
 	labels["app.kubernetes.io/component"] = "cluster"
 
 	podLabels := make(map[string]string)
-	for k, v := range clusterSelectorLabels(lr) {
-		podLabels[k] = v
-	}
-	for k, v := range lr.Spec.PodTemplate.Labels {
-		podLabels[k] = v
-	}
+	maps.Copy(podLabels, clusterSelectorLabels(lr))
+	maps.Copy(podLabels, lr.Spec.PodTemplate.Labels)
 
 	// Compute config hash for pod annotations to trigger rolling update on config change
 	configData := map[string]string{"redis.conf": buildClusterRedisConfig(lr)}
 	configHash := computeConfigHash(configData)
 
 	podAnnotations := make(map[string]string)
-	for k, v := range lr.Spec.PodTemplate.Annotations {
-		podAnnotations[k] = v
-	}
+	maps.Copy(podAnnotations, lr.Spec.PodTemplate.Annotations)
 	podAnnotations[AnnotationConfigHash] = configHash
 
 	cluster := lr.Spec.Cluster
@@ -2347,9 +2319,7 @@ func buildClusterHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Servic
 // buildClusterClientService creates the client Service for cluster mode
 func buildClusterClientService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 	labels := commonLabels(lr)
-	for k, v := range lr.Spec.Service.Labels {
-		labels[k] = v
-	}
+	maps.Copy(labels, lr.Spec.Service.Labels)
 
 	ports := []corev1.ServicePort{
 		{
