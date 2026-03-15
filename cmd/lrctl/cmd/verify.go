@@ -64,17 +64,9 @@ var verifyCmd = &cobra.Command{
 			if jsonOutput {
 				switch cCtx.Mode {
 				case modeSentinel:
-					r, err := verifySentinelJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace)
-					if err != nil {
-						errCount++
-					}
-					jsonResults = append(jsonResults, r)
+					jsonResults = append(jsonResults, verifySentinelJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace))
 				case modeCluster:
-					r, err := verifyClusterJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace)
-					if err != nil {
-						errCount++
-					}
-					jsonResults = append(jsonResults, r)
+					jsonResults = append(jsonResults, verifyClusterJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace))
 				default:
 					fmt.Fprintf(os.Stderr,
 						"error: %s/%s: JSON output for mode %q not yet implemented\n",
@@ -291,7 +283,7 @@ func init() {
 func verifySentinelJSON(
 	ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config,
 	cCtx *types.ClusterContext, name, namespace string,
-) (sentinelVerifyJSON, error) {
+) sentinelVerifyJSON {
 	redisMap := make(map[string]string)
 	for _, p := range cCtx.RedisPods {
 		if p.Status.PodIP != "" {
@@ -306,7 +298,7 @@ func verifySentinelJSON(
 	}
 	g := &cliGatherer{coreClient: coreClient, config: config, cCtx: cCtx}
 	state := redisclient.GatherClusterState(ctx, g, redisMap, sentinelMap)
-	return buildSentinelVerifyJSON(name, namespace, redisMap, state), nil
+	return buildSentinelVerifyJSON(name, namespace, redisMap, state)
 }
 
 // verifyClusterJSON gathers cluster ground truth and returns it as a
@@ -314,7 +306,7 @@ func verifySentinelJSON(
 func verifyClusterJSON(
 	ctx context.Context, coreClient *kubernetes.Clientset, config *rest.Config,
 	cCtx *types.ClusterContext, name, namespace string,
-) (clusterVerifyJSON, error) {
+) clusterVerifyJSON {
 	clusterPods := make(map[string]string)
 	for _, p := range cCtx.RedisPods {
 		if p.Status.PodIP != "" {
@@ -323,5 +315,5 @@ func verifyClusterJSON(
 	}
 	g := &cliGatherer{coreClient: coreClient, config: config, cCtx: cCtx}
 	gt := redisclient.GatherClusterGroundTruth(ctx, g, clusterPods)
-	return buildClusterVerifyJSON(name, namespace, gt), nil
+	return buildClusterVerifyJSON(name, namespace, gt)
 }
