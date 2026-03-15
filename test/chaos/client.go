@@ -129,7 +129,7 @@ type TestClient struct {
 
 // expectedValue computes the expected value for a given key (sha256 hash)
 func expectedValue(key int64) string {
-	hash := sha256.Sum256([]byte(fmt.Sprintf("%d", key)))
+	hash := sha256.Sum256(fmt.Appendf(nil, "%d", key))
 	return hex.EncodeToString(hash[:])
 }
 

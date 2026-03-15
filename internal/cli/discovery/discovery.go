@@ -39,7 +39,7 @@ func getFromCR(ctx context.Context, k8sClient client.Client, namespace, name str
 	cCtx := &types.ClusterContext{
 		Name:              name,
 		Namespace:         namespace,
-		Mode:              string(lr.Spec.Mode),
+		Mode:              lr.Spec.Mode,
 		RedisContainer:    "redis",
 		SentinelContainer: "sentinel",
 	}
