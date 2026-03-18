@@ -9,7 +9,7 @@ LittleRed is built for workloads where persistence is explicitly disabled and ne
 ### 1. Install the Operator
 
 ```bash
-helm install littlered oci://ghcr.io/littlered-operator/charts/littlered \
+helm upgrade --install littlered oci://ghcr.io/littlered-operator/charts/littlered \
   -n littlered-system --create-namespace
 ```
 
