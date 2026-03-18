@@ -1194,7 +1194,7 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *litt
 
 		// Update high-level status summary
 		if latest.Status.Phase == littleredv1alpha1.PhaseRunning {
-			latest.Status.Status = latest.Status.Master.PodName
+			latest.Status.Status = "Ready"
 		} else {
 			latest.Status.Status = string(latest.Status.Phase)
 		}
