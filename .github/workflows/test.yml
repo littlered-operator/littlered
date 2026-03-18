@@ -17,7 +17,10 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Running Tests
+      - name: Check tidy
         run: |
           go mod tidy
-          make test
+          git diff --exit-code go.mod go.sum
+
+      - name: Running Tests
+        run: make test

@@ -25,7 +25,10 @@ jobs:
       - name: Verify kind installation
         run: kind version
 
-      - name: Running Test e2e
+      - name: Check tidy
         run: |
           go mod tidy
-          make test-e2e
+          git diff --exit-code go.mod go.sum
+
+      - name: Running Test e2e
+        run: make test-e2e
