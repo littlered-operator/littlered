@@ -578,6 +578,7 @@ type ClusterNodeState struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=lr
 // +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`,description="Deployment mode"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`,description="Current phase"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.redis.ready`,description="Ready pods"
