@@ -70,4 +70,4 @@ jobs:
             --app-version ${{ steps.version.outputs.version }}
 
       - name: Push chart
-        run: helm push littlered-operator-${{ steps.version.outputs.version }}.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+        run: helm push littlered-${{ steps.version.outputs.version }}.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
