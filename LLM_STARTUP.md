@@ -46,9 +46,9 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 - **Rationale**: Provides an "honest" data store behavior where memory exhaustion results in errors rather than silent data loss (eviction).
 - **Instruction**: Avoid calling the project "optimized for caching" to prevent users from assuming a default LRU/LFU policy. It is a general-purpose in-memory store.
 
-### 2.3 Guaranteed QoS
-- **Decision**: Resources (CPU/Memory) `limits` always equal `requests` by default.
-- **Rationale**: Prevents "OOM Killer" surprises and CPU throttling, ensuring Redis has stable performance.
+### 2.3 Resource Defaults
+- **Decision**: Memory `limits` equal `requests` by default (preventing OOM surprises). No CPU limit by default (allowing bursting). Users can set explicit CPU limits for Guaranteed QoS if needed.
+- **Rationale**: Redis is single-threaded for commands; a CPU limit just throttles without benefit. Memory must be bounded to protect the node.
 
 ### 2.4 Kubernetes as "Source of Truth"
 - **Decision**: For Cluster mode, the operator uses the Kubernetes Pod list to detect "ghost" nodes.

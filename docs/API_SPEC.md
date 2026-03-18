@@ -171,15 +171,14 @@ spec:
 |-------|------|----------|---------|-------------|
 | `resources` | `corev1.ResourceRequirements` | No | See below | CPU/memory for Redis container |
 
-**Default resources** (optimized for Guaranteed QoS):
+**Default resources:**
 ```yaml
 resources:
   requests:
-    cpu: "250m"
-    memory: "256Mi"
+    cpu: "128m"
+    memory: "512Mi"
   limits:
-    cpu: "250m"
-    memory: "256Mi"
+    memory: "512Mi"
 ```
 
 **Behavior**: If `config.maxmemory` is not set, the operator auto-calculates it as ~90% of `resources.limits.memory` to leave headroom for Redis overhead (buffers, connections, etc.). User can always override with explicit value.

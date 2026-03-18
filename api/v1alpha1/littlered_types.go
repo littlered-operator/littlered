@@ -631,8 +631,8 @@ func init() {
 
 // Default resource values
 var (
-	DefaultCPU    = resource.MustParse("250m")
-	DefaultMemory = resource.MustParse("256Mi")
+	DefaultCPURequest = resource.MustParse("128m")
+	DefaultMemory     = resource.MustParse("512Mi")
 
 	DefaultExporterCPURequest    = resource.MustParse("50m")
 	DefaultExporterCPULimit      = resource.MustParse("100m")

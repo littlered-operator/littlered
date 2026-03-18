@@ -222,14 +222,12 @@ func setDefaultResources(r *corev1.ResourceRequirements) {
 	}
 
 	if _, ok := r.Requests[corev1.ResourceCPU]; !ok {
-		r.Requests[corev1.ResourceCPU] = DefaultCPU
+		r.Requests[corev1.ResourceCPU] = DefaultCPURequest
 	}
 	if _, ok := r.Requests[corev1.ResourceMemory]; !ok {
 		r.Requests[corev1.ResourceMemory] = DefaultMemory
 	}
-	if _, ok := r.Limits[corev1.ResourceCPU]; !ok {
-		r.Limits[corev1.ResourceCPU] = DefaultCPU
-	}
+	// No default CPU limit — allow bursting.
 	if _, ok := r.Limits[corev1.ResourceMemory]; !ok {
 		r.Limits[corev1.ResourceMemory] = DefaultMemory
 	}

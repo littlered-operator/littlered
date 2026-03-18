@@ -48,7 +48,7 @@ kubectl lr verify my-store
 
 - **Three deployment modes**: `standalone` (single pod), `sentinel` (1 master + 2 replicas monitored by 3 sentinels for automatic failover), and `cluster` (sharded Redis Cluster for horizontal scaling).
 - **Valkey 8.0 by default**, compatible with Redis 7.2+.
-- **Guaranteed QoS**: resource limits always equal requests, preventing OOM surprises and CPU throttling.
+- **Burstable QoS by default**: memory limits equal requests (preventing OOM surprises), no CPU limit (allowing bursting). Set explicit CPU limits if you need Guaranteed QoS.
 - **`noeviction` by default**: memory exhaustion returns an error rather than silently dropping data. Explicitly configure a different policy if you need eviction semantics.
 - **Security**: password authentication and TLS encryption, both via Kubernetes Secrets.
 - **Observability**: `redis_exporter` sidecar included by default, with optional `ServiceMonitor` for Prometheus.
@@ -72,9 +72,9 @@ spec:
     tag: "8.0"
     pullPolicy: IfNotPresent
 
-  resources:                # Guaranteed QoS: keep requests == limits
-    requests: { cpu: 250m, memory: 256Mi }
-    limits:   { cpu: 250m, memory: 256Mi }
+  resources:
+    requests: { cpu: 128m, memory: 512Mi }
+    limits:   { memory: 512Mi }
 
   config:
     maxmemoryPolicy: noeviction
