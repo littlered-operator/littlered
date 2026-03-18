@@ -65,7 +65,7 @@ jobs:
 
       - name: Package chart
         run: |
-          helm package charts/littlered-operator \
+          helm package charts/littlered \
             --version ${{ steps.version.outputs.version }} \
             --app-version ${{ steps.version.outputs.version }}
 
