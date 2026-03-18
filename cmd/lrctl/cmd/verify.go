@@ -18,7 +18,7 @@ import (
 
 var verifyCmd = &cobra.Command{
 	Use:   "verify [name]",
-	Short: "Verify consistency of a Redis cluster (omit name to verify all in namespace)",
+	Short: "Verify consistency of a Redis instance (omit name to verify all in namespace)",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		k8sClient, coreClient, config, defaultNS, err := k8s.NewClient(kubeconfig)

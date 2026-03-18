@@ -29,9 +29,9 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "lrctl",
-	Short: "lrctl is a CLI tool for managing LittleRed and foreign Redis clusters",
+	Short: "lrctl is a CLI tool for managing LittleRed and foreign Redis instances",
 	Long: `lrctl provides syntactic sugar for interacting with LittleRed resources,
-but also supports unmanaged clusters via heuristics.`,
+but also supports unmanaged Redis instances (standalone, sentinel, cluster) via heuristics.`,
 	SilenceUsage:  true, // don't print usage on RunE errors
 	SilenceErrors: true, // main.go prints the error; avoid double-printing
 }
@@ -129,7 +129,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(
 		&unmanaged, "unmanaged", false, "If true, skip looking for a LittleRed CR and use heuristics to find pods")
 	rootCmd.PersistentFlags().StringVar(
-		&kind, "kind", "sentinel", "The cluster kind (sentinel|cluster) when using --unmanaged")
+		&kind, "kind", "sentinel", "The instance kind (standalone|sentinel|cluster) when using --unmanaged")
 	rootCmd.PersistentFlags().BoolVarP(
 		&allNamespaces, "all-namespaces", "A", false, "If present, list resources across all namespaces")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "If true, output as JSON")
@@ -140,7 +140,7 @@ func init() {
 		panic(err)
 	}
 	kindCompletion := func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
-		return []string{"sentinel", modeCluster}, cobra.ShellCompDirectiveNoFileComp
+		return []string{"standalone", "sentinel", modeCluster}, cobra.ShellCompDirectiveNoFileComp
 	}
 	if err := rootCmd.RegisterFlagCompletionFunc("kind", kindCompletion); err != nil {
 		panic(err)

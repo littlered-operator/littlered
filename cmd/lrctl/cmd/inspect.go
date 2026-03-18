@@ -13,7 +13,7 @@ import (
 
 var inspectCmd = &cobra.Command{
 	Use:   "inspect [name]",
-	Short: "Perform a deep-dive diagnostic of a Redis cluster (omit name to inspect all in namespace)",
+	Short: "Perform a deep-dive diagnostic of a Redis instance (omit name to inspect all in namespace)",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		k8sClient, coreClient, config, defaultNS, err := k8s.NewClient(kubeconfig)

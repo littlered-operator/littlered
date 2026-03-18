@@ -73,8 +73,8 @@ func discoverUnmanaged(ctx context.Context, k8sClient client.Client, namespace, 
 	// Define heuristics as regex patterns
 	// 1. CloudPirates: <name>-redis-<digit>
 	cpRegex := regexp.MustCompile(fmt.Sprintf("^%s-redis-[0-9]+$", regexp.QuoteMeta(name)))
-	// 2. Bitnami: <name>-redis-node-<digit> or <name>-redis-cluster-<digit>
-	bitnamiRegex := regexp.MustCompile(fmt.Sprintf("^%s-redis-(node|cluster)-[0-9]+$", regexp.QuoteMeta(name)))
+	// 2. Bitnami: <name>-redis-node-<digit>, <name>-redis-cluster-<digit>, or <name>-master-<digit> (standalone)
+	bitnamiRegex := regexp.MustCompile(fmt.Sprintf("^%s-(redis-(node|cluster)|master)-[0-9]+$", regexp.QuoteMeta(name)))
 	// 3. Generic Cluster: <name>-cluster-[0-9]+
 	clusterRegex := regexp.MustCompile(fmt.Sprintf("^%s-cluster-[0-9]+$", regexp.QuoteMeta(name)))
 	// 4. Spotahome Redis: rfr-<name>-<digit>

@@ -12,7 +12,7 @@ import (
 
 var statusCmd = &cobra.Command{
 	Use:   "status [name]",
-	Short: "Show status of a LittleRed cluster (omit name to list all in namespace)",
+	Short: "Show status of a LittleRed instance (omit name to list all in namespace)",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		k8sClient, _, _, defaultNS, err := k8s.NewClient(kubeconfig)
