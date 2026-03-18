@@ -1,6 +1,6 @@
 module github.com/littlered-operator/littlered-operator
 
-go 1.26.1
+go 1.25.3
 
 require (
 	github.com/go-logr/logr v1.4.3
