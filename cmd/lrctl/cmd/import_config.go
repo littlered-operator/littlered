@@ -8,48 +8,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
-// skipKeys are CONFIG keys managed by the operator or not meaningful for a new deployment.
-// These are never included in spec.config.raw.
-var skipKeys = map[string]bool{
-	// Networking — operator-managed
-	"bind": true, "port": true, "protected-mode": true,
-	// Persistence — always disabled
-	"save": true, "appendonly": true, "appendfsync": true, "appendfilename": true,
-	"dbfilename": true, "aof-use-rdb-preamble": true, "rdbchecksum": true,
-	"rdbcompression": true, "rdb-del-sync-files": true,
-	// Paths — container-specific
-	"dir": true, "logfile": true, "pidfile": true,
-	// Replication — operator-managed
-	"slaveof": true, "replicaof": true, "masterauth": true,
-	"replica-serve-stale-data": true, "replica-read-only": true,
-	"repl-diskless-sync": true, "repl-diskless-sync-delay": true,
-	"repl-diskless-load": true, "replica-announce-ip": true,
-	"replica-announce-port": true, "min-replicas-to-write": true,
-	"min-replicas-max-lag": true, "repl-min-slaves-to-write": true,
-	"repl-min-slaves-max-lag": true,
-	// Cluster — operator-managed (cluster-enabled is startup-only, never in CONFIG GET)
-	"cluster-config-file":       true,
-	"cluster-announce-hostname": true, "cluster-announce-ip": true,
-	"cluster-announce-port": true, "cluster-announce-bus-port": true,
-	"cluster-announce-tls-port": true, "cluster-preferred-endpoint-type": true,
-	// TLS — detected and mapped to spec.tls, not raw
-	"tls-port": true, "tls-cert-file": true, "tls-key-file": true,
-	"tls-ca-cert-file": true, "tls-ca-cert-dir": true,
-	"tls-auth-clients": true, "tls-cluster": true, "tls-replication": true,
-	"tls-protocols": true, "tls-ciphersuites": true, "tls-ciphers": true,
-	// Auth — detected and mapped to spec.auth, not raw
-	"requirepass": true,
-	// First-class CR fields — mapped directly, not raw
-	"maxmemory": true, "maxmemory-policy": true,
-	"timeout": true, "tcp-keepalive": true,
-	"cluster-node-timeout": true,
-	// Runtime/internal — not useful for a new deployment
-	"databases": true, "always-show-logo": true, "daemonize": true,
-	"supervised": true, "loglevel": true, "syslog-enabled": true,
-	"syslog-ident": true, "syslog-facility": true,
-	"crash-log-enabled": true, "crash-memcheck-enabled": true,
-}
-
 // interestingKeys are performance-relevant CONFIG keys worth including in spec.config.raw
 // when they differ from Redis defaults.
 var interestingKeys = map[string]string{
@@ -108,7 +66,7 @@ var interestingKeys = map[string]string{
 
 // buildRawConfig collects interesting non-default CONFIG values into a redis.conf snippet.
 func buildRawConfig(config map[string]string) string {
-	var lines []string
+	lines := make([]string, 0, len(interestingKeys))
 	for key, defaultVal := range interestingKeys {
 		val, ok := config[key]
 		if !ok || val == defaultVal {
