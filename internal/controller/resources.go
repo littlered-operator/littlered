@@ -1708,7 +1708,6 @@ func buildClusterRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 	sb.WriteString("cluster-enabled yes\n")
 	sb.WriteString("cluster-config-file /data/nodes.conf\n")
 	sb.WriteString(fmt.Sprintf("cluster-node-timeout %d\n", cluster.ClusterNodeTimeout))
-	sb.WriteString("cluster-announce-hostname yes\n")
 
 	// Replication settings
 	sb.WriteString("\n# Replication settings\n")
