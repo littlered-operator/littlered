@@ -354,6 +354,9 @@ func buildRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{"ALL"},
 			},
+			SeccompProfile: &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
+			},
 		},
 	}
 
@@ -443,6 +446,9 @@ func buildExporterContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 			ReadOnlyRootFilesystem:   ptr(true),
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{"ALL"},
+			},
+			SeccompProfile: &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
 			},
 		},
 	}
@@ -1307,6 +1313,9 @@ fi`))
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{"ALL"},
 			},
+			SeccompProfile: &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
+			},
 		},
 	}
 
@@ -1533,6 +1542,9 @@ exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_A
 			ReadOnlyRootFilesystem:   ptr(true),
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{"ALL"},
+			},
+			SeccompProfile: &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
 			},
 		},
 	}
@@ -2111,6 +2123,9 @@ done`))
 			ReadOnlyRootFilesystem:   ptr(true),
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{"ALL"},
+			},
+			SeccompProfile: &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
 			},
 		},
 	}
