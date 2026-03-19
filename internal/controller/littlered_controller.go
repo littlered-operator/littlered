@@ -436,7 +436,7 @@ func (r *LittleRedReconciler) updateStatus(ctx context.Context, littleRed *littl
 
 	// Update high-level status summary
 	if littleRed.Status.Phase == littleredv1alpha1.PhaseRunning {
-		littleRed.Status.Status = "Ready"
+		littleRed.Status.Status = littleredv1alpha1.ConditionReady
 	} else {
 		littleRed.Status.Status = string(littleRed.Status.Phase)
 	}
@@ -1194,7 +1194,7 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *litt
 
 		// Update high-level status summary
 		if latest.Status.Phase == littleredv1alpha1.PhaseRunning {
-			latest.Status.Status = "Ready"
+			latest.Status.Status = littleredv1alpha1.ConditionReady
 		} else {
 			latest.Status.Status = string(latest.Status.Phase)
 		}

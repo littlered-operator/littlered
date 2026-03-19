@@ -664,7 +664,7 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 	// Determine high level phase
 	if littleRed.Status.Redis.Ready == littleRed.Status.Redis.Total && clusterOK {
 		littleRed.Status.Phase = littleredv1alpha1.PhaseRunning
-		littleRed.Status.Status = "Ready"
+		littleRed.Status.Status = littleredv1alpha1.ConditionReady
 
 		meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
 			Type:               littleredv1alpha1.ConditionReady,
