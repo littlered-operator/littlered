@@ -699,6 +699,18 @@ exit 1`))
 	}
 }
 
+// serviceAnnotations returns merged user + Prometheus annotations for a Redis service.
+func serviceAnnotations(lr *littleredv1alpha1.LittleRed) map[string]string {
+	annotations := map[string]string{}
+	maps.Copy(annotations, lr.Spec.Service.Annotations)
+	if lr.Spec.Metrics.IsEnabled() {
+		annotations["prometheus.io/scrape"] = "true"
+		annotations["prometheus.io/port"] = fmt.Sprintf("%d", littleredv1alpha1.RedisExporterPort)
+		annotations["prometheus.io/path"] = "/metrics"
+	}
+	return annotations
+}
+
 // buildService creates the Service for Redis
 func buildService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 	labels := commonLabels(lr)
@@ -729,7 +741,7 @@ func buildService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 			Name:        serviceName(lr),
 			Namespace:   lr.Namespace,
 			Labels:      labels,
-			Annotations: lr.Spec.Service.Annotations,
+			Annotations: serviceAnnotations(lr),
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     lr.Spec.Service.Type,
@@ -1597,7 +1609,7 @@ func buildMasterService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 			Name:        serviceName(lr),
 			Namespace:   lr.Namespace,
 			Labels:      labels,
-			Annotations: lr.Spec.Service.Annotations,
+			Annotations: serviceAnnotations(lr),
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     lr.Spec.Service.Type,
@@ -2341,7 +2353,7 @@ func buildClusterClientService(lr *littleredv1alpha1.LittleRed) *corev1.Service 
 			Name:        serviceName(lr),
 			Namespace:   lr.Namespace,
 			Labels:      labels,
-			Annotations: lr.Spec.Service.Annotations,
+			Annotations: serviceAnnotations(lr),
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     lr.Spec.Service.Type,

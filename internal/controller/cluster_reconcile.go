@@ -724,6 +724,15 @@ func (r *LittleRedReconciler) ensureClusterResources(ctx context.Context, little
 		return err
 	}
 
+	// Reconcile ServiceMonitor if enabled
+	if littleRed.Spec.Metrics.IsEnabled() && littleRed.Spec.Metrics.ServiceMonitor.Enabled {
+		if err := r.reconcileServiceMonitor(ctx, littleRed); err != nil {
+			// Don't fail reconciliation if ServiceMonitor fails (CRD might not be installed)
+			log := r.getLogger(ctx, littleRed, LogCategoryRecon)
+			log.Error(err, "Failed to reconcile ServiceMonitor")
+		}
+	}
+
 	return nil
 }
 
