@@ -419,7 +419,7 @@ func (r *LittleRedReconciler) reconcileSentinelPDB(ctx context.Context, littleRe
 func (r *LittleRedReconciler) deleteIfExists(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, obj client.Object, name string) error {
 	obj.SetName(name)
 	obj.SetNamespace(littleRed.Namespace)
-	if err := r.Client.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+	if err := r.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil

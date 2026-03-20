@@ -33,6 +33,7 @@ const (
 	testSentinelName    = testLRName + "-sentinel"
 	testReplicasName    = testLRName + "-replicas"
 	testStatefulSetName = testLRName + "-redis"
+	testPDBName         = testLRName + "-redis-pdb"
 	testNamespace       = "test-ns"
 	testTLSSecret       = "tls-secret"
 	testMaxmemPolicy    = "volatile-lru"
@@ -1129,8 +1130,8 @@ func TestBuildExporterContainerWithTLS(t *testing.T) {
 func TestPDBNameHelpers(t *testing.T) {
 	lr := newTestLittleRed(testLRName, testNamespace)
 
-	if got := podDisruptionBudgetName(lr); got != "my-cache-redis-pdb" {
-		t.Errorf("podDisruptionBudgetName() = %q, want %q", got, "my-cache-redis-pdb")
+	if got := podDisruptionBudgetName(lr); got != testPDBName {
+		t.Errorf("podDisruptionBudgetName() = %q, want %q", got, testPDBName)
 	}
 	if got := sentinelPodDisruptionBudgetName(lr); got != "my-cache-sentinel-pdb" {
 		t.Errorf("sentinelPodDisruptionBudgetName() = %q, want %q", got, "my-cache-sentinel-pdb")
@@ -1237,8 +1238,8 @@ func TestBuildPodDisruptionBudget(t *testing.T) {
 	lr := newTestLittleRed(testLRName, testNamespace)
 	pdb := buildPodDisruptionBudget(lr)
 
-	if pdb.Name != "my-cache-redis-pdb" {
-		t.Errorf("PDB name = %q, want %q", pdb.Name, "my-cache-redis-pdb")
+	if pdb.Name != testPDBName {
+		t.Errorf("PDB name = %q, want %q", pdb.Name, testPDBName)
 	}
 	if pdb.Namespace != testNamespace {
 		t.Errorf("PDB namespace = %q, want %q", pdb.Namespace, testNamespace)
@@ -1298,8 +1299,8 @@ func TestBuildSentinelRedisPDB(t *testing.T) {
 	lr.Spec.Mode = ModeSentinel
 	pdb := buildSentinelRedisPDB(lr)
 
-	if pdb.Name != "my-cache-redis-pdb" {
-		t.Errorf("PDB name = %q, want %q", pdb.Name, "my-cache-redis-pdb")
+	if pdb.Name != testPDBName {
+		t.Errorf("PDB name = %q, want %q", pdb.Name, testPDBName)
 	}
 
 	// Default: maxUnavailable=1
