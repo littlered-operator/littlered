@@ -292,6 +292,31 @@ spec:
                 - sentinel
                 - cluster
                 type: string
+              podDisruptionBudget:
+                description: PodDisruptionBudget defines PodDisruptionBudget settings
+                properties:
+                  create:
+                    default: false
+                    description: Create controls whether a PodDisruptionBudget is
+                      created for the StatefulSet(s)
+                    type: boolean
+                  maxUnavailable:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      MaxUnavailable is the maximum number of pods that can be unavailable during a disruption.
+                      Mutually exclusive with MinAvailable.
+                    x-kubernetes-int-or-string: true
+                  minAvailable:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      MinAvailable is the minimum number of pods that must be available during a disruption.
+                      Mutually exclusive with MaxUnavailable.
+                    x-kubernetes-int-or-string: true
+                type: object
               podTemplate:
                 description: PodTemplate defines pod customizations
                 properties:

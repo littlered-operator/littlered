@@ -22,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // LittleRedSpec defines the desired state of LittleRed
@@ -80,6 +81,28 @@ type LittleRedSpec struct {
 	// Cluster defines cluster-specific settings (cluster mode only)
 	// +optional
 	Cluster *ClusterSpec `json:"cluster,omitempty"`
+
+	// PodDisruptionBudget defines PodDisruptionBudget settings
+	// +optional
+	PodDisruptionBudget PodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
+}
+
+// PodDisruptionBudgetSpec defines whether a PodDisruptionBudget should be created
+type PodDisruptionBudgetSpec struct {
+	// Create controls whether a PodDisruptionBudget is created for the StatefulSet(s)
+	// +kubebuilder:default=false
+	// +optional
+	Create bool `json:"create,omitempty"`
+
+	// MaxUnavailable is the maximum number of pods that can be unavailable during a disruption.
+	// Mutually exclusive with MinAvailable.
+	// +optional
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
+
+	// MinAvailable is the minimum number of pods that must be available during a disruption.
+	// Mutually exclusive with MaxUnavailable.
+	// +optional
+	MinAvailable *intstr.IntOrString `json:"minAvailable,omitempty"`
 }
 
 // RequeueIntervals defines the timings for reconciliation loops
