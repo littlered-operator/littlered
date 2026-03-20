@@ -28,6 +28,7 @@ import (
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -88,6 +89,10 @@ type LittleRedReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
+	// PDBCreateDefault is the operator-level default for PDB creation.
+	// When true, PDBs are created for all LittleRed instances unless the CR explicitly disables it.
+	PDBCreateDefault bool
+
 	// Sentinel monitoring
 	sentinelEvents chan event.GenericEvent
 	monitors       map[types.NamespacedName]func()
@@ -103,6 +108,7 @@ type LittleRedReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is the main reconciliation loop
 func (r *LittleRedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -341,6 +347,12 @@ func (r *LittleRedReconciler) reconcileStandalone(ctx context.Context, littleRed
 		return ctrl.Result{}, err
 	}
 
+	// Reconcile PodDisruptionBudget
+	if err := r.reconcilePodDisruptionBudget(ctx, littleRed); err != nil {
+		log.Error(err, "Failed to reconcile PodDisruptionBudget")
+		return ctrl.Result{}, err
+	}
+
 	// Reconcile ServiceMonitor if enabled
 	if littleRed.Spec.Metrics.IsEnabled() && littleRed.Spec.Metrics.ServiceMonitor.Enabled {
 		if err := r.reconcileServiceMonitor(ctx, littleRed); err != nil {
@@ -371,6 +383,46 @@ func (r *LittleRedReconciler) reconcileService(ctx context.Context, littleRed *l
 // reconcileServiceMonitor ensures the ServiceMonitor exists
 func (r *LittleRedReconciler) reconcileServiceMonitor(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
 	return r.apply(ctx, littleRed, buildServiceMonitor(littleRed))
+}
+
+// pdbEnabled returns true if PDB creation should be active for the given LittleRed CR.
+// The CR setting and the operator-level default are OR'd: either one being true enables PDB.
+func (r *LittleRedReconciler) pdbEnabled(littleRed *littleredv1alpha1.LittleRed) bool {
+	return littleRed.Spec.PodDisruptionBudget.Create || r.PDBCreateDefault
+}
+
+// reconcilePodDisruptionBudget creates or deletes the PDB for standalone mode based on spec.
+func (r *LittleRedReconciler) reconcilePodDisruptionBudget(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
+	if r.pdbEnabled(littleRed) {
+		return r.apply(ctx, littleRed, buildPodDisruptionBudget(littleRed))
+	}
+	return r.deleteIfExists(ctx, littleRed, &policyv1.PodDisruptionBudget{}, podDisruptionBudgetName(littleRed))
+}
+
+// reconcileSentinelRedisPDB creates or deletes the PDB for the Redis StatefulSet in sentinel mode based on spec.
+func (r *LittleRedReconciler) reconcileSentinelRedisPDB(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
+	if r.pdbEnabled(littleRed) {
+		return r.apply(ctx, littleRed, buildSentinelRedisPDB(littleRed))
+	}
+	return r.deleteIfExists(ctx, littleRed, &policyv1.PodDisruptionBudget{}, podDisruptionBudgetName(littleRed))
+}
+
+// reconcileSentinelPDB creates or deletes the PDB for the Sentinel StatefulSet based on spec.
+func (r *LittleRedReconciler) reconcileSentinelPDB(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
+	if r.pdbEnabled(littleRed) {
+		return r.apply(ctx, littleRed, buildSentinelPDB(littleRed))
+	}
+	return r.deleteIfExists(ctx, littleRed, &policyv1.PodDisruptionBudget{}, sentinelPodDisruptionBudgetName(littleRed))
+}
+
+// deleteIfExists deletes a namespaced resource by name, ignoring not-found errors.
+func (r *LittleRedReconciler) deleteIfExists(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, obj client.Object, name string) error {
+	obj.SetName(name)
+	obj.SetNamespace(littleRed.Namespace)
+	if err := r.Client.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // updateStatus updates the LittleRed status based on current state
@@ -534,6 +586,16 @@ func (r *LittleRedReconciler) reconcileSentinel(ctx context.Context, littleRed *
 	// Unified Sentinel cluster reconciliation
 	if err := r.reconcileSentinelCluster(ctx, littleRed); err != nil {
 		log.Error(err, "Failed to reconcile Sentinel cluster")
+	}
+
+	// Reconcile PodDisruptionBudgets
+	if err := r.reconcileSentinelRedisPDB(ctx, littleRed); err != nil {
+		log.Error(err, "Failed to reconcile Redis PodDisruptionBudget")
+		return ctrl.Result{}, err
+	}
+	if err := r.reconcileSentinelPDB(ctx, littleRed); err != nil {
+		log.Error(err, "Failed to reconcile Sentinel PodDisruptionBudget")
+		return ctrl.Result{}, err
 	}
 
 	// Reconcile ServiceMonitor if enabled
@@ -1281,6 +1343,7 @@ func (r *LittleRedReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Service{}).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&policyv1.PodDisruptionBudget{}).
 		WatchesRawSource(source.Channel(r.sentinelEvents, &handler.EnqueueRequestForObject{})).
 		Named("littlered").
 		Complete(r)

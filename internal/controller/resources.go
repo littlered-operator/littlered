@@ -29,6 +29,7 @@ import (
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
@@ -82,6 +83,18 @@ func clusterHeadlessServiceName(lr *littleredv1alpha1.LittleRed) string {
 
 func serviceMonitorName(lr *littleredv1alpha1.LittleRed) string {
 	return lr.Name
+}
+
+func podDisruptionBudgetName(lr *littleredv1alpha1.LittleRed) string {
+	return fmt.Sprintf("%s-redis-pdb", lr.Name)
+}
+
+func sentinelPodDisruptionBudgetName(lr *littleredv1alpha1.LittleRed) string {
+	return fmt.Sprintf("%s-sentinel-pdb", lr.Name)
+}
+
+func clusterPodDisruptionBudgetName(lr *littleredv1alpha1.LittleRed) string {
+	return fmt.Sprintf("%s-cluster-pdb", lr.Name)
 }
 
 // Label keys
@@ -2374,6 +2387,95 @@ func buildClusterClientService(lr *littleredv1alpha1.LittleRed) *corev1.Service 
 			Type:     lr.Spec.Service.Type,
 			Selector: clusterSelectorLabels(lr),
 			Ports:    ports,
+		},
+	}
+}
+
+// ============================================================================
+// PodDisruptionBudget builders
+// ============================================================================
+
+// pdbSpec returns the PodDisruptionBudgetSpec fields resolved from the LittleRed spec,
+// defaulting to maxUnavailable=1 when neither field is set.
+func pdbSpec(lr *littleredv1alpha1.LittleRed) (maxUnavailable, minAvailable *intstr.IntOrString) {
+	if lr.Spec.PodDisruptionBudget.MinAvailable != nil {
+		return nil, lr.Spec.PodDisruptionBudget.MinAvailable
+	}
+	if lr.Spec.PodDisruptionBudget.MaxUnavailable != nil {
+		return lr.Spec.PodDisruptionBudget.MaxUnavailable, nil
+	}
+	defaultMax := intstr.FromInt32(1)
+	return &defaultMax, nil
+}
+
+func buildPodDisruptionBudget(lr *littleredv1alpha1.LittleRed) *policyv1.PodDisruptionBudget {
+	maxUnavailable, minAvailable := pdbSpec(lr)
+	return &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podDisruptionBudgetName(lr),
+			Namespace: lr.Namespace,
+			Labels:    commonLabels(lr),
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MaxUnavailable: maxUnavailable,
+			MinAvailable:   minAvailable,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: redisSelectorLabels(lr),
+			},
+		},
+	}
+}
+
+func buildSentinelRedisPDB(lr *littleredv1alpha1.LittleRed) *policyv1.PodDisruptionBudget {
+	maxUnavailable, minAvailable := pdbSpec(lr)
+	return &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podDisruptionBudgetName(lr),
+			Namespace: lr.Namespace,
+			Labels:    commonLabels(lr),
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MaxUnavailable: maxUnavailable,
+			MinAvailable:   minAvailable,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: redisSelectorLabels(lr),
+			},
+		},
+	}
+}
+
+func buildSentinelPDB(lr *littleredv1alpha1.LittleRed) *policyv1.PodDisruptionBudget {
+	maxUnavailable, minAvailable := pdbSpec(lr)
+	return &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      sentinelPodDisruptionBudgetName(lr),
+			Namespace: lr.Namespace,
+			Labels:    commonLabels(lr),
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MaxUnavailable: maxUnavailable,
+			MinAvailable:   minAvailable,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: sentinelSelectorLabels(lr),
+			},
+		},
+	}
+}
+
+func buildClusterPDB(lr *littleredv1alpha1.LittleRed) *policyv1.PodDisruptionBudget {
+	maxUnavailable, minAvailable := pdbSpec(lr)
+	return &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      clusterPodDisruptionBudgetName(lr),
+			Namespace: lr.Namespace,
+			Labels:    commonLabels(lr),
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MaxUnavailable: maxUnavailable,
+			MinAvailable:   minAvailable,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: clusterSelectorLabels(lr),
+			},
 		},
 	}
 }

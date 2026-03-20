@@ -25,6 +25,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -723,6 +724,9 @@ func (r *LittleRedReconciler) ensureClusterResources(ctx context.Context, little
 	if err := r.reconcileClusterClientService(ctx, littleRed); err != nil {
 		return err
 	}
+	if err := r.reconcileClusterPDB(ctx, littleRed); err != nil {
+		return err
+	}
 
 	// Reconcile ServiceMonitor if enabled
 	if littleRed.Spec.Metrics.IsEnabled() && littleRed.Spec.Metrics.ServiceMonitor.Enabled {
@@ -754,4 +758,12 @@ func (r *LittleRedReconciler) reconcileClusterStatefulSet(ctx context.Context, l
 // reconcileClusterClientService ensures the client Service exists
 func (r *LittleRedReconciler) reconcileClusterClientService(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
 	return r.apply(ctx, littleRed, buildClusterClientService(littleRed))
+}
+
+// reconcileClusterPDB creates or deletes the PDB for the cluster StatefulSet based on spec.
+func (r *LittleRedReconciler) reconcileClusterPDB(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
+	if r.pdbEnabled(littleRed) {
+		return r.apply(ctx, littleRed, buildClusterPDB(littleRed))
+	}
+	return r.deleteIfExists(ctx, littleRed, &policyv1.PodDisruptionBudget{}, clusterPodDisruptionBudgetName(littleRed))
 }

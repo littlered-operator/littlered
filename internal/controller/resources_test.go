@@ -23,18 +23,20 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 )
 
 const (
-	testLRName       = "my-cache"
-	testSentinelName = testLRName + "-sentinel"
-	testReplicasName = testLRName + "-replicas"
-	testNamespace    = "test-ns"
-	testTLSSecret    = "tls-secret"
-	testMaxmemPolicy = "volatile-lru"
-	portNameMetrics  = "metrics"
+	testLRName          = "my-cache"
+	testSentinelName    = testLRName + "-sentinel"
+	testReplicasName    = testLRName + "-replicas"
+	testStatefulSetName = testLRName + "-redis"
+	testNamespace       = "test-ns"
+	testTLSSecret       = "tls-secret"
+	testMaxmemPolicy    = "volatile-lru"
+	portNameMetrics     = "metrics"
 )
 
 // Helper to create a minimal LittleRed for testing
@@ -73,7 +75,7 @@ func TestSentinelConfigMapName(t *testing.T) {
 
 func TestStatefulSetName(t *testing.T) {
 	lr := newTestLittleRed(testLRName, "default")
-	expected := "my-cache-redis"
+	expected := testStatefulSetName
 	if got := statefulSetName(lr); got != expected {
 		t.Errorf("statefulSetName() = %q, want %q", got, expected)
 	}
@@ -348,8 +350,8 @@ func TestBuildStatefulSet(t *testing.T) {
 	sts := buildStatefulSet(lr)
 
 	// Check metadata
-	if sts.Name != "my-cache-redis" {
-		t.Errorf("StatefulSet name = %q, want %q", sts.Name, "my-cache-redis")
+	if sts.Name != testStatefulSetName {
+		t.Errorf("StatefulSet name = %q, want %q", sts.Name, testStatefulSetName)
 	}
 	if sts.Namespace != testNamespace {
 		t.Errorf("StatefulSet namespace = %q, want %q", sts.Namespace, testNamespace)
@@ -1117,5 +1119,260 @@ func TestBuildExporterContainerWithTLS(t *testing.T) {
 	}
 	if !hasRedisAddr {
 		t.Error("Exporter container missing REDIS_ADDR env var")
+	}
+}
+
+// ============================================================================
+// PodDisruptionBudget Tests
+// ============================================================================
+
+func TestPDBNameHelpers(t *testing.T) {
+	lr := newTestLittleRed(testLRName, testNamespace)
+
+	if got := podDisruptionBudgetName(lr); got != "my-cache-redis-pdb" {
+		t.Errorf("podDisruptionBudgetName() = %q, want %q", got, "my-cache-redis-pdb")
+	}
+	if got := sentinelPodDisruptionBudgetName(lr); got != "my-cache-sentinel-pdb" {
+		t.Errorf("sentinelPodDisruptionBudgetName() = %q, want %q", got, "my-cache-sentinel-pdb")
+	}
+	if got := clusterPodDisruptionBudgetName(lr); got != "my-cache-cluster-pdb" {
+		t.Errorf("clusterPodDisruptionBudgetName() = %q, want %q", got, "my-cache-cluster-pdb")
+	}
+}
+
+func TestPDBSpec(t *testing.T) {
+	tests := []struct {
+		name               string
+		setupPDB           func(*littleredv1alpha1.LittleRed)
+		wantMaxUnavailable *intstr.IntOrString
+		wantMinAvailable   *intstr.IntOrString
+	}{
+		{
+			name:               "defaults to maxUnavailable=1 when nothing set",
+			setupPDB:           func(lr *littleredv1alpha1.LittleRed) {},
+			wantMaxUnavailable: ptr(intstr.FromInt32(1)),
+			wantMinAvailable:   nil,
+		},
+		{
+			name: "uses custom maxUnavailable",
+			setupPDB: func(lr *littleredv1alpha1.LittleRed) {
+				v := intstr.FromInt32(2)
+				lr.Spec.PodDisruptionBudget.MaxUnavailable = &v
+			},
+			wantMaxUnavailable: ptr(intstr.FromInt32(2)),
+			wantMinAvailable:   nil,
+		},
+		{
+			name: "uses minAvailable when set",
+			setupPDB: func(lr *littleredv1alpha1.LittleRed) {
+				v := intstr.FromInt32(2)
+				lr.Spec.PodDisruptionBudget.MinAvailable = &v
+			},
+			wantMaxUnavailable: nil,
+			wantMinAvailable:   ptr(intstr.FromInt32(2)),
+		},
+		{
+			name: "minAvailable takes precedence over maxUnavailable",
+			setupPDB: func(lr *littleredv1alpha1.LittleRed) {
+				min := intstr.FromInt32(2)
+				max := intstr.FromInt32(1)
+				lr.Spec.PodDisruptionBudget.MinAvailable = &min
+				lr.Spec.PodDisruptionBudget.MaxUnavailable = &max
+			},
+			wantMaxUnavailable: nil,
+			wantMinAvailable:   ptr(intstr.FromInt32(2)),
+		},
+		{
+			name: "supports percentage for maxUnavailable",
+			setupPDB: func(lr *littleredv1alpha1.LittleRed) {
+				v := intstr.FromString("25%")
+				lr.Spec.PodDisruptionBudget.MaxUnavailable = &v
+			},
+			wantMaxUnavailable: ptr(intstr.FromString("25%")),
+			wantMinAvailable:   nil,
+		},
+		{
+			name: "supports percentage for minAvailable",
+			setupPDB: func(lr *littleredv1alpha1.LittleRed) {
+				v := intstr.FromString("50%")
+				lr.Spec.PodDisruptionBudget.MinAvailable = &v
+			},
+			wantMaxUnavailable: nil,
+			wantMinAvailable:   ptr(intstr.FromString("50%")),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lr := newTestLittleRed(testLRName, testNamespace)
+			tt.setupPDB(lr)
+			gotMax, gotMin := pdbSpec(lr)
+
+			if tt.wantMaxUnavailable == nil && gotMax != nil {
+				t.Errorf("MaxUnavailable = %v, want nil", gotMax)
+			} else if tt.wantMaxUnavailable != nil {
+				if gotMax == nil {
+					t.Fatal("MaxUnavailable = nil, want non-nil")
+				}
+				if *gotMax != *tt.wantMaxUnavailable {
+					t.Errorf("MaxUnavailable = %v, want %v", *gotMax, *tt.wantMaxUnavailable)
+				}
+			}
+
+			if tt.wantMinAvailable == nil && gotMin != nil {
+				t.Errorf("MinAvailable = %v, want nil", gotMin)
+			} else if tt.wantMinAvailable != nil {
+				if gotMin == nil {
+					t.Fatal("MinAvailable = nil, want non-nil")
+				}
+				if *gotMin != *tt.wantMinAvailable {
+					t.Errorf("MinAvailable = %v, want %v", *gotMin, *tt.wantMinAvailable)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildPodDisruptionBudget(t *testing.T) {
+	lr := newTestLittleRed(testLRName, testNamespace)
+	pdb := buildPodDisruptionBudget(lr)
+
+	if pdb.Name != "my-cache-redis-pdb" {
+		t.Errorf("PDB name = %q, want %q", pdb.Name, "my-cache-redis-pdb")
+	}
+	if pdb.Namespace != testNamespace {
+		t.Errorf("PDB namespace = %q, want %q", pdb.Namespace, testNamespace)
+	}
+
+	// Default: maxUnavailable=1
+	if pdb.Spec.MaxUnavailable == nil {
+		t.Fatal("PDB MaxUnavailable should be set by default")
+	}
+	if *pdb.Spec.MaxUnavailable != intstr.FromInt32(1) {
+		t.Errorf("PDB MaxUnavailable = %v, want 1", *pdb.Spec.MaxUnavailable)
+	}
+	if pdb.Spec.MinAvailable != nil {
+		t.Error("PDB MinAvailable should not be set by default")
+	}
+
+	if pdb.Spec.Selector.MatchLabels["app.kubernetes.io/component"] != ComponentRedis {
+		t.Error("PDB selector should have component=redis")
+	}
+	if pdb.Spec.Selector.MatchLabels["app.kubernetes.io/instance"] != testLRName {
+		t.Errorf("PDB selector instance = %q, want %q", pdb.Spec.Selector.MatchLabels["app.kubernetes.io/instance"], testLRName)
+	}
+}
+
+func TestBuildPodDisruptionBudgetCustomValues(t *testing.T) {
+	t.Run("custom maxUnavailable", func(t *testing.T) {
+		lr := newTestLittleRed(testLRName, testNamespace)
+		v := intstr.FromInt32(2)
+		lr.Spec.PodDisruptionBudget.MaxUnavailable = &v
+		pdb := buildPodDisruptionBudget(lr)
+
+		if pdb.Spec.MaxUnavailable == nil || *pdb.Spec.MaxUnavailable != intstr.FromInt32(2) {
+			t.Errorf("PDB MaxUnavailable = %v, want 2", pdb.Spec.MaxUnavailable)
+		}
+		if pdb.Spec.MinAvailable != nil {
+			t.Error("PDB MinAvailable should not be set")
+		}
+	})
+
+	t.Run("custom minAvailable", func(t *testing.T) {
+		lr := newTestLittleRed(testLRName, testNamespace)
+		v := intstr.FromInt32(2)
+		lr.Spec.PodDisruptionBudget.MinAvailable = &v
+		pdb := buildPodDisruptionBudget(lr)
+
+		if pdb.Spec.MinAvailable == nil || *pdb.Spec.MinAvailable != intstr.FromInt32(2) {
+			t.Errorf("PDB MinAvailable = %v, want 2", pdb.Spec.MinAvailable)
+		}
+		if pdb.Spec.MaxUnavailable != nil {
+			t.Error("PDB MaxUnavailable should not be set when minAvailable is specified")
+		}
+	})
+}
+
+func TestBuildSentinelRedisPDB(t *testing.T) {
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ModeSentinel
+	pdb := buildSentinelRedisPDB(lr)
+
+	if pdb.Name != "my-cache-redis-pdb" {
+		t.Errorf("PDB name = %q, want %q", pdb.Name, "my-cache-redis-pdb")
+	}
+
+	// Default: maxUnavailable=1
+	if pdb.Spec.MaxUnavailable == nil {
+		t.Fatal("PDB MaxUnavailable should be set by default")
+	}
+	if *pdb.Spec.MaxUnavailable != intstr.FromInt32(1) {
+		t.Errorf("PDB MaxUnavailable = %v, want 1", *pdb.Spec.MaxUnavailable)
+	}
+	if pdb.Spec.MinAvailable != nil {
+		t.Error("PDB MinAvailable should not be set by default")
+	}
+
+	if pdb.Spec.Selector.MatchLabels["app.kubernetes.io/component"] != ComponentRedis {
+		t.Error("PDB selector should have component=redis")
+	}
+}
+
+func TestBuildSentinelPDB(t *testing.T) {
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ModeSentinel
+	pdb := buildSentinelPDB(lr)
+
+	if pdb.Name != "my-cache-sentinel-pdb" {
+		t.Errorf("PDB name = %q, want %q", pdb.Name, "my-cache-sentinel-pdb")
+	}
+
+	// Default: maxUnavailable=1
+	if pdb.Spec.MaxUnavailable == nil {
+		t.Fatal("PDB MaxUnavailable should be set by default")
+	}
+	if *pdb.Spec.MaxUnavailable != intstr.FromInt32(1) {
+		t.Errorf("PDB MaxUnavailable = %v, want 1", *pdb.Spec.MaxUnavailable)
+	}
+	if pdb.Spec.MinAvailable != nil {
+		t.Error("PDB MinAvailable should not be set by default")
+	}
+
+	if pdb.Spec.Selector.MatchLabels["app.kubernetes.io/component"] != ComponentSentinel {
+		t.Error("PDB selector should have component=sentinel")
+	}
+	if pdb.Spec.Selector.MatchLabels["app.kubernetes.io/instance"] != testLRName {
+		t.Errorf("PDB selector instance = %q, want %q", pdb.Spec.Selector.MatchLabels["app.kubernetes.io/instance"], testLRName)
+	}
+}
+
+func TestBuildClusterPDB(t *testing.T) {
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ModeCluster
+	pdb := buildClusterPDB(lr)
+
+	if pdb.Name != "my-cache-cluster-pdb" {
+		t.Errorf("PDB name = %q, want %q", pdb.Name, "my-cache-cluster-pdb")
+	}
+	if pdb.Namespace != testNamespace {
+		t.Errorf("PDB namespace = %q, want %q", pdb.Namespace, testNamespace)
+	}
+
+	// Default: maxUnavailable=1
+	if pdb.Spec.MaxUnavailable == nil {
+		t.Fatal("PDB MaxUnavailable should be set by default")
+	}
+	if *pdb.Spec.MaxUnavailable != intstr.FromInt32(1) {
+		t.Errorf("PDB MaxUnavailable = %v, want 1", *pdb.Spec.MaxUnavailable)
+	}
+	if pdb.Spec.MinAvailable != nil {
+		t.Error("PDB MinAvailable should not be set by default")
+	}
+
+	if pdb.Spec.Selector.MatchLabels["app.kubernetes.io/component"] != ComponentCluster {
+		t.Error("PDB selector should have component=cluster")
+	}
+	if pdb.Spec.Selector.MatchLabels["app.kubernetes.io/instance"] != testLRName {
+		t.Errorf("PDB selector instance = %q, want %q", pdb.Spec.Selector.MatchLabels["app.kubernetes.io/instance"], testLRName)
 	}
 }

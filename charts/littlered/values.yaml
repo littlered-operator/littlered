@@ -42,3 +42,9 @@ networkPolicy:
   # Create a NetworkPolicy restricting metrics port access to labeled namespaces.
   # Requires metrics.enabled=true.
   enabled: false
+
+podDisruptionBudget:
+  # When enabled, creates a PDB for the operator deployment and enables PDB creation
+  # by default for all managed LittleRed instances.
+  create: false
+  maxUnavailable: 1
