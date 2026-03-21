@@ -217,7 +217,7 @@ func (r *LittleRedReconciler) getLogger(ctx context.Context, lr *littleredv1alph
 // reconcileDelete handles cleanup when the resource is deleted
 func (r *LittleRedReconciler) reconcileDelete(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
 	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
-	log.Info("Reconciling delete")
+	log.V(1).Info("Reconciling delete")
 
 	// Update phase
 	littleRed.Status.Phase = littleredv1alpha1.PhaseTerminating
@@ -322,7 +322,7 @@ func (r *LittleRedReconciler) validateSpec(ctx context.Context, littleRed *littl
 // reconcileStandalone reconciles standalone mode
 func (r *LittleRedReconciler) reconcileStandalone(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
 	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
-	log.Info("Reconciling standalone mode")
+	log.V(1).Info("Reconciling standalone mode")
 
 	// Set initial phase
 	if littleRed.Status.Phase == "" {
@@ -520,7 +520,7 @@ func (r *LittleRedReconciler) updateStatus(ctx context.Context, littleRed *littl
 // reconcileSentinel reconciles sentinel mode
 func (r *LittleRedReconciler) reconcileSentinel(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
 	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
-	log.Info("Reconciling sentinel mode")
+	log.V(1).Info("Reconciling sentinel mode")
 
 	// Set initial phase
 	if littleRed.Status.Phase == "" {

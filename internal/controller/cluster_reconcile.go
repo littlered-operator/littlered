@@ -39,7 +39,7 @@ import (
 // reconcileCluster reconciles cluster mode
 func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
 	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
-	log.Info("Reconciling cluster mode")
+	log.V(1).Info("Reconciling cluster mode")
 
 	// Set initial phase
 	if littleRed.Status.Phase == "" {

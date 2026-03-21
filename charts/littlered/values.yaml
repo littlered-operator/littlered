@@ -23,6 +23,9 @@ tolerations: []
 
 affinity: {}
 
+# Log level for the operator. Accepts: debug, info, error, or an integer (0=info, 1=debug).
+logLevel: info
+
 leaderElection:
   enabled: true
 
