@@ -268,10 +268,12 @@ ifndef ignore-not-found
   ignore-not-found = false
 endif
 
-# deploy using helm is installing the CRDs as well
+# Helm only installs CRDs on initial install, not on upgrades.
+# kubectl apply ensures CRDs are always up to date.
 PULL_POLICY ?= Always
 .PHONY: deploy
 deploy: manifests
+	kubectl apply -f charts/littlered/crds/
 	helm upgrade --install littlered ./charts/littlered \
 		-n littlered-system --create-namespace \
 		--set image.repository=$(LITTLERED_REGISTRY)/littlered \
