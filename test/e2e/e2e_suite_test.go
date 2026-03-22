@@ -45,7 +45,7 @@ var (
 	skipOperatorDeploy = false
 
 	// skipKindSetup skips kind setup and assumes non-kind environment for images.
-	skipKindSetup = false
+	skipKindSetup = true
 
 	// debugOnFailure skips cleanup on failure.
 	debugOnFailure = false
@@ -68,7 +68,7 @@ func suiteOrSpecFailed() bool {
 //
 // Environment variables:
 //   - SKIP_OPERATOR_DEPLOY: Set to "true" to skip operator deployment
-//   - SKIP_KIND_SETUP: Set to "true" to skip cluster creation and assume non-Kind (registry-push) deployment
+//   - SKIP_KIND_SETUP: Set to "false" to use Kind for cluster creation and load images via kind-load (default: true)
 //   - DEBUG_ON_FAILURE: Set to "true" to skip cleanup on failure
 //   - TEST_NAMESPACE: Namespace for test resources (default: "littlered-e2e"); must not be "default"
 //   - KIND_CLUSTER: Kind cluster name (default: kind)
@@ -93,8 +93,8 @@ var _ = BeforeSuite(func() {
 	if os.Getenv("SKIP_OPERATOR_DEPLOY") == "true" {
 		skipOperatorDeploy = true
 	}
-	if os.Getenv("SKIP_KIND_SETUP") == "true" {
-		skipKindSetup = true
+	if os.Getenv("SKIP_KIND_SETUP") == "false" {
+		skipKindSetup = false
 	}
 	if os.Getenv("DEBUG_ON_FAILURE") == "true" {
 		debugOnFailure = true

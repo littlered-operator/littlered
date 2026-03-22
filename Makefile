@@ -99,13 +99,15 @@ KUBECTL ?= kubectl
 KIND ?= kind
 
 KIND_CLUSTER ?= littlered-test-e2e
-SKIP_KIND_SETUP ?= false
+SKIP_KIND_SETUP ?= true
 SKIP_OPERATOR_DEPLOY ?= false
 
-# Determine if the cluster already exists at parse-time (only if running e2e targets)
+# Determine if the cluster already exists at parse-time (only needed when SKIP_KIND_SETUP=false)
+ifneq ($(SKIP_KIND_SETUP),true)
 ifneq ($(filter test-e2e setup-test-e2e cleanup-test-e2e,$(MAKECMDGOALS)),)
 # We use grep -xc to get an exact count of matching lines, stripping any noise.
 CLUSTER_EXISTS := $(shell $(KIND) get clusters 2>/dev/null | grep -xc "$(KIND_CLUSTER)" | grep -q "^1$$" && echo true || echo false)
+endif
 endif
 
 .PHONY: setup-test-e2e
