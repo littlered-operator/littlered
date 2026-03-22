@@ -139,10 +139,14 @@ var _ = BeforeSuite(func() {
 
 	if skipOperatorDeploy {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping operator deployment (SKIP_OPERATOR_DEPLOY=true)\n")
-		return
+	} else {
+		deployOperator()
 	}
 
-	deployOperator()
+	// Verify all required images are pullable before running any tests.
+	// This catches "forgot to push the chaos-client image" early instead of
+	// 40 minutes into the suite.
+	preflightImageChecks()
 })
 
 var _ = BeforeEach(func() {

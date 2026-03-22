@@ -262,6 +262,21 @@ lrctl describe <name>
 
 ## Troubleshooting
 
+### Preflight Image Check Fails
+
+The suite validates that all required images (chaos client, valkey) are pullable before running any tests. If this fails:
+
+```
+PREFLIGHT FAILURE: image "ghcr.io/.../littlered-chaos-client:abc1234" could not be pulled
+```
+
+Build and push (or Kind-load) the missing image:
+
+```bash
+make build-images
+make push-images   # or: make kind-load
+```
+
 ### Tests Fail to Connect to Cluster
 
 ```bash
