@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +72,8 @@ func suiteOrSpecFailed() bool {
 //   - SKIP_KIND_SETUP: Set to "true" to skip cluster creation and assume non-Kind (registry-push) deployment
 //   - DEBUG_ON_FAILURE: Set to "true" to skip cleanup on failure
 //   - TEST_NAMESPACE: Namespace for test resources (default: "littlered-e2e"); must not be "default"
+//   - KUBECONTEXT_PINNING: Set to "true" to snapshot the current kubeconfig (prevents accidental context switches)
+//   - KUBECONTEXT: Pin to a specific named context (implies pinning)
 //   - KIND_CLUSTER: Kind cluster name (default: kind)
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(func(message string, callerSkip ...int) {
@@ -85,6 +88,16 @@ func TestE2E(t *testing.T) {
 var _ = BeforeSuite(func() {
 	// Initialize streaming log tmp directory (suite-wide)
 	initE2ETmpDir()
+
+	// Pin kubeconfig so that switching contexts in another terminal during a
+	// long-running test suite doesn't break anything.
+	//   KUBECONTEXT_PINNING=true             — pin the current active context
+	//   KUBECONTEXT=<name>                   — pin a specific context
+	//   Both set                             — KUBECONTEXT wins
+	kubeCtx := os.Getenv("KUBECONTEXT")
+	if kubeCtx != "" || os.Getenv("KUBECONTEXT_PINNING") == "true" {
+		pinKubeContext(kubeCtx)
+	}
 
 	// Load configuration from environment
 	if ns := os.Getenv("TEST_NAMESPACE"); ns != "" {
@@ -252,4 +265,37 @@ func waitForOperator() {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(output).To(Equal("1"))
 	}, "2m", "5s").Should(Succeed())
+}
+
+// pinKubeContext snapshots the effective kubeconfig into a temp file and points
+// KUBECONFIG at it. This isolates the test process from context switches in
+// other terminals.
+//
+//   - contextName == "": pin the current active context
+//   - contextName != "": pin a specific named context
+//
+// Uses "kubectl config view --raw --flatten --minify" which produces a
+// self-contained kubeconfig with only the selected context/cluster/user.
+func pinKubeContext(contextName string) {
+	args := []string{"config", "view", "--raw", "--flatten", "--minify"}
+	label := "current"
+	if contextName != "" {
+		args = append(args, "--context", contextName)
+		label = contextName
+	}
+
+	By(fmt.Sprintf("pinning kubeconfig (context: %s)", label))
+
+	cmd := exec.Command("kubectl", args...)
+	raw, err := utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(),
+		"Failed to snapshot kubeconfig for context %q — does the context exist?", label)
+
+	tmpDir, err := os.MkdirTemp("", "littlered-e2e-kubeconfig-*")
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	tmpFile := filepath.Join(tmpDir, "config")
+	ExpectWithOffset(1, os.WriteFile(tmpFile, []byte(raw), 0o600)).To(Succeed())
+
+	os.Setenv("KUBECONFIG", tmpFile) //nolint:errcheck
+	_, _ = fmt.Fprintf(GinkgoWriter, "Pinned KUBECONFIG to %s (context: %s)\n", tmpFile, label)
 }

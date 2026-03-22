@@ -157,6 +157,18 @@ ifneq ($(TEST_NAMESPACE),)
 E2E_VARS += TEST_NAMESPACE=$(TEST_NAMESPACE)
 endif
 
+# KUBECONTEXT_PINNING=true snapshots the current kubeconfig so that switching
+# contexts in another terminal during a long run doesn't break tests.
+# KUBECONTEXT=<name> pins to a specific context (implies pinning).
+# Example: make test-e2e KUBECONTEXT_PINNING=true
+# Example: make test-e2e KUBECONTEXT=kind-littlered-test-e2e
+ifeq ($(KUBECONTEXT_PINNING),true)
+E2E_VARS += KUBECONTEXT_PINNING=true
+endif
+ifneq ($(KUBECONTEXT),)
+E2E_VARS += KUBECONTEXT=$(KUBECONTEXT)
+endif
+
 .PHONY: test-e2e
 test-e2e: $(E2E_SETUP_DEP) run-test-e2e $(E2E_CLEANUP_DEP) ## Run the e2e tests.
 

@@ -58,6 +58,20 @@ make test-e2e SKIP_KIND_SETUP=true
 make test-e2e SKIP_KIND_SETUP=true SKIP_OPERATOR_DEPLOY=true
 ```
 
+### Pinning the Kubernetes Context
+
+E2E test runs can take 40+ minutes. If you switch your `kubectl` context in another terminal during a run, the tests will break. Context pinning prevents this by snapshotting the effective kubeconfig into an isolated temp file at suite startup.
+
+```bash
+# Pin whatever context is currently active:
+make test-e2e KUBECONTEXT_PINNING=true
+
+# Pin a specific context by name:
+make test-e2e KUBECONTEXT=kind-littlered-test-e2e
+```
+
+When pinning is active, the test process uses `kubectl config view --raw --flatten --minify` to export a self-contained kubeconfig (with embedded certs, no external file references) containing only the selected context. This is written to a temp file and `KUBECONFIG` is set for the process. All kubectl commands and Go client calls automatically use the pinned config.
+
 ### Filtering Tests
 
 Use `FOCUS` to run a subset of tests (passed to Ginkgo's `-focus` flag):
@@ -99,6 +113,8 @@ make test-e2e ARGS="-timeout 90m"
 | `KIND_CLUSTER` | `littlered-test-e2e` | Kind cluster name |
 | `OPERATOR_IMAGE` | `ghcr.io/littlered-operator/littlered:<git-tag>` | Operator image to deploy |
 | `CHAOS_CLIENT_IMAGE` | `ghcr.io/littlered-operator/littlered-chaos-client:<git-tag>` | Chaos client image |
+| `KUBECONTEXT_PINNING` | `false` | Snapshot current kubeconfig so context switches don't break tests |
+| `KUBECONTEXT` | (none) | Pin to a specific named context (implies pinning) |
 | `FOCUS` | (none) | Ginkgo focus filter (regex) |
 | `ARGS` | (none) | Extra arguments passed to `go test` |
 
