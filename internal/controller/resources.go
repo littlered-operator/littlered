@@ -1062,7 +1062,6 @@ func buildRedisContainerSentinel(lr *littleredv1alpha1.LittleRed) corev1.Contain
 	// unless Sentinel (configured by the Operator) says so.
 	script := `#!/bin/sh
 set -e
-set -x
 
 # Helper to log with timestamp
 log() {
@@ -1078,6 +1077,7 @@ HOSTNAME=$(hostname)
 SENTINEL_SVC="[[.Name]]-sentinel.[[.Namespace]].svc"
 
 log "Starting Redis node $HOSTNAME. Waiting for Sentinel authorization..."
+log "Auth enabled: $([ -n "$REDIS_PASSWORD" ] && echo yes || echo no)"
 
 	AUTH_ARGS=""
 	SENTINEL_AUTH_ARGS=""
@@ -1199,9 +1199,6 @@ log "Starting Redis node $HOSTNAME. Waiting for Sentinel authorization..."
 # Redirect all output from this point forward
 exec >/proc/1/fd/1 2>&1
 
-export PS4='preStop + '
-set -x
-
 echo "preStop hook starting at $(date), PID $$"
 
 AUTH_ARGS=""
@@ -1210,8 +1207,9 @@ if [ -n "$REDIS_PASSWORD" ]; then
 fi
 
 ROLE=$(redis-cli $AUTH_ARGS [[.TLSFlags]] info replication | grep role | cut -d: -f2 | tr -d '\r')
+echo "preStop: my role is $ROLE"
 if [ "$ROLE" = "master" ]; then
-  echo "I am the master. Proactively failing over..."
+  echo "preStop: I am the master. Proactively failing over..."
   SENTINEL_SVC="[[.Name]]-sentinel.[[.Namespace]].svc"
   # Wait until Sentinel has discovered all expected replicas before forcing a
   # failover. If the master was just restarted, Sentinel may not yet know about
@@ -1475,7 +1473,6 @@ func buildSentinelContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 	// Use text/template for consistency across all startup scripts
 	scriptTmpl := template.Must(template.New("sentinel-startup").Delims("[[", "]]").Parse(`#!/bin/sh
 set -e
-set -x
 
 # Helper to log with timestamp
 log() {
@@ -1489,7 +1486,7 @@ if [ -n "$REDIS_PASSWORD" ]; then
   AUTH_ARGS="--requirepass $REDIS_PASSWORD --sentinel sentinel-pass $REDIS_PASSWORD"
 fi
 
-log "Starting Sentinel node with IP ${POD_IP}..."
+log "Starting Sentinel node with IP ${POD_IP} (auth: $([ -n "$REDIS_PASSWORD" ] && echo yes || echo no))..."
 exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_ARGS
 `))
 	var buf bytes.Buffer
@@ -2040,9 +2037,6 @@ exec redis-server /data/redis.conf \
 # Redirect all output from this point forward
 exec >/proc/1/fd/1 2>&1
 
-export PS4='preStop + '
-set -x
-
 echo "preStop hook starting at $(date), PID $$"
 
 AUTH_ARGS=""
@@ -2053,9 +2047,10 @@ fi
 # Check if I am a master
 MY_ID=$(redis-cli $AUTH_ARGS [[.TLSFlags]] cluster nodes | grep myself | awk '{print $1}')
 IS_MASTER=$(redis-cli $AUTH_ARGS [[.TLSFlags]] cluster nodes | grep myself | grep -q master && echo "yes" || echo "no")
+echo "preStop: my node ID is $MY_ID, master=$IS_MASTER"
 
 if [ "$IS_MASTER" != "yes" ]; then
-  echo "I am not a master. Safe to stop."
+  echo "preStop: I am not a master. Safe to stop."
   exit 0
 fi
 
@@ -2063,22 +2058,24 @@ fi
 REPLICA_IP=$(redis-cli $AUTH_ARGS [[.TLSFlags]] cluster nodes | grep "$MY_ID" | grep "slave" | grep -v "fail" | head -n 1 | awk '{print $2}' | cut -d: -f1 | cut -d@ -f1)
 
 if [ -z "$REPLICA_IP" ]; then
-  echo "No healthy replica found to take over. Proceeding with restart."
+  echo "preStop: No healthy replica found to take over. Proceeding with restart."
   exit 0
 fi
 
-echo "Requesting replica $REPLICA_IP to take over shard..."
+echo "preStop: Requesting replica $REPLICA_IP to take over shard..."
 redis-cli -h $REPLICA_IP $AUTH_ARGS [[.TLSFlags]] CLUSTER FAILOVER
 
 # Wait for role swap (I become slave)
 for i in $(seq 1 10); do
   NEW_ROLE=$(redis-cli $AUTH_ARGS [[.TLSFlags]] cluster nodes | grep myself | awk '{print $3}')
   if echo "$NEW_ROLE" | grep -q "slave"; then
-    echo "Failover successful. I am now a replica."
+    echo "preStop: Failover successful. I am now a replica."
     exit 0
   fi
+  echo "preStop: Waiting for role swap ($i/10)..."
   sleep 1
-done`))
+done
+echo "preStop: Failover did not complete within 10s. Proceeding with shutdown."`))
 	var preStopBuf bytes.Buffer
 	clusterPreStopTLSFlags := ""
 	if lr.Spec.TLS.Enabled {
