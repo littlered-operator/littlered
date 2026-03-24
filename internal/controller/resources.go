@@ -1220,7 +1220,8 @@ if [ "$ROLE" = "master" ]; then
   # reconfiguration step and get stuck pointing at the dead master IP.
   EXPECTED_SLAVES=2
   for i in $(seq 1 10); do
-    SLAVE_COUNT=$(redis-cli --raw -h $SENTINEL_SVC -p 26379 $AUTH_ARGS [[.TLSFlags]] SENTINEL SLAVES mymaster 2>/dev/null | grep -c "^name$" || echo 0)
+    SLAVE_COUNT=$(redis-cli --raw -h $SENTINEL_SVC -p 26379 $AUTH_ARGS [[.TLSFlags]] SENTINEL SLAVES mymaster 2>/dev/null | grep -c "^name$" || true)
+    SLAVE_COUNT=${SLAVE_COUNT:-0}
     if [ "$SLAVE_COUNT" -ge "$EXPECTED_SLAVES" ]; then
       echo "Sentinel knows $SLAVE_COUNT/$EXPECTED_SLAVES replicas. Proceeding with failover."
       break

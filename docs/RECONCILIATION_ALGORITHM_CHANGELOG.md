@@ -89,3 +89,14 @@ This document tracks significant changes to the LittleRed reconciliation logic. 
     1. Added `GenerationChangedPredicate` to the `For` watch to ignore status-only updates, ensuring the 2-second timer remains the primary source of truth for periodic healing.
     2. Refined Rule R to only trigger on incorrect `Role` or `MasterHost`. It no longer triggers on `LinkStatus` alone, allowing transient handshakes to complete.
 - **Impacts:** Reduction in audit log noise and faster cluster convergence.
+
+## [LR-011] SENTINEL RESET After Failover Wipes Replica Knowledge
+- **Date:** 2026-03-24
+- **Problem:**
+    1. After a `+switch-master` event, the old master's IP becomes a ghost `s_down,slave` within seconds. The operator detects this ghost and issues `SENTINEL RESET` — which wipes Sentinel's knowledge of ALL replicas, including the healthy ones that just reconnected to the new master. If the new master is then killed (e.g., by a test or a second failure), Sentinel cannot promote anyone: `-failover-abort-no-good-slave`.
+    2. Secondary: the preStop hook's replica count check (`grep -c "^name$" || echo 0`) produced a multiline value (`0\n0`) because both `grep -c`'s output and the `echo 0` fallback were captured by the command substitution. This broke the `[ $SLAVE_COUNT -ge 2 ]` arithmetic with `Illegal number`.
+- **Fix:**
+    1. Added a guard to Rule D: `SENTINEL RESET` now requires at least 1 healthy (non-ghost, non-`s_down`) replica to be known to Sentinel before firing. This prevents the race where RESET fires seconds after failover, before Sentinel has re-learned the surviving replicas. The operator logs the skip when no healthy replicas are known yet.
+    2. Fixed the preStop hook: replaced `|| echo 0` with `|| true` + `${SLAVE_COUNT:-0}` fallback, so the command substitution captures only the single-line count from `grep -c`.
+- **Regresses:** None. The new guard is strictly additive to the existing conditions from LR-008 (living + reachable master). It covers the gap where the master IS reachable but Sentinel hasn't yet re-discovered its replicas after a recent failover.
+- **Impacts:** LR-001, LR-007, LR-008 (further hardening of the SENTINEL RESET safety chain).

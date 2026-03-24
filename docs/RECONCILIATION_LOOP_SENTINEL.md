@@ -65,7 +65,9 @@ graph TD
         GhostMaster -- No --> GhostReplica
 
         GhostReplica{"Ghost replicas in s_down?"}
-        GhostReplica -- Yes --> Reset["SENTINEL RESET mymaster<br/><i>Only if master is living + reachable</i>"]
+        GhostReplica -- Yes --> ReplicaCheck{"≥1 healthy replica<br/>known to Sentinel?"}
+        ReplicaCheck -- Yes --> Reset["SENTINEL RESET mymaster<br/><i>Master living + reachable + replicas known</i>"]
+        ReplicaCheck -- No --> SkipReset["Skip RESET, requeue<br/><i>Wait for Sentinel to re-learn replicas</i>"]
         GhostReplica -- No --> RuleR
 
         RuleR["Rule R: Replica Rescue<br/><i>Any non-master pod with role=master<br/>or following wrong master?<br/>→ SLAVEOF RealMasterIP</i>"]
@@ -149,7 +151,11 @@ The **ghost-majority guard** (LR-004) is critical: if most sentinels still point
 
 **Action**: `SENTINEL RESET mymaster` (broadcast to all sentinels via headless service).
 
-**Safety**: Only issued when `RealMasterIP` is confirmed living and reachable. The `s_down` requirement prevents resetting during the brief window where a deleted pod's IP hasn't been marked down yet.
+**Safety** (LR-001, LR-007, LR-008, LR-011): RESET is only issued when ALL of these hold:
+1. `RealMasterIP` is confirmed living and reachable
+2. At least 1 healthy (non-ghost, non-`s_down`) replica is known to Sentinel
+
+Condition 2 (LR-011) prevents a race after failover: RESET wipes Sentinel's entire replica list. If issued before Sentinel re-discovers the surviving replicas (which takes a few seconds after `+switch-master`), the next failover attempt fails with `-failover-abort-no-good-slave`. The operator logs a skip and retries on the next reconcile cycle, giving Sentinel time to re-learn the topology.
 
 ### Rule R: Replica Rescue (LR-009, LR-010)
 
@@ -195,10 +201,13 @@ This mechanism is documented in [ADR-001 (amendment)](adr/001-strict-ip-identity
 
 The sentinel-mode Redis pre-stop hook ensures graceful shutdown:
 
-1. Checks if this pod is the master via `redis-cli ROLE`
-2. If master: triggers `SENTINEL FAILOVER mymaster` on a sentinel so a replica is promoted before this pod terminates
-3. Waits for Sentinel to confirm a different master before allowing shutdown
-4. If replica: simply shuts down (Sentinel will detect and update its replica list)
+1. Checks if this pod is the master via `redis-cli INFO replication`
+2. If master:
+   a. Waits (up to 10s) for Sentinel to know at least 2 replicas — prevents triggering failover before Sentinel has candidates to promote
+   b. Pauses writes for 30s via `CLIENT PAUSE`
+   c. Triggers `SENTINEL FAILOVER mymaster` on a sentinel
+   d. Waits (up to 10s) for Sentinel to confirm a different master
+3. If replica: simply shuts down (Sentinel will detect and update its replica list)
 
 ---
 

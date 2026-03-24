@@ -845,14 +845,39 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 	}
 
 	// Rule D (continued): Prune ghost replicas.
-	// Safety: We ONLY issue a global RESET if we have consensus on a living, reachable master.
-	// If the master is unreachable or a ghost IP, we MUST NOT issue RESET because it would
-	// wipe the Sentinels' failure detection timers (s_down) and block failover.
+	// Safety conditions for issuing SENTINEL RESET:
+	// 1. A ghost node was detected
+	// 2. The consensus master is living and reachable (not a ghost)
+	// 3. At least one living, non-ghost replica is known to Sentinel
+	//
+	// Condition 3 prevents a race after failover: SENTINEL RESET wipes ALL slave
+	// knowledge. If we reset before Sentinel re-discovers the surviving replicas,
+	// the next failover attempt fails with "no good slave" because Sentinel has
+	// no candidates to promote. Requiring at least 1 healthy replica ensures
+	// Sentinel can recover from the RESET.
 	if ghostFound && !state.IsGhost(state.RealMasterIP) && state.RedisNodes[state.RealMasterIP] != nil && state.RedisNodes[state.RealMasterIP].Reachable {
-		auditLog.Info("Issuing SENTINEL RESET to clear ghost nodes from topology", "master", redisclient.SentinelMasterName)
-		sentinelAddresses := r.getSentinelAddresses(ctx, littleRed)
-		sc := redisclient.NewSentinelClient(sentinelAddresses, password, littleRed.Spec.TLS.Enabled)
-		_ = sc.Reset(ctx, redisclient.SentinelMasterName)
+		healthyReplicas := 0
+		for _, sn := range state.SentinelNodes {
+			if !sn.Reachable || !sn.Monitoring {
+				continue
+			}
+			for _, replica := range sn.Replicas {
+				if !state.IsGhost(replica.IP) && !strings.Contains(replica.Flags, "s_down") {
+					healthyReplicas++
+				}
+			}
+			break // only need to check one sentinel
+		}
+		if healthyReplicas > 0 {
+			auditLog.Info("Issuing SENTINEL RESET to clear ghost nodes from topology",
+				"master", redisclient.SentinelMasterName, "healthyReplicas", healthyReplicas)
+			sentinelAddresses := r.getSentinelAddresses(ctx, littleRed)
+			sc := redisclient.NewSentinelClient(sentinelAddresses, password, littleRed.Spec.TLS.Enabled)
+			_ = sc.Reset(ctx, redisclient.SentinelMasterName)
+		} else {
+			log.Info("Ghost node detected but skipping SENTINEL RESET — no healthy replicas known yet",
+				"master", state.RealMasterIP)
+		}
 	}
 
 	// Rule R: Replica Rescue
