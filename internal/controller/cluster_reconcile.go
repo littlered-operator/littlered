@@ -513,6 +513,17 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 	clusterClient := redisclient.NewClusterClient(password, littleRed.Spec.TLS.Enabled)
 	totalNodes := cluster.GetTotalNodes()
 
+	// Verify pods belong to the current StatefulSet revision before using their IPs.
+	// After a delete-and-recreate, terminating pods from the old deployment may still
+	// exist with stale IPs and the same names. Using those IPs would poison the cluster.
+	sts := &appsv1.StatefulSet{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name: clusterStatefulSetName(littleRed), Namespace: littleRed.Namespace,
+	}, sts); err != nil {
+		return ctrl.Result{}, err
+	}
+	currentRevision := sts.Status.CurrentRevision
+
 	// Gather all Pod IPs and Node IDs
 	podIPs := make([]string, totalNodes)
 	nodeIDs := make([]string, totalNodes)
@@ -523,7 +534,10 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 		if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: littleRed.Namespace}, pod); err != nil {
 			return ctrl.Result{}, err
 		}
-		if pod.Status.PodIP == "" {
+		podRevision := pod.Labels["controller-revision-hash"]
+		if pod.Status.PodIP == "" || currentRevision == "" || podRevision != currentRevision {
+			log.Info("Bootstrap: pod not ready (no IP or stale revision)",
+				"pod", podName, "podRevision", podRevision, "stsRevision", currentRevision)
 			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 		podIPs[i] = pod.Status.PodIP

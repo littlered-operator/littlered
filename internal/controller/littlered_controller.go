@@ -991,9 +991,9 @@ func (r *LittleRedReconciler) getMasterPodName(ctx context.Context, littleRed *l
 	// masterInfo.IP MUST be an IP address in our strict identity model.
 	reportedIdentity := masterInfo.IP
 
-	// Find pod with matching IP
+	// Find pod with matching IP (skip terminating pods — their IPs are stale)
 	for _, pod := range podList.Items {
-		if pod.Status.PodIP == reportedIdentity {
+		if pod.Status.PodIP == reportedIdentity && pod.DeletionTimestamp.IsZero() {
 			return pod.Name, nil
 		}
 	}
@@ -1439,15 +1439,31 @@ func (r *LittleRedReconciler) bootstrapSentinel(ctx context.Context, lr *littler
 		return nil
 	}
 
-	// 2. Ensure redis-0 has an IP (required for bootstrap)
+	// 2. Ensure redis-0 belongs to the current StatefulSet and has an IP.
+	// After a delete-and-recreate, a terminating redis-0 from the old deployment
+	// may still exist with a stale IP. Using that IP would poison all sentinels.
+	// We verify the pod's controller-revision-hash matches the StatefulSet's
+	// currentRevision to guarantee it was created by the current deployment.
+	sts := &appsv1.StatefulSet{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name: statefulSetName(lr), Namespace: lr.Namespace,
+	}, sts); err != nil {
+		return err
+	}
+
 	pod0 := &corev1.Pod{}
 	pod0Name := fmt.Sprintf("%s-redis-0", lr.Name)
 	if err := r.Get(ctx, types.NamespacedName{Name: pod0Name, Namespace: lr.Namespace}, pod0); err != nil {
 		return err
 	}
 
-	if pod0.Status.PodIP == "" {
-		log.Info("Bootstrap: waiting for redis-0 to have an IP before configuring Sentinel")
+	currentRevision := sts.Status.CurrentRevision
+	podRevision := pod0.Labels["controller-revision-hash"]
+	if pod0.Status.PodIP == "" || currentRevision == "" || podRevision != currentRevision {
+		log.Info("Bootstrap: waiting for redis-0 to be ready",
+			"hasIP", pod0.Status.PodIP != "",
+			"podRevision", podRevision,
+			"stsRevision", currentRevision)
 		return nil
 	}
 
