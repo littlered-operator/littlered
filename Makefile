@@ -168,6 +168,14 @@ endif
 ifneq ($(KUBECONTEXT),)
 E2E_VARS += KUBECONTEXT=$(KUBECONTEXT)
 endif
+# Example: make test-e2e CLUSTER_SHARDS=5
+# Example: make test-e2e CLUSTER_REPLICAS_PER_SHARD=2
+ifneq ($(CLUSTER_SHARDS),)
+E2E_VARS += CLUSTER_SHARDS=$(CLUSTER_SHARDS)
+endif
+ifneq ($(CLUSTER_REPLICAS_PER_SHARD),)
+E2E_VARS += CLUSTER_REPLICAS_PER_SHARD=$(CLUSTER_REPLICAS_PER_SHARD)
+endif
 
 .PHONY: test-e2e
 test-e2e: $(E2E_SETUP_DEP) run-test-e2e $(E2E_CLEANUP_DEP) ## Run the e2e tests.

@@ -34,26 +34,15 @@ import (
 
 var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 
-	Context("Baseline Stability (3 Masters, 0 Replicas)", Ordered, func() {
+	Context("Baseline Stability (Masters, 0 Replicas)", Ordered, func() {
 		const crName = "chaos-cluster-stable"
 		var chaosPodName string
 		const testDuration = 30 * time.Second
 
 		BeforeAll(func() {
 			AddReportEntry("cr:" + crName)
-			By("creating a 3-shard cluster with no replicas")
-			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
-kind: LittleRed
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  mode: cluster
-  cluster:
-    shards: 3
-    replicasPerShard: 0
-`, crName, testNamespace)
+			By(fmt.Sprintf("creating a %d-shard cluster with no replicas", clusterShards))
+			cr := clusterCR(crName, 0, "", "")
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(cr)
 			_, err := utils.Run(cmd)
@@ -105,7 +94,7 @@ spec:
 		})
 	})
 
-	Context("Resilience with Replicas (3 Masters, 1 Replica/Shard)", Ordered, func() {
+	Context("Resilience with Replicas (Masters + Replicas)", Ordered, func() {
 		var currentCRName string
 
 		AfterEach(func() {
@@ -132,22 +121,13 @@ spec:
 			It(fmt.Sprintf("should maintain high availability during master failure (%s)", mode.Name), func() {
 				crName := fmt.Sprintf("chaos-cluster-master-%s", mode.Name)
 				currentCRName = crName
+				totalNodes := clusterTotalNodes(clusterReplicasPerShard)
 				const testDuration = 60 * time.Second
 
 				AddReportEntry("cr:" + crName)
-				By("creating a 3-shard cluster with 1 replica per shard")
-				cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
-kind: LittleRed
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  mode: cluster
-  cluster:
-    shards: 3
-    replicasPerShard: 1
-`, crName, testNamespace)
+				By(fmt.Sprintf("creating a %d-shard cluster with %d replica(s) per shard",
+					clusterShards, clusterReplicasPerShard))
+				cr := clusterCR(crName, clusterReplicasPerShard, "", "")
 				cmd := exec.Command("kubectl", "apply", "-f", "-")
 				cmd.Stdin = strings.NewReader(cr)
 				_, err := utils.Run(cmd)
@@ -191,7 +171,7 @@ spec:
 				Expect(err).NotTo(HaveOccurred())
 
 				// Wait for cluster to detect failure via pod-1 (expecting ID gone or fail flag)
-				waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-1", 6, []string{victimNodeID})
+				waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-1", totalNodes, []string{victimNodeID})
 
 				err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
 				Expect(err).NotTo(HaveOccurred())
@@ -207,22 +187,13 @@ spec:
 			It(fmt.Sprintf("should maintain 100%% availability during replica failure (%s)", mode.Name), func() {
 				crName := fmt.Sprintf("chaos-cluster-replica-%s", mode.Name)
 				currentCRName = crName
+				totalNodes := clusterTotalNodes(clusterReplicasPerShard)
 				const testDuration = 60 * time.Second
 
 				AddReportEntry("cr:" + crName)
-				By("creating a 3-shard cluster with 1 replica per shard")
-				cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
-kind: LittleRed
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  mode: cluster
-  cluster:
-    shards: 3
-    replicasPerShard: 1
-`, crName, testNamespace)
+				By(fmt.Sprintf("creating a %d-shard cluster with %d replica(s) per shard",
+					clusterShards, clusterReplicasPerShard))
+				cr := clusterCR(crName, clusterReplicasPerShard, "", "")
 				cmd := exec.Command("kubectl", "apply", "-f", "-")
 				cmd.Stdin = strings.NewReader(cr)
 				_, err := utils.Run(cmd)
@@ -258,7 +229,8 @@ spec:
 				By("waiting 10 seconds for baseline traffic")
 				time.Sleep(10 * time.Second)
 
-				victimPod := crName + "-cluster-3"
+				// First replica pod is at index clusterShards
+				victimPod := fmt.Sprintf("%s-cluster-%d", crName, clusterShards)
 				victimNodeID, _ := getPodNodeID(testNamespace, victimPod)
 
 				By(fmt.Sprintf("deleting replica pod %s (%s)", victimPod, mode.Name))
@@ -266,7 +238,7 @@ spec:
 				Expect(err).NotTo(HaveOccurred())
 
 				// Wait for cluster to detect failure via pod-0
-				waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-0", 6, []string{victimNodeID})
+				waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-0", totalNodes, []string{victimNodeID})
 
 				err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
 				Expect(err).NotTo(HaveOccurred())
@@ -282,22 +254,13 @@ spec:
 		It("should maintain data integrity during rolling restart", func() {
 			const crName = "chaos-cluster-rolling"
 			currentCRName = crName
+			totalNodes := clusterTotalNodes(clusterReplicasPerShard)
 			const testDuration = 90 * time.Second
 
 			AddReportEntry("cr:" + crName)
-			By("creating a 3-shard cluster with 1 replica per shard")
-			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
-kind: LittleRed
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  mode: cluster
-  cluster:
-    shards: 3
-    replicasPerShard: 1
-`, crName, testNamespace)
+			By(fmt.Sprintf("creating a %d-shard cluster with %d replica(s) per shard",
+				clusterShards, clusterReplicasPerShard))
+			cr := clusterCR(crName, clusterReplicasPerShard, "", "")
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(cr)
 			_, err := utils.Run(cmd)
@@ -362,7 +325,7 @@ spec:
 			Expect(output).To(ContainSubstring("cluster_state:ok"))
 			Expect(output).To(ContainSubstring("cluster_slots_assigned:16384"))
 
-			verifyClusterTopologySync(testNamespace, crName, 6)
+			verifyClusterTopologySync(testNamespace, crName, totalNodes)
 		})
 	})
 
@@ -374,19 +337,10 @@ spec:
 
 		BeforeAll(func() {
 			AddReportEntry("cr:" + crName)
-			By("creating a 3-shard cluster with 1 replica per shard")
-			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
-kind: LittleRed
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  mode: cluster
-  cluster:
-    shards: 3
-    replicasPerShard: 1
-`, crName, testNamespace)
+			totalNodes := clusterTotalNodes(clusterReplicasPerShard)
+			By(fmt.Sprintf("creating a %d-shard cluster with %d replica(s) per shard (%d nodes total)",
+				clusterShards, clusterReplicasPerShard, totalNodes))
+			cr := clusterCR(crName, clusterReplicasPerShard, "", "")
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(cr)
 			_, err := utils.Run(cmd)
@@ -427,11 +381,12 @@ spec:
 		})
 
 		It("should survive multiple rounds of random pod deletions without data loss", func() {
+			totalNodes := clusterTotalNodes(clusterReplicasPerShard)
 			const iterations = 5
 			for i := 1; i <= iterations; i++ {
 				By(fmt.Sprintf("=== Chaos Round %d/%d ===", i, iterations))
 
-				shardGroups, err := getShardGroups(testNamespace, crName, 6)
+				shardGroups, err := getShardGroups(testNamespace, crName, totalNodes)
 				Expect(err).NotTo(HaveOccurred())
 
 				victims := make([]string, 0)
@@ -469,22 +424,19 @@ spec:
 
 				// Wait for cluster to detect failure via any survivor
 				survivor := ""
-				allPods := []string{
-					crName + "-cluster-0", crName + "-cluster-1", crName + "-cluster-2",
-					crName + "-cluster-3", crName + "-cluster-4", crName + "-cluster-5",
-				}
 				victimMap := make(map[string]bool)
 				for _, v := range victims {
 					victimMap[v] = true
 				}
-				for _, p := range allPods {
+				for j := 0; j < totalNodes; j++ {
+					p := fmt.Sprintf("%s-cluster-%d", crName, j)
 					if !victimMap[p] {
 						survivor = p
 						break
 					}
 				}
 				if survivor != "" {
-					waitForClusterFailureDetected(testNamespace, crName, survivor, 6, victimNodeIDs)
+					waitForClusterFailureDetected(testNamespace, crName, survivor, totalNodes, victimNodeIDs)
 				}
 
 				By("Waiting for cluster to recover")
@@ -496,7 +448,7 @@ spec:
 					g.Expect(output).To(Equal("Running"))
 
 					var info string
-					for j := 0; j < 6; j++ {
+					for j := 0; j < totalNodes; j++ {
 						podName := fmt.Sprintf("%s-cluster-%d", crName, j)
 						cmd = exec.Command("kubectl", "exec", podName,
 							"-n", testNamespace, "-c", "redis", "--",
@@ -511,7 +463,7 @@ spec:
 					g.Expect(info).To(ContainSubstring("cluster_slots_assigned:16384"))
 				}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
-				verifyClusterTopologySync(testNamespace, crName, 6)
+				verifyClusterTopologySync(testNamespace, crName, totalNodes)
 
 				By("Stabilizing for 5 seconds")
 				time.Sleep(5 * time.Second)

@@ -67,10 +67,9 @@ var _ = Describe("LittleRed Security Features", Label("security"), func() {
 					},
 				}
 				if mode == "cluster" {
-					shards := 3
-					replicas := 1
+					replicas := clusterReplicasPerShard
 					cr.Spec.Cluster = &littleredv1alpha1.ClusterSpec{
-						Shards:           shards,
+						Shards:           clusterShards,
 						ReplicasPerShard: &replicas,
 					}
 				}
@@ -151,10 +150,9 @@ var _ = Describe("LittleRed Security Features", Label("security"), func() {
 					},
 				}
 				if mode == "cluster" {
-					shards := 3
-					replicas := 1
+					replicas := clusterReplicasPerShard
 					cr.Spec.Cluster = &littleredv1alpha1.ClusterSpec{
-						Shards:           shards,
+						Shards:           clusterShards,
 						ReplicasPerShard: &replicas,
 					}
 				}

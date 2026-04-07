@@ -97,14 +97,13 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 
 	// newClusterCR returns a minimal cluster LittleRed CR.
 	newClusterCR := func(name string) *littleredv1alpha1.LittleRed {
-		replicas := 1
-		shards := 3
+		replicas := clusterReplicasPerShard
 		return &littleredv1alpha1.LittleRed{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 			Spec: littleredv1alpha1.LittleRedSpec{
 				Mode: "cluster",
 				Cluster: &littleredv1alpha1.ClusterSpec{
-					Shards:           shards,
+					Shards:           clusterShards,
 					ReplicasPerShard: &replicas,
 				},
 			},

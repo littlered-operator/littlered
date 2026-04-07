@@ -429,3 +429,33 @@ func getShardGroups(namespace, crName string, totalNodes int) ([][]string, error
 
 	return result, nil
 }
+
+// clusterTotalNodes returns the total node count for a cluster with the given replicas per shard.
+func clusterTotalNodes(replicasPerShard int) int {
+	return clusterShards * (1 + replicasPerShard)
+}
+
+// clusterCR returns a LittleRed cluster CR YAML string with the configured shard count.
+// extraClusterFields adds fields under spec.cluster (e.g. "    clusterNodeTimeout: 10000\n").
+// extraSpecFields adds fields under spec (e.g. "  config:\n    maxmemory: ...\n").
+func clusterCR(name string, replicasPerShard int, extraClusterFields, extraSpecFields string) string {
+	cr := fmt.Sprintf(`
+apiVersion: chuck-chuck-chuck.net/v1alpha1
+kind: LittleRed
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  mode: cluster
+  cluster:
+    shards: %d
+    replicasPerShard: %d
+`, name, testNamespace, clusterShards, replicasPerShard)
+	if extraClusterFields != "" {
+		cr += extraClusterFields
+	}
+	if extraSpecFields != "" {
+		cr += extraSpecFields
+	}
+	return cr
+}

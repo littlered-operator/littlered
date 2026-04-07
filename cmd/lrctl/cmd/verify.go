@@ -189,7 +189,7 @@ func verifyCluster(
 
 	fmt.Printf("\nSummary:\n")
 	expectedNodes := int32(len(cCtx.RedisPods))
-	expectedShards := int32(3) // Default, should ideally be pulled from CR if available
+	expectedShards := int32(gt.CountMasters())
 	if gt.IsHealthy(expectedNodes, expectedShards) {
 		fmt.Println("  [OK] Cluster is healthy and consistent.")
 		return nil

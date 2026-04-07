@@ -623,15 +623,11 @@ type LittleRed struct {
 func (r *LittleRed) Validate() error {
 	// Sentinel mode: validated for 3 sentinels and 3 redis (1+2).
 	// Since we don't expose sentinel count yet, we just check replicas.
-	// ReplicasPerShard is not used in sentinel mode; logic is checked in controller.
 
 	if r.Spec.Mode == "cluster" {
 		if r.Spec.Cluster != nil {
-			if r.Spec.Cluster.Shards != 3 {
-				return fmt.Errorf("cluster mode currently only supports exactly 3 shards (found %d)", r.Spec.Cluster.Shards)
-			}
-			if r.Spec.Cluster.ReplicasPerShard != nil && *r.Spec.Cluster.ReplicasPerShard != 1 && *r.Spec.Cluster.ReplicasPerShard != 0 {
-				return fmt.Errorf("cluster mode currently only supports 0 or 1 replicas per shard (found %d)", *r.Spec.Cluster.ReplicasPerShard)
+			if r.Spec.Cluster.Shards < 3 {
+				return fmt.Errorf("cluster mode requires at least 3 shards (found %d)", r.Spec.Cluster.Shards)
 			}
 		}
 	}

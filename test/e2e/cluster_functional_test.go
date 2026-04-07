@@ -33,31 +33,22 @@ import (
 
 var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 
-	Context("Basic Operations (3 Masters, 1 Replica/Shard)", Ordered, func() {
+	Context("Basic Operations (Masters + Replicas)", Ordered, func() {
 		const crName = "func-cluster-basic"
 
 		BeforeAll(func() {
 			AddReportEntry("cr:" + crName)
-			By("creating a Redis Cluster with 3 shards and 1 replica per shard")
-			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
-kind: LittleRed
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  mode: cluster
-  cluster:
-    shards: 3
-    replicasPerShard: 1
-  resources:
+			totalNodes := clusterTotalNodes(clusterReplicasPerShard)
+			By(fmt.Sprintf("creating a Redis Cluster with %d shards and %d replica(s) per shard (%d nodes total)",
+				clusterShards, clusterReplicasPerShard, totalNodes))
+			cr := clusterCR(crName, clusterReplicasPerShard, "", `  resources:
     requests:
       cpu: "100m"
       memory: "128Mi"
     limits:
       cpu: "100m"
       memory: "128Mi"
-`, crName, testNamespace)
+`)
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(cr)
 			_, err := utils.Run(cmd)
@@ -84,12 +75,14 @@ spec:
 		})
 
 		It("should have correct topology and state", func() {
+			totalNodes := clusterTotalNodes(clusterReplicasPerShard)
+
 			By("checking StatefulSet replicas")
 			cmd := exec.Command("kubectl", "get", "statefulset", crName+"-cluster",
 				"-n", testNamespace, "-o", "jsonpath={.status.readyReplicas}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal("6"))
+			Expect(output).To(Equal(fmt.Sprintf("%d", totalNodes)))
 
 			By("checking cluster state is ok")
 			Eventually(func(g Gomega) {
@@ -102,7 +95,7 @@ spec:
 				g.Expect(output).To(ContainSubstring("cluster_slots_assigned:16384"))
 			}, 1*time.Minute, 5*time.Second).Should(Succeed())
 
-			By("verifying 3 masters and 3 replicas")
+			By(fmt.Sprintf("verifying %d masters and %d replicas", clusterShards, clusterShards*clusterReplicasPerShard))
 			cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
 				"-n", testNamespace, "-c", "redis", "--",
 				"valkey-cli", "CLUSTER", "NODES")
@@ -119,8 +112,8 @@ spec:
 					replicaCount++
 				}
 			}
-			Expect(masterCount).To(Equal(3))
-			Expect(replicaCount).To(Equal(3))
+			Expect(masterCount).To(Equal(clusterShards))
+			Expect(replicaCount).To(Equal(clusterShards * clusterReplicasPerShard))
 		})
 
 		It("should store and retrieve data with redirection", func() {
@@ -141,11 +134,13 @@ spec:
 					"valkey-cli", "-c", "GET", key)
 				output, err := utils.Run(cmd)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(strings.TrimSpace(output)).To(Equal("value-"+key))
+				Expect(strings.TrimSpace(output)).To(Equal("value-" + key))
 			}
 		})
 
 		It("should track status correctly in the CR", func() {
+			totalNodes := clusterTotalNodes(clusterReplicasPerShard)
+
 			By("checking status.cluster.state")
 			cmd := exec.Command("kubectl", "get", "littlered", crName,
 				"-n", testNamespace, "-o", "jsonpath={.status.cluster.state}")
@@ -159,9 +154,9 @@ spec:
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			nodes := strings.Fields(output)
-			Expect(len(nodes)).To(Equal(6))
+			Expect(len(nodes)).To(Equal(totalNodes))
 
-			verifyClusterTopologySync(testNamespace, crName, 6)
+			verifyClusterTopologySync(testNamespace, crName, totalNodes)
 		})
 	})
 
@@ -170,19 +165,8 @@ spec:
 
 		BeforeAll(func() {
 			AddReportEntry("cr:" + crName)
-			By("creating a 3-shard cluster with no replicas")
-			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
-kind: LittleRed
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  mode: cluster
-  cluster:
-    shards: 3
-    replicasPerShard: 0
-`, crName, testNamespace)
+			By(fmt.Sprintf("creating a %d-shard cluster with no replicas", clusterShards))
+			cr := clusterCR(crName, 0, "", "")
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(cr)
 			_, err := utils.Run(cmd)
@@ -209,6 +193,8 @@ spec:
 		})
 
 		It("should heal cluster after master pod deletion in 0-replica mode", func() {
+			totalNodes := clusterTotalNodes(0)
+
 			// In 0-replica mode, deleting a pod means losing data and slots.
 			// The operator should re-assign slots to the new node.
 			victimPod := crName + "-cluster-1"
@@ -233,31 +219,22 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
 				g.Expect(output).To(ContainSubstring("cluster_slots_assigned:16384"))
-				g.Expect(output).To(ContainSubstring("cluster_known_nodes:3"))
+				g.Expect(output).To(ContainSubstring(fmt.Sprintf("cluster_known_nodes:%d", totalNodes)))
 			}, 5*time.Minute, 10*time.Second).Should(Succeed())
 
-			verifyClusterTopologySync(testNamespace, crName, 3)
+			verifyClusterTopologySync(testNamespace, crName, totalNodes)
 		})
 	})
 
-	Context("Failover Recovery (3 Masters, 1 Replica/Shard)", Ordered, func() {
+	Context("Failover Recovery (Masters + Replicas)", Ordered, func() {
 		const crName = "func-cluster-failover"
 
 		BeforeAll(func() {
 			AddReportEntry("cr:" + crName)
-			By("creating a 3-shard cluster with 1 replica per shard")
-			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
-kind: LittleRed
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  mode: cluster
-  cluster:
-    shards: 3
-    replicasPerShard: 1
-`, crName, testNamespace)
+			totalNodes := clusterTotalNodes(clusterReplicasPerShard)
+			By(fmt.Sprintf("creating a %d-shard cluster with %d replica(s) per shard (%d nodes total)",
+				clusterShards, clusterReplicasPerShard, totalNodes))
+			cr := clusterCR(crName, clusterReplicasPerShard, "", "")
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(cr)
 			_, err := utils.Run(cmd)
@@ -284,6 +261,8 @@ spec:
 		})
 
 		It("should promote replica when master pod is deleted", func() {
+			totalNodes := clusterTotalNodes(clusterReplicasPerShard)
+
 			By("identifying initial master for shard 0")
 			victimPod := crName + "-cluster-0"
 			oldNodeID, err := getPodNodeID(testNamespace, victimPod)
@@ -306,7 +285,7 @@ spec:
 				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
 			}, 4*time.Minute, 5*time.Second).Should(Succeed())
 
-			By("verifying topology is recovered (6 nodes, 3 masters)")
+			By(fmt.Sprintf("verifying topology is recovered (%d nodes, %d masters)", totalNodes, clusterShards))
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-1",
 					"-n", testNamespace, "-c", "redis", "--",
@@ -324,16 +303,19 @@ spec:
 						}
 					}
 				}
-				g.Expect(mastersWithSlots).To(Equal(3))
-				g.Expect(len(lines)).To(Equal(6))
+				g.Expect(mastersWithSlots).To(Equal(clusterShards))
+				g.Expect(len(lines)).To(Equal(totalNodes))
 				g.Expect(out).NotTo(ContainSubstring("fail"))
 			}, 1*time.Minute, 5*time.Second).Should(Succeed())
 
-			verifyClusterTopologySync(testNamespace, crName, 6)
+			verifyClusterTopologySync(testNamespace, crName, totalNodes)
 		})
 
 		It("should reassign replica when replica pod is deleted", func() {
-			victimPod := crName + "-cluster-3"
+			totalNodes := clusterTotalNodes(clusterReplicasPerShard)
+
+			// First replica pod is at index clusterShards (masters are 0..shards-1)
+			victimPod := fmt.Sprintf("%s-cluster-%d", crName, clusterShards)
 			By(fmt.Sprintf("recording initial NodeID of replica pod %s", victimPod))
 			oldNodeID, err := getPodNodeID(testNamespace, victimPod)
 			Expect(err).NotTo(HaveOccurred())
@@ -357,10 +339,10 @@ spec:
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
-				g.Expect(output).To(ContainSubstring("cluster_known_nodes:6"))
+				g.Expect(output).To(ContainSubstring(fmt.Sprintf("cluster_known_nodes:%d", totalNodes)))
 			}, 4*time.Minute, 5*time.Second).Should(Succeed())
 
-			verifyClusterTopologySync(testNamespace, crName, 6)
+			verifyClusterTopologySync(testNamespace, crName, totalNodes)
 		})
 	})
 
@@ -370,18 +352,7 @@ spec:
 		It("should clean up all resources when CR is deleted", func() {
 			AddReportEntry("cr:" + crName)
 			By("creating cluster for cleanup")
-			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
-kind: LittleRed
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  mode: cluster
-  cluster:
-    shards: 3
-    replicasPerShard: 0
-`, crName, testNamespace)
+			cr := clusterCR(crName, 0, "", "")
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(cr)
 			_, err := utils.Run(cmd)
@@ -416,22 +387,12 @@ spec:
 		BeforeAll(func() {
 			AddReportEntry("cr:" + crName)
 			By("creating cluster with custom configuration")
-			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
-kind: LittleRed
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  mode: cluster
-  cluster:
-    shards: 3
-    replicasPerShard: 1
-    clusterNodeTimeout: 10000
-  config:
+			cr := clusterCR(crName, clusterReplicasPerShard,
+				"    clusterNodeTimeout: 10000\n",
+				`  config:
     maxmemory: "256Mi"
     maxmemoryPolicy: noeviction
-`, crName, testNamespace)
+`)
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(cr)
 			_, err := utils.Run(cmd)
@@ -458,7 +419,8 @@ spec:
 		})
 
 		It("should apply custom redis configuration to all nodes", func() {
-			for i := 0; i < 3; i++ {
+			totalNodes := clusterTotalNodes(clusterReplicasPerShard)
+			for i := 0; i < totalNodes; i++ {
 				podName := fmt.Sprintf("%s-cluster-%d", crName, i)
 				cmd := exec.Command("kubectl", "exec", podName,
 					"-n", testNamespace, "-c", "redis", "--",
@@ -494,9 +456,9 @@ metadata:
 spec:
   mode: cluster
   cluster:
-    shards: 3
+    shards: %d
     replicasPerShard: 0
-`, crName, testNamespace)
+`, crName, testNamespace, clusterShards)
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(cr)
 			_, err := utils.Run(cmd)

@@ -115,6 +115,8 @@ make test-e2e ARGS="-timeout 90m"
 | `CHAOS_CLIENT_IMAGE` | `ghcr.io/littlered-operator/littlered-chaos-client:<git-tag>` | Chaos client image |
 | `KUBECONTEXT_PINNING` | `false` | Snapshot current kubeconfig so context switches don't break tests |
 | `KUBECONTEXT` | (none) | Pin to a specific named context (implies pinning) |
+| `CLUSTER_SHARDS` | `3` | Number of shards for cluster mode tests (minimum 3) |
+| `CLUSTER_REPLICAS_PER_SHARD` | `1` | Replicas per shard for cluster tests that use replicas |
 | `FOCUS` | (none) | Ginkgo focus filter (regex) |
 | `ARGS` | (none) | Extra arguments passed to `go test` |
 

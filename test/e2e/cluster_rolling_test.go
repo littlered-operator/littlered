@@ -36,26 +36,17 @@ var _ = Describe("Cluster Mode Rolling Update", Ordered, func() {
 
 	BeforeAll(func() {
 		AddReportEntry("cr:" + crName)
-		By("creating a 3-shard cluster with 1 replica per shard for rolling update testing")
-		cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
-kind: LittleRed
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  mode: cluster
-  resources:
+		totalNodes := clusterTotalNodes(clusterReplicasPerShard)
+		By(fmt.Sprintf("creating a %d-shard cluster with %d replica(s) per shard for rolling update testing",
+			clusterShards, clusterReplicasPerShard))
+		cr := clusterCR(crName, clusterReplicasPerShard, "", `  resources:
     requests:
       cpu: "100m"
       memory: "128Mi"
     limits:
       cpu: "100m"
       memory: "128Mi"
-  cluster:
-    shards: 3
-    replicasPerShard: 1
-`, crName, testNamespace)
+`)
 		cmd := exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(cr)
 		_, err := utils.Run(cmd)
@@ -69,6 +60,8 @@ spec:
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(Equal("Running"))
 		}, 4*time.Minute, 5*time.Second).Should(Succeed())
+
+		_ = totalNodes // used in tests below
 	})
 
 	AfterAll(func() {
@@ -82,7 +75,7 @@ spec:
 
 	It("should create a cluster for rolling update testing", func() {
 		// Write test keys that spread across different hash slots, covering all
-		// three shards. valkey-cli -c follows MOVED redirects automatically.
+		// shards. valkey-cli -c follows MOVED redirects automatically.
 		testKeys := []struct{ key, value string }{
 			{"roll-a", "val-a"},
 			{"roll-b", "val-b"},
@@ -101,9 +94,11 @@ spec:
 	})
 
 	It("should perform rolling update when resources are changed", func() {
+		totalNodes := clusterTotalNodes(clusterReplicasPerShard)
+
 		By("recording current pod UIDs before the update")
-		var oldUIDs [6]string
-		for i := 0; i < 6; i++ {
+		oldUIDs := make([]string, totalNodes)
+		for i := 0; i < totalNodes; i++ {
 			cmd := exec.Command("kubectl", "get", "pod",
 				fmt.Sprintf("%s-cluster-%d", crName, i),
 				"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
@@ -113,25 +108,14 @@ spec:
 		}
 
 		By("applying updated resource limits to trigger rolling update")
-		cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
-kind: LittleRed
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  mode: cluster
-  resources:
+		cr := clusterCR(crName, clusterReplicasPerShard, "", `  resources:
     requests:
       cpu: "100m"
       memory: "128Mi"
     limits:
       cpu: "200m"
       memory: "192Mi"
-  cluster:
-    shards: 3
-    replicasPerShard: 1
-`, crName, testNamespace)
+`)
 		cmd := exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(cr)
 		_, err := utils.Run(cmd)
@@ -140,7 +124,7 @@ spec:
 		By("waiting for rolling update to begin (at least one pod replaced)")
 		Eventually(func(g Gomega) {
 			replacedCount := 0
-			for i := 0; i < 6; i++ {
+			for i := 0; i < totalNodes; i++ {
 				cmd := exec.Command("kubectl", "get", "pod",
 					fmt.Sprintf("%s-cluster-%d", crName, i),
 					"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
@@ -152,10 +136,10 @@ spec:
 			g.Expect(replacedCount).To(BeNumerically(">", 0))
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
-		By("waiting for all 6 cluster pods to be replaced")
+		By(fmt.Sprintf("waiting for all %d cluster pods to be replaced", totalNodes))
 		Eventually(func(g Gomega) {
 			replacedCount := 0
-			for i := 0; i < 6; i++ {
+			for i := 0; i < totalNodes; i++ {
 				cmd := exec.Command("kubectl", "get", "pod",
 					fmt.Sprintf("%s-cluster-%d", crName, i),
 					"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
@@ -165,8 +149,9 @@ spec:
 					replacedCount++
 				}
 			}
-			g.Expect(replacedCount).To(Equal(6), "All 6 pods should have been replaced by the rolling update")
-		}, 8*time.Minute, 10*time.Second).Should(Succeed())
+			g.Expect(replacedCount).To(Equal(totalNodes),
+				fmt.Sprintf("All %d pods should have been replaced by the rolling update", totalNodes))
+		}, time.Duration(totalNodes)*90*time.Second, 10*time.Second).Should(Succeed())
 
 		By("verifying cluster is healthy after rolling update")
 		Eventually(func(g Gomega) {
@@ -205,6 +190,8 @@ spec:
 	})
 
 	It("should have cluster status Running after rolling update", func() {
+		totalNodes := clusterTotalNodes(clusterReplicasPerShard)
+
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "get", "littlered", crName,
 				"-n", testNamespace, "-o", "jsonpath={.status.phase}")
@@ -214,6 +201,6 @@ spec:
 		}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("verifying operator topology matches actual cluster nodes after rolling update")
-		verifyClusterTopologySync(testNamespace, crName, 6)
+		verifyClusterTopologySync(testNamespace, crName, totalNodes)
 	})
 })

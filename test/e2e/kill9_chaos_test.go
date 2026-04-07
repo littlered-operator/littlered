@@ -345,20 +345,10 @@ spec:
 			AddReportEntry("cr:" + crName)
 			const testDuration = 120 * time.Second
 
-			By("creating a 3-shard cluster with 1 replica per shard")
-			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
-kind: LittleRed
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  mode: cluster
-  cluster:
-    shards: 3
-    replicasPerShard: 1
-    clusterNodeTimeout: 5000
-`, crName, testNamespace)
+			By(fmt.Sprintf("creating a %d-shard cluster with %d replica(s) per shard",
+				clusterShards, clusterReplicasPerShard))
+			cr := clusterCR(crName, clusterReplicasPerShard,
+				"    clusterNodeTimeout: 5000\n", "")
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(cr)
 			_, err := utils.Run(cmd)
@@ -472,7 +462,7 @@ spec:
 				g.Expect(output).To(ContainSubstring("cluster_slots_assigned:16384"))
 			}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
-			verifyClusterTopologySync(testNamespace, crName, 6)
+			verifyClusterTopologySync(testNamespace, crName, clusterTotalNodes(clusterReplicasPerShard))
 
 			err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
 			Expect(err).NotTo(HaveOccurred())

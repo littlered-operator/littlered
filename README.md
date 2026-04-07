@@ -54,7 +54,7 @@ kubectl lr verify my-store
 - **Observability**: `redis_exporter` sidecar included by default, with optional `ServiceMonitor` for Prometheus.
 - **`lrctl`**: a CLI tool (installable as a `kubectl lr` plugin) for direct state inspection and verification.
 
-> **Current scope:** Cluster mode is validated for **3 shards** with **0 or 1 replica per shard**. Variable shard counts are planned.
+> **Current scope:** Cluster mode supports **3 or more shards** with configurable replicas per shard (default: 3 shards, 1 replica per shard).
 
 ## Configuration Reference
 

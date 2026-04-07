@@ -305,7 +305,7 @@ func buildClusterVerifyJSON(name, namespace string, gt *redisclient.ClusterGroun
 	}
 
 	expectedNodes := int32(len(gt.Nodes))
-	expectedShards := int32(3)
+	expectedShards := int32(gt.CountMasters())
 	result.Healthy = gt.IsHealthy(expectedNodes, expectedShards)
 	return result
 }

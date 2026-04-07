@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,14 @@ var (
 
 	// suiteFailed tracks if any test in the suite failed.
 	suiteFailed = false
+
+	// clusterShards is the number of shards to use in cluster mode e2e tests.
+	// Override with CLUSTER_SHARDS env var. Must be >= 3.
+	clusterShards = 3
+
+	// clusterReplicasPerShard is the number of replicas per shard for cluster tests that use replicas.
+	// Override with CLUSTER_REPLICAS_PER_SHARD env var.
+	clusterReplicasPerShard = 1
 )
 
 func suiteOrSpecFailed() bool {
@@ -75,6 +84,8 @@ func suiteOrSpecFailed() bool {
 //   - KUBECONTEXT_PINNING: Set to "true" to snapshot the current kubeconfig (prevents accidental context switches)
 //   - KUBECONTEXT: Pin to a specific named context (implies pinning)
 //   - KIND_CLUSTER: Kind cluster name (default: kind)
+//   - CLUSTER_SHARDS: Number of shards for cluster mode tests (default: 3, minimum: 3)
+//   - CLUSTER_REPLICAS_PER_SHARD: Replicas per shard for cluster tests that use replicas (default: 1)
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(func(message string, callerSkip ...int) {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Fail handler called: %s\n", message)
@@ -112,11 +123,25 @@ var _ = BeforeSuite(func() {
 	if os.Getenv("DEBUG_ON_FAILURE") == "true" {
 		debugOnFailure = true
 	}
+	if v := os.Getenv("CLUSTER_SHARDS"); v != "" {
+		n, err := strconv.Atoi(v)
+		Expect(err).NotTo(HaveOccurred(), "CLUSTER_SHARDS must be an integer")
+		Expect(n).To(BeNumerically(">=", 3), "CLUSTER_SHARDS must be >= 3")
+		clusterShards = n
+	}
+	if v := os.Getenv("CLUSTER_REPLICAS_PER_SHARD"); v != "" {
+		n, err := strconv.Atoi(v)
+		Expect(err).NotTo(HaveOccurred(), "CLUSTER_REPLICAS_PER_SHARD must be an integer")
+		Expect(n).To(BeNumerically(">=", 0), "CLUSTER_REPLICAS_PER_SHARD must be >= 0")
+		clusterReplicasPerShard = n
+	}
 
 	_, _ = fmt.Fprintf(GinkgoWriter, "Test namespace: %s\n", testNamespace)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Skip operator deploy: %v\n", skipOperatorDeploy)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Skip Kind setup: %v\n", skipKindSetup)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Debug on failure: %v\n", debugOnFailure)
+	_, _ = fmt.Fprintf(GinkgoWriter, "Cluster shards: %d\n", clusterShards)
+	_, _ = fmt.Fprintf(GinkgoWriter, "Cluster replicas per shard: %d\n", clusterReplicasPerShard)
 
 	// Require a dedicated namespace — "default" is not safe for e2e tests.
 	Expect(testNamespace).NotTo(Equal("default"),
