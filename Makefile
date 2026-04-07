@@ -279,10 +279,19 @@ endif
 # Helm only installs CRDs on initial install, not on upgrades.
 # kubectl apply ensures CRDs are always up to date.
 PULL_POLICY ?= Always
+
+# Example: make deploy KUBECONTEXT=kind-littlered-test-e2e
+KUBECTL_CTX_FLAGS :=
+HELM_CTX_FLAGS :=
+ifneq ($(KUBECONTEXT),)
+KUBECTL_CTX_FLAGS := --context $(KUBECONTEXT)
+HELM_CTX_FLAGS := --kube-context $(KUBECONTEXT)
+endif
+
 .PHONY: deploy
 deploy: manifests
-	kubectl apply -f charts/littlered/crds/
-	helm upgrade --install littlered ./charts/littlered \
+	kubectl $(KUBECTL_CTX_FLAGS) apply -f charts/littlered/crds/
+	helm $(HELM_CTX_FLAGS) upgrade --install littlered ./charts/littlered \
 		-n littlered-system --create-namespace \
 		--set image.repository=$(LITTLERED_REGISTRY)/littlered \
 		--set image.tag=$(GIT_TAG) \
@@ -290,7 +299,7 @@ deploy: manifests
 
 .PHONY: undeploy
 undeploy:
-	helm uninstall -n littlered-system littlered
+	-helm $(HELM_CTX_FLAGS) uninstall -n littlered-system littlered 2>/dev/null
 
 .PHONY: helm-push
 helm-push: helm-package ## Push the Helm chart to the OCI registry (run 'helm registry login ghcr.io' first).
@@ -315,8 +324,8 @@ push-latest: ## Re-tag images and Helm chart as :latest (only runs on release ta
 
 .PHONY: redeploy-all
 redeploy-all: undeploy ## Full reset: uninstall helm chart, delete CRDs, and deploy fresh.
-	-kubectl delete crd littlereds.chuck-chuck-chuck.net --ignore-not-found
-	$(MAKE) deploy
+	-kubectl $(KUBECTL_CTX_FLAGS) delete crd littlereds.chuck-chuck-chuck.net --ignore-not-found
+	$(MAKE) deploy KUBECONTEXT=$(KUBECONTEXT)
 
 .PHONY: pipeline
 pipeline: images deploy install
