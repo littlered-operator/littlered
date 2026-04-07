@@ -81,8 +81,9 @@ func (r *LittleRed) SetDefaults() {
 	// Config
 	spec.Config.SetDefaults()
 
-	// Metrics
-	spec.Metrics.SetDefaults(spec.Image.Registry)
+	// Metrics — exporter follows the main container's QoS pattern for CPU limits.
+	_, mainHasCPULimit := spec.Resources.Limits[corev1.ResourceCPU]
+	spec.Metrics.SetDefaults(spec.Image.Registry, mainHasCPULimit)
 
 	// Service
 	if spec.Service.Type == "" {
@@ -104,7 +105,7 @@ func (r *LittleRed) SetDefaults() {
 		spec.Sentinel = &SentinelSpec{}
 	}
 	if spec.Sentinel != nil {
-		spec.Sentinel.SetDefaults()
+		spec.Sentinel.SetDefaults(mainHasCPULimit)
 	}
 
 	// Cluster defaults (only if cluster mode)
@@ -143,8 +144,8 @@ func (c *ConfigSpec) SetDefaults() {
 }
 
 // SetDefaults applies default values to MetricsSpec
-func (m *MetricsSpec) SetDefaults(mainRegistry string) {
-	m.Exporter.SetDefaults(mainRegistry)
+func (m *MetricsSpec) SetDefaults(mainRegistry string, mainHasCPULimit bool) {
+	m.Exporter.SetDefaults(mainRegistry, mainHasCPULimit)
 
 	if m.ServiceMonitor.Interval == "" {
 		m.ServiceMonitor.Interval = DefaultScrapeInterval
@@ -155,7 +156,7 @@ func (m *MetricsSpec) SetDefaults(mainRegistry string) {
 }
 
 // SetDefaults applies default values to ExporterSpec
-func (e *ExporterSpec) SetDefaults(mainRegistry string) {
+func (e *ExporterSpec) SetDefaults(mainRegistry string, mainHasCPULimit bool) {
 	if e.Registry == "" {
 		e.Registry = mainRegistry
 		if e.Registry == "" {
@@ -168,11 +169,11 @@ func (e *ExporterSpec) SetDefaults(mainRegistry string) {
 	if e.Tag == "" {
 		e.Tag = DefaultExporterTag
 	}
-	setDefaultExporterResources(&e.Resources)
+	setDefaultExporterResources(&e.Resources, mainHasCPULimit)
 }
 
 // SetDefaults applies default values to SentinelSpec
-func (s *SentinelSpec) SetDefaults() {
+func (s *SentinelSpec) SetDefaults(mainHasCPULimit bool) {
 	if s.Quorum == 0 {
 		s.Quorum = DefaultSentinelQuorum
 	}
@@ -185,7 +186,7 @@ func (s *SentinelSpec) SetDefaults() {
 	if s.ParallelSyncs == 0 {
 		s.ParallelSyncs = DefaultParallelSyncs
 	}
-	setDefaultSentinelResources(&s.Resources)
+	setDefaultSentinelResources(&s.Resources, mainHasCPULimit)
 }
 
 // SetDefaults applies default values to ClusterSpec
@@ -233,7 +234,7 @@ func setDefaultResources(r *corev1.ResourceRequirements) {
 	}
 }
 
-func setDefaultExporterResources(r *corev1.ResourceRequirements) {
+func setDefaultExporterResources(r *corev1.ResourceRequirements, mainHasCPULimit bool) {
 	if r.Requests == nil {
 		r.Requests = corev1.ResourceList{}
 	}
@@ -247,7 +248,11 @@ func setDefaultExporterResources(r *corev1.ResourceRequirements) {
 	if _, ok := r.Requests[corev1.ResourceMemory]; !ok {
 		r.Requests[corev1.ResourceMemory] = DefaultExporterMemoryRequest
 	}
-	if _, ok := r.Limits[corev1.ResourceCPU]; !ok {
+	// Only set a default CPU limit on the exporter if the main Redis container
+	// has one. If the user chose Burstable QoS (no CPU limit), the sidecar should
+	// follow the same pattern — otherwise tools like k9s report misleading CPU
+	// utilization percentages for the pod.
+	if _, ok := r.Limits[corev1.ResourceCPU]; !ok && mainHasCPULimit {
 		r.Limits[corev1.ResourceCPU] = DefaultExporterCPULimit
 	}
 	if _, ok := r.Limits[corev1.ResourceMemory]; !ok {
@@ -255,7 +260,7 @@ func setDefaultExporterResources(r *corev1.ResourceRequirements) {
 	}
 }
 
-func setDefaultSentinelResources(r *corev1.ResourceRequirements) {
+func setDefaultSentinelResources(r *corev1.ResourceRequirements, mainHasCPULimit bool) {
 	if r.Requests == nil {
 		r.Requests = corev1.ResourceList{}
 	}
@@ -269,7 +274,7 @@ func setDefaultSentinelResources(r *corev1.ResourceRequirements) {
 	if _, ok := r.Requests[corev1.ResourceMemory]; !ok {
 		r.Requests[corev1.ResourceMemory] = DefaultSentinelMemory
 	}
-	if _, ok := r.Limits[corev1.ResourceCPU]; !ok {
+	if _, ok := r.Limits[corev1.ResourceCPU]; !ok && mainHasCPULimit {
 		r.Limits[corev1.ResourceCPU] = DefaultSentinelCPU
 	}
 	if _, ok := r.Limits[corev1.ResourceMemory]; !ok {
