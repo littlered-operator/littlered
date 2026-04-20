@@ -7,8 +7,8 @@ spec:
 
   image:
     registry: docker.io
-    path: valkey/valkey
-    tag: "8.0"
+    path: library/redis
+    tag: "8.4.2"
     pullPolicy: IfNotPresent
 
   resources:

@@ -1,6 +1,6 @@
 # LittleRed
 
-A Kubernetes operator for deploying Valkey/Redis as a pure in-memory data store.
+A Kubernetes operator for deploying Redis/Valkey as a pure in-memory data store.
 
 LittleRed is built for workloads where persistence is explicitly disabled and never enabled—not even by accident. It provides a full reconciliation engine to manage node identities and cluster membership across restarts and failures: the class of problem where static Helm charts and startup scripts reach their limits.
 
@@ -47,7 +47,7 @@ kubectl lr verify my-store
 ## Key Features
 
 - **Three deployment modes**: `standalone` (single pod), `sentinel` (1 master + 2 replicas monitored by 3 sentinels for automatic failover), and `cluster` (sharded Redis Cluster for horizontal scaling).
-- **Valkey 8.0 by default**, compatible with Redis 7.2+.
+- **Redis 8.4.2 by default**, compatible with Redis 7.2+.
 - **Burstable QoS by default**: memory limits equal requests (preventing OOM surprises), no CPU limit (allowing bursting). Set explicit CPU limits if you need Guaranteed QoS.
 - **`noeviction` by default**: memory exhaustion returns an error rather than silently dropping data. Explicitly configure a different policy if you need eviction semantics.
 - **Security**: password authentication and TLS encryption, both via Kubernetes Secrets.
@@ -68,8 +68,8 @@ spec:
 
   image:
     registry: docker.io
-    path: valkey/valkey
-    tag: "8.0"
+    path: library/redis
+    tag: "8.4.2"
     pullPolicy: IfNotPresent
 
   resources:

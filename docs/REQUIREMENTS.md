@@ -24,7 +24,7 @@ Create a Kubernetes operator to run Redis and Valkey instances, based on upstrea
 ### 2.2 Compatibility Target
 - **Redis**: 7.2+
 - **Valkey**: Compatible versions (7.2+ equivalent)
-- **Default image**: `docker.io/valkey/valkey:8.0`
+- **Default image**: `docker.io/library/redis:8.4.2`
 
 ### 2.3 Technology Stack
 - **Language**: Go 1.24+
@@ -74,8 +74,8 @@ metadata:
 spec:
   mode: standalone | sentinel | cluster
   image:
-    repository: valkey/valkey
-    tag: "8.0"
+    repository: library/redis
+    tag: "8.4.2"
   auth:
     enabled: true
     existingSecret: my-redis-auth  # Secret with 'password' key
@@ -204,6 +204,7 @@ See [SCOPE.md](SCOPE.md) for the full in/out of scope breakdown.
 | 2026-01-30 | Helm chart distribution | Most common |
 | 2026-01-30 | API group: `chuck-chuck-chuck.net` | User-owned domain |
 | 2026-01-30 | Default to Valkey | Personal preference, easily overridable |
+| 2026-04-20 | Switch default to Redis 8.4.2 | Upstream standard; valkey-cli absent in Redis images |
 | 2026-02-03 | Cluster mode: no PVCs, topology in CR status | Works on any K8s cluster |
 | 2026-02-03 | Upstream defaults for eviction (noeviction) | Honest/general-purpose |
 | 2026-02-11 | Strict IP-only identity (ADR-001) | Prevent ghost master data loss |

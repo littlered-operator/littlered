@@ -9,11 +9,11 @@ spec:
   restartPolicy: Never
   initContainers:
   - name: wait-for-sentinel
-    image: valkey/valkey:8.0
+    image: library/redis:8.4.2
     command: 
     - "sh"
     - "-c"
-    - "until valkey-cli -h {{ .Values.sentinel.name }} -p 26379 sentinel masters | grep -q 'name'; do echo waiting for sentinel to track masters; sleep 2; done;"
+    - "until redis-cli -h {{ .Values.sentinel.name }} -p 26379 sentinel masters | grep -q 'name'; do echo waiting for sentinel to track masters; sleep 2; done;"
   containers:
   - name: chaos-client
     image: {{ .Values.chaosClient.image.repository }}:{{ .Values.chaosClient.image.tag }}

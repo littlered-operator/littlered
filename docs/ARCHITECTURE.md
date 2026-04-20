@@ -91,8 +91,8 @@ spec:
 
   # Image configuration
   image:
-    repository: valkey/valkey     # or redis
-    tag: "8.0"
+    repository: library/redis     # or valkey/valkey
+    tag: "8.4.2"
     pullPolicy: IfNotPresent
     pullSecrets: []
 

@@ -126,12 +126,12 @@ type ImageSpec struct {
 	Registry string `json:"registry,omitempty"`
 
 	// Path is the image path (without registry or tag)
-	// +kubebuilder:default="valkey/valkey"
+	// +kubebuilder:default="library/redis"
 	// +optional
 	Path string `json:"path,omitempty"`
 
 	// Tag is the image version tag
-	// +kubebuilder:default="8.0"
+	// +kubebuilder:default="8.4.2"
 	// +optional
 	Tag string `json:"tag,omitempty"`
 
@@ -154,11 +154,11 @@ func (i *ImageSpec) FullImage() string {
 	}
 	path := i.Path
 	if path == "" {
-		path = "valkey/valkey"
+		path = "library/redis"
 	}
 	tag := i.Tag
 	if tag == "" {
-		tag = "8.0"
+		tag = "8.4.2"
 	}
 	return fmt.Sprintf("%s/%s:%s", registry, path, tag)
 }

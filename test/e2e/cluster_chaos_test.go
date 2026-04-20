@@ -63,7 +63,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 
 				cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "CLUSTER", "INFO")
+					"redis-cli", "CLUSTER", "INFO")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
@@ -154,7 +154,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 
 					cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
 						"-n", testNamespace, "-c", "redis", "--",
-						"valkey-cli", "CLUSTER", "INFO")
+						"redis-cli", "CLUSTER", "INFO")
 					output, err = utils.Run(cmd)
 					g.Expect(err).NotTo(HaveOccurred())
 					g.Expect(output).To(ContainSubstring("cluster_state:ok"))
@@ -220,7 +220,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 
 					cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
 						"-n", testNamespace, "-c", "redis", "--",
-						"valkey-cli", "CLUSTER", "INFO")
+						"redis-cli", "CLUSTER", "INFO")
 					output, err = utils.Run(cmd)
 					g.Expect(err).NotTo(HaveOccurred())
 					g.Expect(output).To(ContainSubstring("cluster_state:ok"))
@@ -287,7 +287,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 
 				cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "CLUSTER", "INFO")
+					"redis-cli", "CLUSTER", "INFO")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
@@ -319,7 +319,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 			By("verifying final cluster topology (no lost shards)")
 			cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
 				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "CLUSTER", "INFO")
+				"redis-cli", "CLUSTER", "INFO")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(ContainSubstring("cluster_state:ok"))
@@ -361,7 +361,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 
 				cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "CLUSTER", "INFO")
+					"redis-cli", "CLUSTER", "INFO")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
@@ -452,7 +452,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 						podName := fmt.Sprintf("%s-cluster-%d", crName, j)
 						cmd = exec.Command("kubectl", "exec", podName,
 							"-n", testNamespace, "-c", "redis", "--",
-							"valkey-cli", "CLUSTER", "INFO")
+							"redis-cli", "CLUSTER", "INFO")
 						out, err := utils.Run(cmd)
 						if err == nil {
 							info = out

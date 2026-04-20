@@ -15,8 +15,8 @@ import (
 	"github.com/littlered-operator/littlered-operator/test/utils"
 )
 
-// defaultValkey is the image used by LittleRed when no image is specified in the CR.
-const defaultValkey = "docker.io/valkey/valkey:8.0"
+// defaultRedis is the image used by LittleRed when no image is specified in the CR.
+const defaultRedis = "docker.io/library/redis:8.4.2"
 
 // preflightImageChecks verifies that all required container images are pullable
 // before running any tests. Called from BeforeSuite so a missing image fails the
@@ -25,11 +25,11 @@ const defaultValkey = "docker.io/valkey/valkey:8.0"
 func preflightImageChecks() {
 	// Always use imagePullPolicy: Always to match the actual test behavior.
 	// The chaos client is deployed with Always (chaos_utils_test.go), and the
-	// valkey image is pulled by the kubelet on pod creation.
+	// redis image is pulled by the kubelet on pod creation.
 	// Using IfNotPresent here would mask issues where the image is cached locally
 	// but not actually pullable from the registry.
 	verifyImagePullable("chaos-client", getChaosClientImage())
-	verifyImagePullable("valkey", defaultValkey)
+	verifyImagePullable("redis", defaultRedis)
 }
 
 func verifyImagePullable(label, img string) {
@@ -64,8 +64,8 @@ spec:
 		g.Expect(output).To(SatisfyAny(Equal("Succeeded"), Equal("Running")),
 			"PREFLIGHT FAILURE: image %q (%s) is not pullable.\n"+
 				"  Chaos client: make build-images && make push-images (or make kind-load)\n"+
-				"  Valkey:       verify %s is accessible from the cluster",
-			img, label, defaultValkey)
+				"  Redis:        verify %s is accessible from the cluster",
+			img, label, defaultRedis)
 	}, 2*time.Minute, 5*time.Second).Should(Succeed(),
 		"PREFLIGHT FAILURE: image %q (%s) could not be pulled within 2 minutes. "+
 			"Build and push it before running e2e tests.", img, label)

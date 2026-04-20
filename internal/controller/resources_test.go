@@ -380,7 +380,7 @@ func TestBuildStatefulSet(t *testing.T) {
 		if c.Name == ComponentRedis {
 			hasRedis = true
 			// Check image
-			if c.Image != "docker.io/valkey/valkey:8.0" {
+			if c.Image != "docker.io/library/redis:8.4.2" {
 				t.Errorf("Redis container image = %q, want default", c.Image)
 			}
 			// Check port

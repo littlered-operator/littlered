@@ -92,7 +92,7 @@ var _ = Describe("LittleRed Security Features", Label("security"), func() {
 				podName := fmt.Sprintf("%s-0", podPrefix)
 
 				By("verifying access is DENIED without password")
-				cmd := exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "redis", "--", "valkey-cli", "PING")
+				cmd := exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "redis", "--", "redis-cli", "PING")
 				output, err := utils.Run(cmd)
 				if err == nil {
 					Expect(output).To(ContainSubstring("NOAUTH"), "PING succeeded without password")
@@ -101,7 +101,7 @@ var _ = Describe("LittleRed Security Features", Label("security"), func() {
 				}
 
 				By("verifying access is GRANTED with correct password")
-				cmd = exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "redis", "--", "valkey-cli", "-a", password, "--no-auth-warning", "PING")
+				cmd = exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "redis", "--", "redis-cli", "-a", password, "--no-auth-warning", "PING")
 				output, err = utils.Run(cmd)
 				Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("PING with password failed: %v, output: %s", err, output))
 				Expect(output).To(ContainSubstring("PONG"))
@@ -109,12 +109,12 @@ var _ = Describe("LittleRed Security Features", Label("security"), func() {
 				if mode == "sentinel" {
 					By("verifying Sentinel also requires password")
 					sentinelPod := fmt.Sprintf("%s-sentinel-0", crName)
-					cmd = exec.Command("kubectl", "exec", sentinelPod, "-n", testNamespace, "--", "valkey-cli", "-p", "26379", "SENTINEL", "masters")
+					cmd = exec.Command("kubectl", "exec", sentinelPod, "-n", testNamespace, "--", "redis-cli", "-p", "26379", "SENTINEL", "masters")
 					output, err = utils.Run(cmd)
 					// Sentinel returns NOAUTH if not authenticated
 					Expect(output).To(ContainSubstring("NOAUTH"))
 
-					cmd = exec.Command("kubectl", "exec", sentinelPod, "-n", testNamespace, "--", "valkey-cli", "-p", "26379", "-a", password, "--no-auth-warning", "SENTINEL", "masters")
+					cmd = exec.Command("kubectl", "exec", sentinelPod, "-n", testNamespace, "--", "redis-cli", "-p", "26379", "-a", password, "--no-auth-warning", "SENTINEL", "masters")
 					output, err = utils.Run(cmd)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(output).To(ContainSubstring("mymaster"))
@@ -175,13 +175,13 @@ var _ = Describe("LittleRed Security Features", Label("security"), func() {
 				podName := fmt.Sprintf("%s-0", podPrefix)
 
 				By("verifying plain PING fails")
-				cmd := exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "redis", "--", "valkey-cli", "PING")
+				cmd := exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "redis", "--", "redis-cli", "PING")
 				_, err = utils.Run(cmd)
 				Expect(err).To(HaveOccurred(), "Plain text PING should fail on TLS-enabled instance")
 
 				By("verifying TLS PING succeeds")
 				cmd = exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli",
+					"redis-cli",
 					"--tls",
 					"--cacert", "/tls/ca.crt",
 					"--cert", "/tls/tls.crt",

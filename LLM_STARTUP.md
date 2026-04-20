@@ -108,7 +108,7 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 - **Framework**: Kubebuilder (v4 layout)
 - **Testing**: Ginkgo & Gomega (BDD style)
 - **Metrics**: `redis_exporter` as a sidecar; optional `ServiceMonitor`.
-- **Image**: Defaults to **Valkey 8.0** (compatible with Redis 7.2+).
+- **Image**: Defaults to **Redis 8.4.2** (compatible with Redis 7.2+).
 
 ---
 

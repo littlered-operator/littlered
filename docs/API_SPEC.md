@@ -39,8 +39,8 @@ Image is composed from three parts: `{registry}/{path}:{tag}`
 spec:
   image:
     registry: docker.io         # Registry hostname
-    path: valkey/valkey         # Image path (without registry or tag)
-    tag: "8.0"                  # Version tag
+    path: library/redis         # Image path (without registry or tag)
+    tag: "8.4.2"               # Version tag
 
     pullPolicy: IfNotPresent
     pullSecrets:
@@ -50,53 +50,53 @@ spec:
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `image.registry` | `string` | No | `docker.io` | Registry hostname |
-| `image.path` | `string` | No | `valkey/valkey` | Image path (e.g., `library/redis`, `valkey/valkey`) |
-| `image.tag` | `string` | No | `8.0` | Image version tag |
+| `image.path` | `string` | No | `library/redis` | Image path (e.g., `library/redis`, `valkey/valkey`) |
+| `image.tag` | `string` | No | `8.4.2` | Image version tag |
 | `image.pullPolicy` | `string` | No | `IfNotPresent` | `Always`, `IfNotPresent`, `Never` |
 | `image.pullSecrets` | `[]LocalObjectReference` | No | `[]` | Pull secret references |
 
 **Resulting image**: `{registry}/{path}:{tag}`
 
-**Default**: `docker.io/valkey/valkey:8.0`
+**Default**: `docker.io/library/redis:8.4.2`
 
 **Examples**:
 
 ```yaml
-# Default: docker.io/valkey/valkey:8.0
+# Default: docker.io/library/redis:8.4.2
 spec:
   image: {}
 
-# Use Redis instead of Valkey
+# Use Valkey instead of Redis
 spec:
   image:
-    path: library/redis
-    # Result: docker.io/library/redis:8.0
+    path: valkey/valkey
+    # Result: docker.io/valkey/valkey:8.4.2
 
 # Use a registry mirror (only change registry, keep path)
 spec:
   image:
     registry: docker.io
-    # Result: docker.io/valkey/valkey:8.0
+    # Result: docker.io/library/redis:8.4.2
 
-# Mirror + Redis
+# Mirror + Valkey
 spec:
   image:
     registry: docker.io
-    path: library/redis
-    # Result: docker.io/library/redis:8.0
+    path: valkey/valkey
+    # Result: docker.io/valkey/valkey:8.4.2
 
 # Different version
 spec:
   image:
     tag: "7.2"
-    # Result: docker.io/valkey/valkey:7.2
+    # Result: docker.io/library/redis:7.2
 
 # Harbor proxy cache (different path structure)
 spec:
   image:
     registry: harbor.internal
-    path: dockerhub-proxy/valkey/valkey
-    # Result: harbor.internal/dockerhub-proxy/valkey/valkey:8.0
+    path: dockerhub-proxy/library/redis
+    # Result: harbor.internal/dockerhub-proxy/library/redis:8.4.2
 ```
 
 **Why fully qualified by default?**
@@ -550,7 +550,7 @@ metadata:
 spec: {}
 ```
 
-Uses all defaults: standalone mode, `docker.io/valkey/valkey:8.0`, no auth, no TLS, metrics enabled.
+Uses all defaults: standalone mode, `docker.io/library/redis:8.4.2`, no auth, no TLS, metrics enabled.
 
 ### 4.2 Standalone with Custom Resources
 
@@ -594,7 +594,7 @@ metadata:
 spec:
   image:
     registry: docker.io
-    # Result: docker.io/valkey/valkey:8.0
+    # Result: docker.io/library/redis:8.4.2
     # Exporter: docker.io/oliver006/redis_exporter:v1.66.0
 ```
 
@@ -723,7 +723,7 @@ spec:
   mode: sentinel
 ```
 
-Deploys: 1 master + 2 replicas + 3 sentinels with defaults (`docker.io/valkey/valkey:8.0`).
+Deploys: 1 master + 2 replicas + 3 sentinels with defaults (`docker.io/library/redis:8.4.2`).
 
 ### 4.9 Sentinel with Production Settings
 
@@ -738,7 +738,7 @@ spec:
 
   image:
     registry: docker.io
-    # Uses default path (valkey/valkey) and tag (8.0)
+    # Uses default path (library/redis) and tag (8.4.2)
 
   resources:
     requests:
@@ -926,11 +926,11 @@ type ImageSpec struct {
     Registry string `json:"registry,omitempty"`
 
     // Path is the image path (without registry or tag)
-    // +kubebuilder:default=valkey/valkey
+    // +kubebuilder:default=library/redis
     Path string `json:"path,omitempty"`
 
     // Tag is the image version tag
-    // +kubebuilder:default="8.0"
+    // +kubebuilder:default="8.4.2"
     Tag string `json:"tag,omitempty"`
 
     // PullPolicy is the image pull policy

@@ -101,7 +101,7 @@ spec:
 			By("Test ID: STAN-010")
 			cmd := exec.Command("kubectl", "exec", crName+"-redis-0",
 				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "PING")
+				"redis-cli", "PING")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(output)).To(Equal("PONG"))
@@ -111,7 +111,7 @@ spec:
 			By("Test ID: STAN-011 - setting a key")
 			cmd := exec.Command("kubectl", "exec", crName+"-redis-0",
 				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "SET", "e2e-test-key", "e2e-test-value")
+				"redis-cli", "SET", "e2e-test-key", "e2e-test-value")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(output)).To(Equal("OK"))
@@ -119,7 +119,7 @@ spec:
 			By("getting the key")
 			cmd = exec.Command("kubectl", "exec", crName+"-redis-0",
 				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "GET", "e2e-test-key")
+				"redis-cli", "GET", "e2e-test-key")
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(output)).To(Equal("e2e-test-value"))
@@ -165,7 +165,7 @@ spec:
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-redis-0",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "PING")
+					"redis-cli", "PING")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(strings.TrimSpace(output)).To(Equal("PONG"))
@@ -282,7 +282,7 @@ spec:
 				// Query sentinel-0 for master info to verify quorum
 				cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
 					"-n", testNamespace, "-c", "sentinel", "--",
-					"valkey-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
+					"redis-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("num-slaves"))
@@ -328,7 +328,7 @@ spec:
 			By("writing to master")
 			cmd = exec.Command("kubectl", "exec", masterPod,
 				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "SET", "repl-test-key", "repl-test-value")
+				"redis-cli", "SET", "repl-test-key", "repl-test-value")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(output)).To(Equal("OK"))
@@ -348,7 +348,7 @@ spec:
 			Eventually(func(g Gomega) {
 				cmd = exec.Command("kubectl", "exec", replicaPod,
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "GET", "repl-test-key")
+					"redis-cli", "GET", "repl-test-key")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(strings.TrimSpace(output)).To(Equal("repl-test-value"))
@@ -408,7 +408,7 @@ spec:
 			By("writing test data before update")
 			cmd = exec.Command("kubectl", "exec", crName+"-redis-0",
 				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "SET", "rolling-update-key", "pre-update-value")
+				"redis-cli", "SET", "rolling-update-key", "pre-update-value")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(output)).To(Equal("OK"))
@@ -476,7 +476,7 @@ spec:
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-redis-0",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "PING")
+					"redis-cli", "PING")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(strings.TrimSpace(output)).To(Equal("PONG"))
@@ -487,14 +487,14 @@ spec:
 			// This is by design for a cache - we just verify Redis is working
 			cmd := exec.Command("kubectl", "exec", crName+"-redis-0",
 				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "SET", "post-update-key", "post-update-value")
+				"redis-cli", "SET", "post-update-key", "post-update-value")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(output)).To(Equal("OK"))
 
 			cmd = exec.Command("kubectl", "exec", crName+"-redis-0",
 				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "GET", "post-update-key")
+				"redis-cli", "GET", "post-update-key")
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(output)).To(Equal("post-update-value"))
@@ -571,7 +571,7 @@ spec:
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-redis-0",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "CONFIG", "GET", "maxmemory-policy")
+					"redis-cli", "CONFIG", "GET", "maxmemory-policy")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("volatile-lru"))
@@ -637,7 +637,7 @@ spec:
 
 			cmd = exec.Command("kubectl", "exec", masterPod,
 				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "SET", "sentinel-rolling-key", "test-value")
+				"redis-cli", "SET", "sentinel-rolling-key", "test-value")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(output)).To(Equal("OK"))
@@ -722,7 +722,7 @@ spec:
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
 					"-n", testNamespace, "-c", "sentinel", "--",
-					"valkey-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
+					"redis-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("num-slaves"))
@@ -819,7 +819,7 @@ spec:
 				By("writing test data to master before failover")
 				cmd = exec.Command("kubectl", "exec", originalMaster,
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "SET", "failover-test-key", "failover-test-value")
+					"redis-cli", "SET", "failover-test-key", "failover-test-value")
 				output, err := utils.Run(cmd)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(strings.TrimSpace(output)).To(Equal("OK"))
@@ -847,7 +847,7 @@ spec:
 				Eventually(func(g Gomega) {
 					cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
 						"-n", testNamespace, "-c", "sentinel", "--",
-						"valkey-cli", "-p", "26379", "SENTINEL", "get-master-addr-by-name", "mymaster")
+						"redis-cli", "-p", "26379", "SENTINEL", "get-master-addr-by-name", "mymaster")
 					output, err := utils.Run(cmd)
 					g.Expect(err).NotTo(HaveOccurred())
 					g.Expect(output).NotTo(BeEmpty())
@@ -859,7 +859,7 @@ spec:
 					// Query sentinel for current master address
 					cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
 						"-n", testNamespace, "-c", "sentinel", "--",
-						"valkey-cli", "-p", "26379", "SENTINEL", "get-master-addr-by-name", "mymaster")
+						"redis-cli", "-p", "26379", "SENTINEL", "get-master-addr-by-name", "mymaster")
 					masterInfo, err := utils.Run(cmd)
 					g.Expect(err).NotTo(HaveOccurred())
 					_, _ = fmt.Fprintf(GinkgoWriter, "Master info: %s\n", masterInfo)
@@ -869,7 +869,7 @@ spec:
 						podName := fmt.Sprintf("%s-redis-%d", crName, i)
 						cmd = exec.Command("kubectl", "exec", podName,
 							"-n", testNamespace, "-c", "redis", "--",
-							"valkey-cli", "GET", "failover-test-key")
+							"redis-cli", "GET", "failover-test-key")
 						output, err := utils.Run(cmd)
 						if err == nil && strings.TrimSpace(output) == "failover-test-value" {
 							_, _ = fmt.Fprintf(GinkgoWriter, "Data found on %s\n", podName)
@@ -904,7 +904,7 @@ spec:
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-sentinel-0",
 					"-n", testNamespace, "-c", "sentinel", "--",
-					"valkey-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
+					"redis-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("num-slaves"))

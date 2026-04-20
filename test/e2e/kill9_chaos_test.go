@@ -102,7 +102,7 @@ spec:
 			By("writing a key before kill-9")
 			cmd = exec.Command("kubectl", "exec", pod,
 				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "SET", "kill9-smoke-key", "smoke-value")
+				"redis-cli", "SET", "kill9-smoke-key", "smoke-value")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(output)).To(Equal("OK"))
@@ -110,7 +110,7 @@ spec:
 			By("confirming the key is present before kill-9")
 			cmd = exec.Command("kubectl", "exec", pod,
 				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "GET", "kill9-smoke-key")
+				"redis-cli", "GET", "kill9-smoke-key")
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(output)).To(Equal("smoke-value"))
@@ -161,10 +161,10 @@ spec:
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", pod,
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "GET", "kill9-smoke-key")
+					"redis-cli", "GET", "kill9-smoke-key")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				// valkey-cli returns empty string (not "(nil)") for missing keys when
+				// redis-cli returns empty string (not "(nil)") for missing keys when
 			// not attached to a TTY (kubectl exec without -t).
 			g.Expect(strings.TrimSpace(output)).To(BeEmpty())
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
@@ -382,7 +382,7 @@ spec:
 
 				cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "CLUSTER", "INFO")
+					"redis-cli", "CLUSTER", "INFO")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
@@ -455,7 +455,7 @@ spec:
 				// Query via pod-1 (pod-0 may still be joining).
 				cmd = exec.Command("kubectl", "exec", crName+"-cluster-1",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "CLUSTER", "INFO")
+					"redis-cli", "CLUSTER", "INFO")
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
