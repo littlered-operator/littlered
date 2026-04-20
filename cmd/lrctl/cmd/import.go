@@ -254,15 +254,15 @@ func buildCR(
 	}
 }
 
-const defaultUpstreamPath = "valkey/valkey"
+const defaultUpstreamPath = "library/redis"
 
 // Known upstream image paths. If the running container uses one of these,
 // the registry is a mirror and should be preserved. Anything else (bitnami, etc.)
 // is a repackaged image and gets normalized to the upstream equivalent.
 var upstreamPaths = map[string]bool{
 	"redis":             true, // Docker Hub official shorthand
-	"library/redis":     true, // Docker Hub canonical form
-	defaultUpstreamPath: true,
+	"valkey/valkey":     true, // Valkey fork
+	defaultUpstreamPath: true, // library/redis — Docker Hub canonical form
 }
 
 // parseContainerImage inspects the running container image and INFO server output

@@ -136,7 +136,7 @@ spec:
                 description: Image defines the container image to use
                 properties:
                   path:
-                    default: valkey/valkey
+                    default: library/redis
                     description: Path is the image path (without registry or tag)
                     type: string
                   pullPolicy:
@@ -172,7 +172,7 @@ spec:
                     description: Registry is the container registry hostname
                     type: string
                   tag:
-                    default: "8.0"
+                    default: 8.4.2
                     description: Tag is the image version tag
                     type: string
                 type: object

@@ -75,7 +75,7 @@ var _ = Describe("Cluster Mode Rolling Update", Ordered, func() {
 
 	It("should create a cluster for rolling update testing", func() {
 		// Write test keys that spread across different hash slots, covering all
-		// shards. valkey-cli -c follows MOVED redirects automatically.
+		// shards. redis-cli -c follows MOVED redirects automatically.
 		testKeys := []struct{ key, value string }{
 			{"roll-a", "val-a"},
 			{"roll-b", "val-b"},
@@ -86,7 +86,7 @@ var _ = Describe("Cluster Mode Rolling Update", Ordered, func() {
 		for _, kv := range testKeys {
 			cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "-c", "SET", kv.key, kv.value)
+				"redis-cli", "-c", "SET", kv.key, kv.value)
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(output)).To(Equal("OK"))
@@ -157,7 +157,7 @@ var _ = Describe("Cluster Mode Rolling Update", Ordered, func() {
 		Eventually(func(g Gomega) {
 			cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "CLUSTER", "INFO")
+				"redis-cli", "CLUSTER", "INFO")
 			output, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(ContainSubstring("cluster_state:ok"))
@@ -181,7 +181,7 @@ var _ = Describe("Cluster Mode Rolling Update", Ordered, func() {
 		for _, kv := range testKeys {
 			cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "-c", "GET", kv.key)
+				"redis-cli", "-c", "GET", kv.key)
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.TrimSpace(output)).To(Equal(kv.value),

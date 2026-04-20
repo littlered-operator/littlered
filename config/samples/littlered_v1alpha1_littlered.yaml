@@ -7,7 +7,7 @@ metadata:
   name: store
 spec:
   # Minimal standalone example - uses all defaults:
-  # - Image: docker.io/valkey/valkey:8.0
+  # - Image: docker.io/library/redis:8.4.2
   # - Resources: 250m CPU, 256Mi memory (Guaranteed QoS)
   # - Metrics exporter: enabled
   # - No persistence (in-memory only)

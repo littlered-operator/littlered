@@ -88,7 +88,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "CLUSTER", "INFO")
+					"redis-cli", "CLUSTER", "INFO")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
@@ -98,7 +98,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 			By(fmt.Sprintf("verifying %d masters and %d replicas", clusterShards, clusterShards*clusterReplicasPerShard))
 			cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
 				"-n", testNamespace, "-c", "redis", "--",
-				"valkey-cli", "CLUSTER", "NODES")
+				"redis-cli", "CLUSTER", "NODES")
 			output, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			lines := strings.Split(strings.TrimSpace(output), "\n")
@@ -122,7 +122,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 			for _, key := range keys {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "-c", "SET", key, "value-"+key)
+					"redis-cli", "-c", "SET", key, "value-"+key)
 				_, err := utils.Run(cmd)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -131,7 +131,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 			for _, key := range keys {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-2",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "-c", "GET", key)
+					"redis-cli", "-c", "GET", key)
 				output, err := utils.Run(cmd)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(strings.TrimSpace(output)).To(Equal("value-" + key))
@@ -214,7 +214,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "CLUSTER", "INFO")
+					"redis-cli", "CLUSTER", "INFO")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
@@ -279,7 +279,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-1",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "CLUSTER", "INFO")
+					"redis-cli", "CLUSTER", "INFO")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
@@ -289,7 +289,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-1",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "CLUSTER", "NODES")
+					"redis-cli", "CLUSTER", "NODES")
 				out, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				lines := strings.Split(strings.TrimSpace(out), "\n")
@@ -335,7 +335,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "CLUSTER", "INFO")
+					"redis-cli", "CLUSTER", "INFO")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("cluster_state:ok"))
@@ -424,14 +424,14 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 				podName := fmt.Sprintf("%s-cluster-%d", crName, i)
 				cmd := exec.Command("kubectl", "exec", podName,
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "CONFIG", "GET", "maxmemory-policy")
+					"redis-cli", "CONFIG", "GET", "maxmemory-policy")
 				output, err := utils.Run(cmd)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(output).To(ContainSubstring("noeviction"))
 
 				cmd = exec.Command("kubectl", "exec", podName,
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "CONFIG", "GET", "cluster-node-timeout")
+					"redis-cli", "CONFIG", "GET", "cluster-node-timeout")
 				output, err = utils.Run(cmd)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(output).To(ContainSubstring("10000"))
@@ -479,7 +479,7 @@ spec:
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
 					"-n", testNamespace, "-c", "redis", "--",
-					"valkey-cli", "CLUSTER", "INFO")
+					"redis-cli", "CLUSTER", "INFO")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("cluster_state:fail"))

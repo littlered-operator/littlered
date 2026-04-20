@@ -9,11 +9,11 @@ spec:
   restartPolicy: Never
   initContainers:
   - name: wait-for-cluster
-    image: valkey/valkey:8.0
+    image: library/redis:8.4.2
     command: 
     - "sh"
     - "-c"
-    - "until valkey-cli -h {{ .Values.cluster.name }} cluster info | grep 'cluster_state:ok'; do echo waiting for cluster to be ok; sleep 2; done;"
+    - "until redis-cli -h {{ .Values.cluster.name }} cluster info | grep 'cluster_state:ok'; do echo waiting for cluster to be ok; sleep 2; done;"
   containers:
   - name: chaos-client
     image: {{ .Values.chaosClient.image.repository }}:{{ .Values.chaosClient.image.tag }}

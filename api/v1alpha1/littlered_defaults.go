@@ -28,8 +28,8 @@ import (
 const (
 	DefaultMode            = "standalone"
 	DefaultRegistry        = "docker.io"
-	DefaultImagePath       = "valkey/valkey"
-	DefaultImageTag        = "8.0"
+	DefaultImagePath       = "library/redis"
+	DefaultImageTag        = "8.4.2"
 	DefaultPullPolicy      = corev1.PullIfNotPresent
 	DefaultMaxmemoryPolicy = "noeviction"
 	DefaultTimeout         = 0

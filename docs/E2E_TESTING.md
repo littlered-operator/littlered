@@ -266,7 +266,7 @@ lrctl describe <name>
 
 ### Preflight Image Check Fails
 
-The suite validates that all required images (chaos client, valkey) are pullable before running any tests. If this fails:
+The suite validates that all required images (chaos client, redis) are pullable before running any tests. If this fails:
 
 ```
 PREFLIGHT FAILURE: image "ghcr.io/.../littlered-chaos-client:abc1234" could not be pulled

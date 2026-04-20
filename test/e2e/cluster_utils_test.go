@@ -44,7 +44,7 @@ func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 		var success bool
 		for i := 0; i < expectedNodes; i++ {
 			podName := fmt.Sprintf("%s-cluster-%d", crName, i)
-			cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "valkey-cli", "CLUSTER", "NODES")
+			cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "redis-cli", "CLUSTER", "NODES")
 			output, err := utils.Run(cmd)
 			if err == nil {
 				clusterNodesOutput = output
@@ -126,7 +126,7 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 		var masterIPs []string
 		for i := 0; i < expectedSentinels; i++ {
 			sentinelPod := fmt.Sprintf("%s-sentinel-%d", crName, i)
-			cmd := exec.Command("kubectl", "exec", sentinelPod, "-n", namespace, "-c", "sentinel", "--", "valkey-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
+			cmd := exec.Command("kubectl", "exec", sentinelPod, "-n", namespace, "-c", "sentinel", "--", "redis-cli", "-p", "26379", "SENTINEL", "master", "mymaster")
 			sentinelOutput, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to execute SENTINEL master on %s", sentinelPod))
 
@@ -148,7 +148,7 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 
 		// 1b. Get replicas info from one sentinel to count only healthy ones
 		sentinelPod := fmt.Sprintf("%s-sentinel-0", crName)
-		cmd := exec.Command("kubectl", "exec", sentinelPod, "-n", namespace, "-c", "sentinel", "--", "valkey-cli", "-p", "26379", "SENTINEL", "replicas", "mymaster")
+		cmd := exec.Command("kubectl", "exec", sentinelPod, "-n", namespace, "-c", "sentinel", "--", "redis-cli", "-p", "26379", "SENTINEL", "replicas", "mymaster")
 		replicasOutput, err := utils.Run(cmd)
 		g.Expect(err).NotTo(HaveOccurred(), "Failed to execute SENTINEL replicas on sentinel pod")
 
@@ -216,7 +216,7 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 
 // getPodNodeID returns the current Redis Cluster NodeID of a pod.
 func getPodNodeID(namespace, podName string) (string, error) {
-	cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "valkey-cli", "CLUSTER", "MYID")
+	cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "redis-cli", "CLUSTER", "MYID")
 	out, err := utils.Run(cmd)
 	if err != nil {
 		return "", err
@@ -227,7 +227,7 @@ func getPodNodeID(namespace, podName string) (string, error) {
 // getPodRunID returns the current Redis RunID of a pod.
 // This is useful for Standalone and Sentinel modes where NodeID is not available.
 func getPodRunID(namespace, podName string) (string, error) {
-	cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "valkey-cli", "INFO", "server")
+	cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "redis-cli", "INFO", "server")
 	output, err := utils.Run(cmd)
 	if err != nil {
 		return "", err
@@ -249,7 +249,7 @@ func waitForShardMasterChange(namespace, queryPod string, slot int, oldMasterNod
 	Eventually(func(g Gomega) {
 		cmd := exec.Command("kubectl", "exec", queryPod,
 			"-n", namespace, "-c", "redis", "--",
-			"valkey-cli", "CLUSTER", "NODES")
+			"redis-cli", "CLUSTER", "NODES")
 		output, err := utils.Run(cmd)
 		g.Expect(err).NotTo(HaveOccurred(), "Failed to get CLUSTER NODES")
 
@@ -305,7 +305,7 @@ func waitForClusterFailureDetected(namespace, crName string, queryPod string, ex
 	Eventually(func(g Gomega) {
 		cmd := exec.Command("kubectl", "exec", queryPod,
 			"-n", namespace, "-c", "redis", "--",
-			"valkey-cli", "CLUSTER", "NODES")
+			"redis-cli", "CLUSTER", "NODES")
 		output, err := utils.Run(cmd)
 		if err != nil {
 			return // Retry on connection failures
@@ -361,7 +361,7 @@ func getShardGroups(namespace, crName string, totalNodes int) ([][]string, error
 
 	for i := 0; i < totalNodes; i++ {
 		podName := fmt.Sprintf("%s-cluster-%d", crName, i)
-		cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "valkey-cli", "CLUSTER", "MYID")
+		cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "redis-cli", "CLUSTER", "MYID")
 		output, err := utils.Run(cmd)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get ID for pod %s: %w", podName, err)
@@ -372,7 +372,7 @@ func getShardGroups(namespace, crName string, totalNodes int) ([][]string, error
 	var clusterNodesOutput string
 	for i := 0; i < totalNodes; i++ {
 		podName := fmt.Sprintf("%s-cluster-%d", crName, i)
-		cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "valkey-cli", "CLUSTER", "NODES")
+		cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "redis-cli", "CLUSTER", "NODES")
 		var err error
 		clusterNodesOutput, err = utils.Run(cmd)
 		if err == nil {

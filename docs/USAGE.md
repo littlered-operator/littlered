@@ -192,16 +192,16 @@ kubectl get svc store
 
 ```bash
 # Test Redis connection
-kubectl exec -it store-redis-0 -c redis -- valkey-cli PING
+kubectl exec -it store-redis-0 -c redis -- redis-cli PING
 # Output: PONG
 
 # Set and get a value
-kubectl exec -it store-redis-0 -c redis -- valkey-cli SET hello world
-kubectl exec -it store-redis-0 -c redis -- valkey-cli GET hello
+kubectl exec -it store-redis-0 -c redis -- redis-cli SET hello world
+kubectl exec -it store-redis-0 -c redis -- redis-cli GET hello
 # Output: world
 
 # Check Redis info
-kubectl exec -it store-redis-0 -c redis -- valkey-cli INFO server
+kubectl exec -it store-redis-0 -c redis -- redis-cli INFO server
 ```
 
 ### Connect from your application
@@ -267,13 +267,13 @@ kubectl get svc -l app.kubernetes.io/instance=store
 
 ```bash
 # Query sentinel for master
-kubectl exec -it store-sentinel-0 -- valkey-cli -p 26379 SENTINEL get-master-addr-by-name mymaster
+kubectl exec -it store-sentinel-0 -- redis-cli -p 26379 SENTINEL get-master-addr-by-name mymaster
 
 # Check master info
-kubectl exec -it store-sentinel-0 -- valkey-cli -p 26379 SENTINEL master mymaster
+kubectl exec -it store-sentinel-0 -- redis-cli -p 26379 SENTINEL master mymaster
 
 # Check replicas
-kubectl exec -it store-sentinel-0 -- valkey-cli -p 26379 SENTINEL replicas mymaster
+kubectl exec -it store-sentinel-0 -- redis-cli -p 26379 SENTINEL replicas mymaster
 ```
 
 ### Test failover
@@ -289,7 +289,7 @@ kubectl delete pod store-redis-0 --grace-period=0 --force
 kubectl get littlered store -w
 
 # Verify new master
-kubectl exec -it store-sentinel-0 -- valkey-cli -p 26379 SENTINEL get-master-addr-by-name mymaster
+kubectl exec -it store-sentinel-0 -- redis-cli -p 26379 SENTINEL get-master-addr-by-name mymaster
 ```
 
 ### Connect from your application
@@ -365,7 +365,7 @@ kubectl get svc -l app.kubernetes.io/instance=store
 
 ```bash
 # Cluster info
-kubectl exec -it store-cluster-0 -c redis -- valkey-cli CLUSTER INFO
+kubectl exec -it store-cluster-0 -c redis -- redis-cli CLUSTER INFO
 
 # Expected output includes:
 # cluster_state:ok
@@ -375,10 +375,10 @@ kubectl exec -it store-cluster-0 -c redis -- valkey-cli CLUSTER INFO
 # cluster_size:3
 
 # Cluster nodes (shows all nodes with their roles and slots)
-kubectl exec -it store-cluster-0 -c redis -- valkey-cli CLUSTER NODES
+kubectl exec -it store-cluster-0 -c redis -- redis-cli CLUSTER NODES
 
 # Check slot distribution
-kubectl exec -it store-cluster-0 -c redis -- valkey-cli CLUSTER SLOTS
+kubectl exec -it store-cluster-0 -c redis -- redis-cli CLUSTER SLOTS
 ```
 
 ### Check cluster state in CR status
@@ -409,7 +409,7 @@ kubectl delete pod store-cluster-0
 kubectl logs -n littlered-system deployment/littlered-operator -f
 
 # Verify cluster health after recovery
-kubectl exec -it store-cluster-2 -c redis -- valkey-cli CLUSTER INFO
+kubectl exec -it store-cluster-2 -c redis -- redis-cli CLUSTER INFO
 ```
 
 ### Connect from your application
@@ -424,8 +424,8 @@ Example with redis-cli:
 
 ```bash
 # -c flag enables cluster mode (follows redirects)
-kubectl exec -it store-cluster-0 -c redis -- valkey-cli -c SET mykey myvalue
-kubectl exec -it store-cluster-0 -c redis -- valkey-cli -c GET mykey
+kubectl exec -it store-cluster-0 -c redis -- redis-cli -c SET mykey myvalue
+kubectl exec -it store-cluster-0 -c redis -- redis-cli -c GET mykey
 ```
 
 ### Slot distribution
@@ -491,7 +491,7 @@ spec:
 
 ```bash
 # Connect with password
-kubectl exec -it store-redis-0 -c redis -- valkey-cli -a mysecretpassword PING
+kubectl exec -it store-redis-0 -c redis -- redis-cli -a mysecretpassword PING
 ```
 
 ### With ServiceMonitor (Prometheus)
@@ -819,13 +819,13 @@ kubectl logs store-sentinel-0
 
 ```bash
 # Check cluster state
-kubectl exec -it store-cluster-0 -c redis -- valkey-cli CLUSTER INFO
+kubectl exec -it store-cluster-0 -c redis -- redis-cli CLUSTER INFO
 
 # Check for failed slots
-kubectl exec -it store-cluster-0 -c redis -- valkey-cli CLUSTER SLOTS
+kubectl exec -it store-cluster-0 -c redis -- redis-cli CLUSTER SLOTS
 
 # View cluster topology
-kubectl exec -it store-cluster-0 -c redis -- valkey-cli CLUSTER NODES
+kubectl exec -it store-cluster-0 -c redis -- redis-cli CLUSTER NODES
 
 # Check stored cluster state in CR
 kubectl get littlered store -o jsonpath='{.status.cluster.state}'

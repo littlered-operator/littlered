@@ -29,28 +29,28 @@ func TestImageSpec_FullImage(t *testing.T) {
 		{
 			name:     "all defaults",
 			spec:     ImageSpec{},
-			expected: "docker.io/valkey/valkey:8.0",
+			expected: "docker.io/library/redis:8.4.2",
 		},
 		{
 			name: "custom registry",
 			spec: ImageSpec{
 				Registry: "gcr.io",
 			},
-			expected: "gcr.io/valkey/valkey:8.0",
+			expected: "gcr.io/library/redis:8.4.2",
 		},
 		{
 			name: "custom path",
 			spec: ImageSpec{
-				Path: "redis/redis",
+				Path: "myorg/custom-image",
 			},
-			expected: "docker.io/redis/redis:8.0",
+			expected: "docker.io/myorg/custom-image:8.4.2",
 		},
 		{
 			name: "custom tag",
 			spec: ImageSpec{
 				Tag: "7.2",
 			},
-			expected: "docker.io/valkey/valkey:7.2",
+			expected: "docker.io/library/redis:7.2",
 		},
 		{
 			name: "all custom",
