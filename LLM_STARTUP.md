@@ -93,7 +93,7 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 | **Cluster** | `shards × (1 + replicasPerShard)` Pods | Horizontal Scaling / Large Data |
 
 ### Key Logic:
-- **Sentinel Mode**: The operator manages a `chuck-chuck-chuck.net/role: master` label on Pods. The `{name}` Service uses this label as a selector to always route traffic to the current master.
+- **Sentinel Mode**: The operator manages a `redis.chuck-chuck-chuck.net/role: master` label on Pods. The `{name}` Service uses this label as a selector to always route traffic to the current master.
 - **Cluster Mode**: Sophisticated repair loop handles:
     1. Quorum loss (via `CLUSTER FAILOVER TAKEOVER`).
     2. Partition healing (via `CLUSTER MEET`).

@@ -48,32 +48,6 @@ rules:
   - update
   - watch
 - apiGroups:
-  - chuck-chuck-chuck.net
-  resources:
-  - littlereds
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - chuck-chuck-chuck.net
-  resources:
-  - littlereds/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - chuck-chuck-chuck.net
-  resources:
-  - littlereds/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
   - monitoring.coreos.com
   resources:
   - servicemonitors
@@ -97,3 +71,29 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - redis.chuck-chuck-chuck.net
+  resources:
+  - littlereds
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - redis.chuck-chuck-chuck.net
+  resources:
+  - littlereds/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - redis.chuck-chuck-chuck.net
+  resources:
+  - littlereds/status
+  verbs:
+  - get
+  - patch
+  - update

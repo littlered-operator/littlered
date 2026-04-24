@@ -324,7 +324,7 @@ push-latest: ## Re-tag images and Helm chart as :latest (only runs on release ta
 
 .PHONY: redeploy-all
 redeploy-all: undeploy ## Full reset: uninstall helm chart, delete CRDs, and deploy fresh.
-	-kubectl $(KUBECTL_CTX_FLAGS) delete crd littlereds.chuck-chuck-chuck.net --ignore-not-found
+	-kubectl $(KUBECTL_CTX_FLAGS) delete crd littlereds.redis.chuck-chuck-chuck.net --ignore-not-found
 	$(MAKE) deploy KUBECONTEXT=$(KUBECONTEXT)
 
 .PHONY: pipeline

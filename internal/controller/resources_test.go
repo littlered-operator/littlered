@@ -130,7 +130,7 @@ func TestCommonLabels(t *testing.T) {
 		{"app.kubernetes.io/instance", testLRName},
 		{"app.kubernetes.io/managed-by", "littlered-operator"},
 		{"app.kubernetes.io/version", "8.0"},
-		{"chuck-chuck-chuck.net/mode", ModeStandalone},
+		{"redis.chuck-chuck-chuck.net/mode", ModeStandalone},
 	}
 
 	for _, tt := range tests {

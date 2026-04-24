@@ -80,7 +80,7 @@
 ### 2.1 API Structure
 
 ```yaml
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: store
@@ -256,7 +256,7 @@ status:
 │  │  │ redis:6379   │  │ redis:6379   │  │ redis:6379   │          │ │
 │  │  │ export:9121  │  │ export:9121  │  │ export:9121  │          │ │
 │  │  └──────────────┘  └──────────────┘  └──────────────┘          │ │
-│  │  Labels: chuck-chuck-chuck.net/role = master | replica          │ │
+│  │  Labels: redis.chuck-chuck-chuck.net/role = master | replica          │ │
 │  └────────────────────────────────────────────────────────────────┘ │
 │                                                                      │
 │  ┌────────────────────────────────────────────────────────────────┐ │
@@ -403,7 +403,7 @@ When a Redis process is killed (OOM, kill -9) but the pod stays alive, the conta
 
 ### 5.4 Master Service Routing
 
-The `{name}-master` service uses a label selector (`chuck-chuck-chuck.net/role: master`). The operator surgically updates this label on each reconcile cycle:
+The `{name}-master` service uses a label selector (`redis.chuck-chuck-chuck.net/role: master`). The operator surgically updates this label on each reconcile cycle:
 
 - **Master known**: the master pod gets `role=master`, all others get `role=replica`.
 - **No master** (failover in progress): only the `role=master` label is stripped from whoever had it. Other pods are left untouched to avoid churn.

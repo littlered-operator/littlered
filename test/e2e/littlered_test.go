@@ -50,7 +50,7 @@ var _ = Describe("LittleRed", Ordered, func() {
 			AddReportEntry("cr:" + crName)
 			By("Test ID: STAN-001 - applying the LittleRed CR")
 			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -203,7 +203,7 @@ spec:
 			AddReportEntry("cr:" + crName)
 			By("Test ID: SEN-001 - applying the LittleRed CR with sentinel mode")
 			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -376,7 +376,7 @@ spec:
 		It("should create a standalone Redis instance for rolling update testing", func() {
 			By("applying the LittleRed CR")
 			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -425,7 +425,7 @@ spec:
 
 			By("updating the resource limits")
 			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -519,7 +519,7 @@ spec:
 			oldUID = strings.TrimSpace(oldUID)
 
 			cmd = exec.Command("kubectl", "get", "pod", crName+"-redis-0",
-				"-n", testNamespace, "-o", "jsonpath={.metadata.annotations.chuck-chuck-chuck\\.net/config-hash}")
+				"-n", testNamespace, "-o", "jsonpath={.metadata.annotations.redis\\.chuck-chuck-chuck\\.net/config-hash}")
 			oldHash, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			oldHash = strings.TrimSpace(oldHash)
@@ -527,7 +527,7 @@ spec:
 
 			By("updating the config (maxmemory policy)")
 			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -560,7 +560,7 @@ spec:
 
 				// Verify new config hash is different
 				cmd = exec.Command("kubectl", "get", "pod", crName+"-redis-0",
-					"-n", testNamespace, "-o", "jsonpath={.metadata.annotations.chuck-chuck-chuck\\.net/config-hash}")
+					"-n", testNamespace, "-o", "jsonpath={.metadata.annotations.redis\\.chuck-chuck-chuck\\.net/config-hash}")
 				newHash, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				newHash = strings.TrimSpace(newHash)
@@ -594,7 +594,7 @@ spec:
 		It("should create a sentinel cluster for rolling update testing", func() {
 			By("applying the LittleRed CR with sentinel mode")
 			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -656,7 +656,7 @@ spec:
 
 			By("updating the sentinel resources")
 			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -761,7 +761,7 @@ spec:
 		It("should create a sentinel cluster for failover testing", func() {
 			By("applying the LittleRed CR with fast failover settings")
 			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s

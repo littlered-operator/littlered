@@ -150,7 +150,7 @@ Summary:
 **Advanced Checks:**
 - **Consensus**: Do all Sentinels agree on the master?
 - **Ghost Detection**: Is the master reported by Redis/Sentinel actually a living Kubernetes pod?
-- **Role Alignment**: Do the `chuck-chuck-chuck.net/role` labels match the actual process role?
+- **Role Alignment**: Do the `redis.chuck-chuck-chuck.net/role` labels match the actual process role?
 - **Topology (Cluster Mode)**: Visualizes the tree of Master -> Replica relationships and slot coverage.
 - **Partition Detection**: Identifies if nodes see different versions of the cluster topology.
 

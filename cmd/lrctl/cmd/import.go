@@ -244,7 +244,7 @@ func buildCR(
 	}
 
 	return map[string]any{
-		"apiVersion": "chuck-chuck-chuck.net/v1alpha1",
+		"apiVersion": "redis.chuck-chuck-chuck.net/v1alpha1",
 		"kind":       "LittleRed",
 		"metadata": map[string]any{
 			"name":      name,

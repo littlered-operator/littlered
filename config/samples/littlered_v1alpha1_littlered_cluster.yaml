@@ -15,7 +15,7 @@
 #   kubectl exec store-cluster-cluster-0 -- redis-cli CLUSTER INFO
 #   kubectl exec store-cluster-cluster-0 -- redis-cli CLUSTER NODES
 #
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: store-cluster

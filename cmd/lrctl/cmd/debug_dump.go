@@ -218,7 +218,7 @@ func collectK8sResources(dir, name, ns string) {
 		kubectl("get", "pods", "-n", ns,
 			"-l", "app.kubernetes.io/instance="+name,
 			"-o", "wide",
-			"-L", "chuck-chuck-chuck.net/role"))
+			"-L", "redis.chuck-chuck-chuck.net/role"))
 
 	writeFile(dir, "statefulsets.yaml",
 		kubectl("get", "statefulsets", "-n", ns,

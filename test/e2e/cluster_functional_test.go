@@ -446,13 +446,13 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 			AddReportEntry("cr:" + crName)
 			By("Creating an empty cluster with debug-skip-slot-assignment annotation")
 			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
   namespace: %s
   annotations:
-    chuck-chuck-chuck.net/debug-skip-slot-assignment: "true"
+    redis.chuck-chuck-chuck.net/debug-skip-slot-assignment: "true"
 spec:
   mode: cluster
   cluster:

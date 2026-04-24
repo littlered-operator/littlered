@@ -217,14 +217,14 @@ while true; do kubectl logs manual-chaos-cluster-0 -f; sleep 1; done       # clu
 while true; do kubectl logs manual-chaos-sentinel-0 -f; sleep 1; done
 
 # Window 5: CR status
-while true; do kubectl get littlereds.chuck-chuck-chuck.net manual-chaos -o wide; sleep 1; done
+while true; do kubectl get littlereds.redis.chuck-chuck-chuck.net manual-chaos -o wide; sleep 1; done
 ```
 
 ### Inject Faults
 
 ```bash
 # Kill the current master (sentinel mode) — find it first:
-kubectl get pods -l chuck-chuck-chuck.net/role=master
+kubectl get pods -l redis.chuck-chuck-chuck.net/role=master
 
 # Graceful delete (triggers preStop hook and Sentinel FAILOVER)
 kubectl delete pod <master-pod>

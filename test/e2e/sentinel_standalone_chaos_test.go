@@ -44,7 +44,7 @@ var _ = Describe("Sentinel and Standalone Chaos Testing", Ordered, func() {
 
 				By(fmt.Sprintf("creating Sentinel cluster %s and chaos client simultaneously", crName))
 				cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -183,7 +183,7 @@ spec:
 
 			By("creating standalone and chaos client simultaneously")
 			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s

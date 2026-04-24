@@ -201,7 +201,7 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 		allPods := strings.Fields(allPodsOutput)
 
 		for _, pod := range allPods {
-			cmd = exec.Command("kubectl", "get", "pod", pod, "-n", namespace, "-o", "jsonpath={.metadata.labels['chuck-chuck-chuck\\.net/role']}")
+			cmd = exec.Command("kubectl", "get", "pod", pod, "-n", namespace, "-o", "jsonpath={.metadata.labels['redis\\.chuck-chuck-chuck\\.net/role']}")
 			role, _ := utils.Run(cmd)
 			if pod == masterPodName {
 				g.Expect(role).To(Equal("master"), fmt.Sprintf("Pod %s is master but lacks master label", pod))
@@ -440,7 +440,7 @@ func clusterTotalNodes(replicasPerShard int) int {
 // extraSpecFields adds fields under spec (e.g. "  config:\n    maxmemory: ...\n").
 func clusterCR(name string, replicasPerShard int, extraClusterFields, extraSpecFields string) string {
 	cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s

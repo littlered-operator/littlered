@@ -4,6 +4,25 @@ A Kubernetes operator for deploying Redis/Valkey as a pure in-memory data store.
 
 LittleRed is built for workloads where persistence is explicitly disabled and never enabled—not even by accident. It provides a full reconciliation engine to manage node identities and cluster membership across restarts and failures: the class of problem where static Helm charts and startup scripts reach their limits.
 
+## Upgrading to v0.2.0 — Breaking Change
+
+> **WARNING:** v0.2.0 migrates the API group from `chuck-chuck-chuck.net` to `redis.chuck-chuck-chuck.net`. CRDs are **not** upgraded in place. Before upgrading the operator, you must delete all existing LittleRed custom resources and CRDs, then re-create them after installing the new version.
+>
+> ```bash
+> # 1. Delete all LittleRed resources (this does NOT delete the underlying Redis pods immediately)
+> kubectl delete littlered --all --all-namespaces
+>
+> # 2. Delete the old CRDs
+> kubectl delete crd littlereds.chuck-chuck-chuck.net
+>
+> # 3. Upgrade the operator (this installs the new CRDs automatically)
+> helm upgrade littlered oci://ghcr.io/littlered-operator/charts/littlered \
+>   -n littlered-system
+>
+> # 4. Re-apply your LittleRed resources (using the new apiVersion: redis.chuck-chuck-chuck.net/v1alpha1)
+> kubectl apply -f my-store.yaml
+> ```
+
 ## Quick Start
 
 ### 1. Install the Operator
@@ -20,7 +39,7 @@ This installs the latest release. For a pinned version, add `--version <version>
 Set `spec.mode` to choose your deployment type:
 
 ```yaml
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-store
@@ -59,7 +78,7 @@ kubectl lr verify my-store
 ## Configuration Reference
 
 ```yaml
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: my-store

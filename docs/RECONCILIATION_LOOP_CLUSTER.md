@@ -325,7 +325,7 @@ The operator reports `Phase: Running` when:
 
 | Annotation | Effect |
 |------------|--------|
-| `chuck-chuck-chuck.net/debug-skip-slot-assignment` | Skip CLUSTER ADDSLOTS during bootstrap (for testing) |
+| `redis.chuck-chuck-chuck.net/debug-skip-slot-assignment` | Skip CLUSTER ADDSLOTS during bootstrap (for testing) |
 
 ---
 

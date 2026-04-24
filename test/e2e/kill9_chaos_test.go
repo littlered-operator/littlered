@@ -67,7 +67,7 @@ var _ = Describe("Kill-9 In-Pod Process Crash", Ordered, func() {
 
 			By("creating a standalone LittleRed")
 			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -183,7 +183,7 @@ spec:
 
 			By("creating Sentinel cluster and chaos client simultaneously")
 			cr := fmt.Sprintf(`
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: %s
@@ -304,7 +304,7 @@ spec:
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "pod", masterPod,
 					"-n", testNamespace,
-					"-o", "jsonpath={.metadata.labels['chuck-chuck-chuck\\.net/role']}")
+					"-o", "jsonpath={.metadata.labels['redis\\.chuck-chuck-chuck\\.net/role']}")
 				role, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(strings.TrimSpace(role)).To(Equal("replica"),

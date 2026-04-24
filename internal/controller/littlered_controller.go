@@ -51,7 +51,7 @@ import (
 )
 
 const (
-	finalizerName = "chuck-chuck-chuck.net/finalizer"
+	finalizerName = "redis.chuck-chuck-chuck.net/finalizer"
 	fieldManager  = "littlered-operator"
 )
 
@@ -99,9 +99,9 @@ type LittleRedReconciler struct {
 	monitorsMu     sync.Mutex
 }
 
-// +kubebuilder:rbac:groups=chuck-chuck-chuck.net,resources=littlereds,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=chuck-chuck-chuck.net,resources=littlereds/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=chuck-chuck-chuck.net,resources=littlereds/finalizers,verbs=update
+// +kubebuilder:rbac:groups=redis.chuck-chuck-chuck.net,resources=littlereds,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=redis.chuck-chuck-chuck.net,resources=littlereds/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=redis.chuck-chuck-chuck.net,resources=littlereds/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch

@@ -38,10 +38,10 @@ import (
 
 // Annotation keys for config hash
 const (
-	AnnotationConfigHash              = "chuck-chuck-chuck.net/config-hash"
-	AnnotationDisablePolling          = "chuck-chuck-chuck.net/disable-polling"
-	AnnotationDisableEventMonitoring  = "chuck-chuck-chuck.net/disable-event-monitoring"
-	AnnotationDebugSkipSlotAssignment = "chuck-chuck-chuck.net/debug-skip-slot-assignment"
+	AnnotationConfigHash              = "redis.chuck-chuck-chuck.net/config-hash"
+	AnnotationDisablePolling          = "redis.chuck-chuck-chuck.net/disable-polling"
+	AnnotationDisableEventMonitoring  = "redis.chuck-chuck-chuck.net/disable-event-monitoring"
+	AnnotationDebugSkipSlotAssignment = "redis.chuck-chuck-chuck.net/debug-skip-slot-assignment"
 )
 
 // Resource name helpers
@@ -102,7 +102,7 @@ const (
 	ComponentRedis      = "redis"
 	ComponentSentinel   = "sentinel"
 	ComponentCluster    = "cluster"
-	LabelRole           = "chuck-chuck-chuck.net/role"
+	LabelRole           = "redis.chuck-chuck-chuck.net/role"
 	ModeStandalone      = "standalone"
 	ModeSentinel        = "sentinel"
 	ModeCluster         = "cluster"
@@ -134,11 +134,11 @@ func computeConfigHash(data map[string]string) string {
 // commonLabels returns the standard labels applied to all resources
 func commonLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":       "littlered",
-		"app.kubernetes.io/instance":   lr.Name,
-		"app.kubernetes.io/managed-by": "littlered-operator",
-		"app.kubernetes.io/version":    lr.Spec.Image.Tag,
-		"chuck-chuck-chuck.net/mode":   lr.Spec.Mode,
+		"app.kubernetes.io/name":           "littlered",
+		"app.kubernetes.io/instance":       lr.Name,
+		"app.kubernetes.io/managed-by":     "littlered-operator",
+		"app.kubernetes.io/version":        lr.Spec.Image.Tag,
+		"redis.chuck-chuck-chuck.net/mode": lr.Spec.Mode,
 	}
 }
 

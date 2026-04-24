@@ -12,7 +12,7 @@
 |-----------|-------|
 | Product Name | LittleRed |
 | Technical Name | `littlered` |
-| API Group | `chuck-chuck-chuck.net` |
+| API Group | `redis.chuck-chuck-chuck.net` |
 | API Version | `v1alpha1` (current) |
 | Default Image | `docker.io/library/redis:8.4.2` |
 | Image Format | `{registry}/{path}:{tag}` (each component overridable) |

@@ -19,7 +19,7 @@ Create a Kubernetes operator to run Redis and Valkey instances, based on upstrea
 ### 2.1 Project Name
 - **Product Name**: LittleRed
 - **Technical Name**: `littlered`
-- **API Group**: `chuck-chuck-chuck.net`
+- **API Group**: `redis.chuck-chuck-chuck.net`
 
 ### 2.2 Compatibility Target
 - **Redis**: 7.2+
@@ -67,7 +67,7 @@ Kill-9 / crash protection, ghost node healing, operator-driven topology repair.
 Single CR with mode selector:
 
 ```yaml
-apiVersion: chuck-chuck-chuck.net/v1alpha1
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed
 metadata:
   name: store
@@ -202,7 +202,7 @@ See [SCOPE.md](SCOPE.md) for the full in/out of scope breakdown.
 | 2026-01-30 | Single CR with mode selector | Simpler UX |
 | 2026-01-30 | redis_exporter sidecar | Industry standard |
 | 2026-01-30 | Helm chart distribution | Most common |
-| 2026-01-30 | API group: `chuck-chuck-chuck.net` | User-owned domain |
+| 2026-01-30 | API group: `redis.chuck-chuck-chuck.net` | User-owned domain |
 | 2026-01-30 | Default to Valkey | Personal preference, easily overridable |
 | 2026-04-20 | Switch default to Redis 8.4.2 | Upstream standard; valkey-cli absent in Redis images |
 | 2026-02-03 | Cluster mode: no PVCs, topology in CR status | Works on any K8s cluster |
