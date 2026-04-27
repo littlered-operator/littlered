@@ -9,7 +9,7 @@ LittleRed is built for workloads where persistence is explicitly disabled and ne
 > **WARNING:** v0.2.0 migrates the API group from `chuck-chuck-chuck.net` to `redis.chuck-chuck-chuck.net`. CRDs are **not** upgraded in place. Before upgrading the operator, you must delete all existing LittleRed custom resources and CRDs, then re-create them after installing the new version.
 >
 > ```bash
-> # 1. Delete all LittleRed resources (this does NOT delete the underlying Redis pods immediately)
+> # 1. Delete all LittleRed resources (this WILL delete the underlying Redis pods)
 > kubectl delete littlered --all --all-namespaces
 >
 > # 2. Delete the old CRDs
