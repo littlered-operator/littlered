@@ -20,6 +20,8 @@ import (
 	"testing"
 )
 
+const fieldRole = "role"
+
 func TestParseInfoField(t *testing.T) {
 	// Sample Redis INFO replication output
 	sampleInfo := `# Replication
@@ -71,13 +73,13 @@ repl_backlog_histlen:1234
 		{
 			name:     "parse role master",
 			info:     sampleInfo,
-			field:    "role",
+			field:    fieldRole,
 			expected: roleMaster,
 		},
 		{
 			name:     "parse role slave",
 			info:     sampleReplicaInfo,
-			field:    "role",
+			field:    fieldRole,
 			expected: "slave",
 		},
 		{
@@ -113,13 +115,13 @@ repl_backlog_histlen:1234
 		{
 			name:     "empty info",
 			info:     "",
-			field:    "role",
+			field:    fieldRole,
 			expected: "",
 		},
 		{
 			name:     "field at start of line",
 			info:     "role:master\nother:value",
-			field:    "role",
+			field:    fieldRole,
 			expected: "master",
 		},
 		{
@@ -131,7 +133,7 @@ repl_backlog_histlen:1234
 		{
 			name:     "windows line endings",
 			info:     "role:master\r\nconnected_slaves:1\r\n",
-			field:    "role",
+			field:    fieldRole,
 			expected: "master",
 		},
 		{
