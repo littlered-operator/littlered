@@ -302,10 +302,13 @@ func TestBuildRedisConfig(t *testing.T) {
 // ============================================================================
 
 func TestComputeConfigHash(t *testing.T) {
-	const k1, k2 = "key1", "key2"
+	const (
+		k1, k2 = "key1", "key2"
+		v1, v2 = "value1", "value2"
+	)
 	// Same data should produce same hash
-	data1 := map[string]string{k1: "value1", k2: "value2"}
-	data2 := map[string]string{k2: "value2", k1: "value1"} // Different order
+	data1 := map[string]string{k1: v1, k2: v2}
+	data2 := map[string]string{k2: v2, k1: v1} // Different order
 	hash1 := computeConfigHash(data1)
 	hash2 := computeConfigHash(data2)
 
@@ -314,7 +317,7 @@ func TestComputeConfigHash(t *testing.T) {
 	}
 
 	// Different data should produce different hash
-	data3 := map[string]string{k1: "value1", k2: "different"}
+	data3 := map[string]string{k1: v1, k2: "different"}
 	hash3 := computeConfigHash(data3)
 
 	if hash1 == hash3 {
