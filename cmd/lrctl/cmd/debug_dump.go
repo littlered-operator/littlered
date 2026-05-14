@@ -189,7 +189,7 @@ func collectRedisState(
 				[]string{"sh", "-c", authShell + ` redis-cli $AUTH INFO replication`})
 			writeFile(dir, fmt.Sprintf("redis-%s-info-replication.txt", pod.Name), out)
 
-		case "cluster":
+		case modeCluster:
 			// Cluster-mode Redis pod.
 			clusterCmd := authShell + ` redis-cli $AUTH INFO replication` +
 				` && echo "---" && redis-cli $AUTH CLUSTER NODES` +
@@ -198,7 +198,7 @@ func collectRedisState(
 				[]string{"sh", "-c", clusterCmd})
 			writeFile(dir, fmt.Sprintf("redis-%s-cluster-state.txt", pod.Name), out)
 
-		case "sentinel":
+		case modeSentinel:
 			// Sentinel pod.
 			sentinelCmd := authShell + ` redis-cli $AUTH -p 26379 SENTINEL MASTER mymaster` +
 				` && echo "---" && redis-cli $AUTH -p 26379 SENTINEL REPLICAS mymaster`
