@@ -22,6 +22,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/utils/ptr"
 )
 
 // Default values
@@ -195,7 +196,7 @@ func (c *ClusterSpec) SetDefaults() {
 		c.Shards = DefaultClusterShards
 	}
 	if c.ReplicasPerShard == nil {
-		c.ReplicasPerShard = ptr(DefaultReplicasPerShard)
+		c.ReplicasPerShard = ptr.To(DefaultReplicasPerShard)
 	}
 	if c.ClusterNodeTimeout == 0 {
 		c.ClusterNodeTimeout = DefaultClusterNodeTimeout
@@ -286,14 +287,10 @@ func defaultPodSecurityContext() *corev1.PodSecurityContext {
 	runAsNonRoot := true
 	return &corev1.PodSecurityContext{
 		RunAsNonRoot: &runAsNonRoot,
-		RunAsUser:    ptr(DefaultSecurityUserID),
-		RunAsGroup:   ptr(DefaultSecurityGroupID),
-		FSGroup:      ptr(DefaultSecurityGroupID),
+		RunAsUser:    ptr.To(DefaultSecurityUserID),
+		RunAsGroup:   ptr.To(DefaultSecurityGroupID),
+		FSGroup:      ptr.To(DefaultSecurityGroupID),
 	}
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }
 
 // CalculateMaxmemory calculates maxmemory based on memory limit (90% of limit)
