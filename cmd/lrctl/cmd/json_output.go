@@ -231,7 +231,7 @@ func buildSentinelVerifyJSON(
 	result := sentinelVerifyJSON{
 		Name:           name,
 		Namespace:      namespace,
-		Mode:           "sentinel",
+		Mode:           modeSentinel,
 		RealMasterIP:   state.RealMasterIP,
 		FailoverActive: state.FailoverActive,
 		HealActions:    actions,

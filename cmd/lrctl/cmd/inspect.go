@@ -62,7 +62,7 @@ var inspectCmd = &cobra.Command{
 			// ── collect sentinel pods ───────────────────────────────────────
 			for _, pod := range cCtx.SentinelPods {
 				entry := sentinelPodJSON{Pod: pod.Name, IP: pod.Status.PodIP}
-				cmdArgs := []string{"redis-cli", "-p", "26379", "sentinel", "master", "mymaster"}
+				cmdArgs := []string{"redis-cli", "-p", "26379", "sentinel", roleMaster, "mymaster"}
 				stdout, stderr, err := k8s.Exec(ctx, coreClient, config, cCtx.Namespace, pod.Name, cCtx.SentinelContainer, cmdArgs)
 				if err != nil {
 					entry.Error = fmt.Sprintf("%v (stderr: %q)", err, stderr)

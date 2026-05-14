@@ -78,7 +78,7 @@ func (g *cliGatherer) GetSentinelState(
 	ctx context.Context, podName, ip string,
 ) (*redisclient.SentinelNodeState, error) {
 	// Get Master
-	masterCmd := []string{"redis-cli", "-p", "26379", "sentinel", "master", "mymaster"}
+	masterCmd := []string{"redis-cli", "-p", "26379", "sentinel", roleMaster, "mymaster"}
 	stdout, _, err := k8s.Exec(ctx, g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.SentinelContainer, masterCmd)
 	if err != nil {
 		if strings.Contains(err.Error(), "ERR No such master") {
@@ -193,7 +193,7 @@ func isIP(s string) bool {
 }
 
 func (g *cliGatherer) GetClusterID(ctx context.Context, podName, ip string) (string, error) {
-	cmd := []string{"redis-cli", "cluster", "myid"}
+	cmd := []string{"redis-cli", modeCluster, "myid"}
 	stdout, _, err := k8s.Exec(ctx, g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.RedisContainer, cmd)
 	if err != nil {
 		return "", err
