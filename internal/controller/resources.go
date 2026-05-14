@@ -504,7 +504,7 @@ func buildExporterContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 func buildVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 	volumes := []corev1.Volume{
 		{
-			Name: "config",
+			Name: volNameConfig,
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{
@@ -514,7 +514,7 @@ func buildVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 			},
 		},
 		{
-			Name: "data",
+			Name: volNameData,
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},
@@ -524,7 +524,7 @@ func buildVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 	// Add TLS volumes
 	if lr.Spec.TLS.Enabled {
 		volumes = append(volumes, corev1.Volume{
-			Name: "tls",
+			Name: volNameTLS,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName: lr.Spec.TLS.ExistingSecret,
@@ -533,7 +533,7 @@ func buildVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 		})
 		if lr.Spec.TLS.CACertSecret != "" {
 			volumes = append(volumes, corev1.Volume{
-				Name: "ca-cert",
+				Name: volNameCACert,
 				VolumeSource: corev1.VolumeSource{
 					Secret: &corev1.SecretVolumeSource{
 						SecretName: lr.Spec.TLS.CACertSecret,
@@ -764,9 +764,9 @@ func buildService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 	// Add metrics port if enabled
 	if lr.Spec.Metrics.IsEnabled() {
 		ports = append(ports, corev1.ServicePort{
-			Name:       "metrics",
+			Name:       portNameMetrics,
 			Port:       int32(littleredv1alpha1.RedisExporterPort),
-			TargetPort: intstr.FromString("metrics"),
+			TargetPort: intstr.FromString(portNameMetrics),
 			Protocol:   corev1.ProtocolTCP,
 		})
 	}
@@ -1385,7 +1385,7 @@ fi`))
 func buildSentinelVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 	volumes := []corev1.Volume{
 		{
-			Name: "config",
+			Name: volNameConfig,
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{
@@ -1395,7 +1395,7 @@ func buildSentinelVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 			},
 		},
 		{
-			Name: "data",
+			Name: volNameData,
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},
@@ -1403,7 +1403,7 @@ func buildSentinelVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 	}
 	if lr.Spec.TLS.Enabled {
 		volumes = append(volumes, corev1.Volume{
-			Name: "tls",
+			Name: volNameTLS,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName: lr.Spec.TLS.ExistingSecret,
@@ -1412,7 +1412,7 @@ func buildSentinelVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 		})
 		if lr.Spec.TLS.CACertSecret != "" {
 			volumes = append(volumes, corev1.Volume{
-				Name: "ca-cert",
+				Name: volNameCACert,
 				VolumeSource: corev1.VolumeSource{
 					Secret: &corev1.SecretVolumeSource{
 						SecretName: lr.Spec.TLS.CACertSecret,
@@ -1636,9 +1636,9 @@ func buildMasterService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 
 	if lr.Spec.Metrics.IsEnabled() {
 		ports = append(ports, corev1.ServicePort{
-			Name:       "metrics",
+			Name:       portNameMetrics,
 			Port:       int32(littleredv1alpha1.RedisExporterPort),
-			TargetPort: intstr.FromString("metrics"),
+			TargetPort: intstr.FromString(portNameMetrics),
 			Protocol:   corev1.ProtocolTCP,
 		})
 	}
@@ -2227,7 +2227,7 @@ echo "preStop: Failover did not complete within 10s. Proceeding with shutdown."`
 func buildClusterVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 	volumes := []corev1.Volume{
 		{
-			Name: "config",
+			Name: volNameConfig,
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{
@@ -2237,7 +2237,7 @@ func buildClusterVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 			},
 		},
 		{
-			Name: "data",
+			Name: volNameData,
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},
@@ -2247,7 +2247,7 @@ func buildClusterVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 	// Add TLS volumes
 	if lr.Spec.TLS.Enabled {
 		volumes = append(volumes, corev1.Volume{
-			Name: "tls",
+			Name: volNameTLS,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
 					SecretName: lr.Spec.TLS.ExistingSecret,
@@ -2256,7 +2256,7 @@ func buildClusterVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 		})
 		if lr.Spec.TLS.CACertSecret != "" {
 			volumes = append(volumes, corev1.Volume{
-				Name: "ca-cert",
+				Name: volNameCACert,
 				VolumeSource: corev1.VolumeSource{
 					Secret: &corev1.SecretVolumeSource{
 						SecretName: lr.Spec.TLS.CACertSecret,
@@ -2379,9 +2379,9 @@ func buildClusterClientService(lr *littleredv1alpha1.LittleRed) *corev1.Service 
 
 	if lr.Spec.Metrics.IsEnabled() {
 		ports = append(ports, corev1.ServicePort{
-			Name:       "metrics",
+			Name:       portNameMetrics,
 			Port:       int32(littleredv1alpha1.RedisExporterPort),
-			TargetPort: intstr.FromString("metrics"),
+			TargetPort: intstr.FromString(portNameMetrics),
 			Protocol:   corev1.ProtocolTCP,
 		})
 	}
