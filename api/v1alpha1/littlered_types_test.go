@@ -20,6 +20,8 @@ import (
 	"testing"
 )
 
+const testRegistryGCR = "gcr.io"
+
 func TestImageSpec_FullImage(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -34,7 +36,7 @@ func TestImageSpec_FullImage(t *testing.T) {
 		{
 			name: "custom registry",
 			spec: ImageSpec{
-				Registry: "gcr.io",
+				Registry: testRegistryGCR,
 			},
 			expected: "gcr.io/library/redis:8.4.2",
 		},
@@ -98,7 +100,7 @@ func TestExporterSpec_FullImage(t *testing.T) {
 		{
 			name:         "inherit main registry",
 			spec:         ExporterSpec{},
-			mainRegistry: "gcr.io",
+			mainRegistry: testRegistryGCR,
 			expected:     "gcr.io/oliver006/redis_exporter:v1.66.0",
 		},
 		{
@@ -106,7 +108,7 @@ func TestExporterSpec_FullImage(t *testing.T) {
 			spec: ExporterSpec{
 				Registry: "quay.io",
 			},
-			mainRegistry: "gcr.io",
+			mainRegistry: testRegistryGCR,
 			expected:     "quay.io/oliver006/redis_exporter:v1.66.0",
 		},
 		{
