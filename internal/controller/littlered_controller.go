@@ -51,8 +51,9 @@ import (
 )
 
 const (
-	finalizerName = "redis.chuck-chuck-chuck.net/finalizer"
-	fieldManager  = "littlered-operator"
+	finalizerName      = "redis.chuck-chuck-chuck.net/finalizer"
+	fieldManager       = "littlered-operator"
+	reasonPodsNotReady = "PodsNotReady"
 )
 
 // Logging categories
@@ -467,7 +468,7 @@ func (r *LittleRedReconciler) updateStatus(ctx context.Context, littleRed *littl
 			meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
 				Type:               littleredv1alpha1.ConditionReady,
 				Status:             metav1.ConditionFalse,
-				Reason:             "PodsNotReady",
+				Reason:             reasonPodsNotReady,
 				Message:            fmt.Sprintf("%d/%d pods ready", sts.Status.ReadyReplicas, *sts.Spec.Replicas),
 				LastTransitionTime: metav1.Now(),
 			})
@@ -476,7 +477,7 @@ func (r *LittleRedReconciler) updateStatus(ctx context.Context, littleRed *littl
 			meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
 				Type:               littleredv1alpha1.ConditionReady,
 				Status:             metav1.ConditionFalse,
-				Reason:             "PodsNotReady",
+				Reason:             reasonPodsNotReady,
 				Message:            "Waiting for pods to start",
 				LastTransitionTime: metav1.Now(),
 			})
@@ -1270,7 +1271,7 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *litt
 			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 				Type:               littleredv1alpha1.ConditionReady,
 				Status:             metav1.ConditionFalse,
-				Reason:             "PodsNotReady",
+				Reason:             reasonPodsNotReady,
 				Message:            fmt.Sprintf("Redis: %d/%d, Sentinels: %d/%d, Sentinel-known replicas: %d/%d", latest.Status.Redis.Ready, latest.Status.Redis.Total, latest.Status.Sentinels.Ready, latest.Status.Sentinels.Total, sentinelReplicasOK, expectedReplicas),
 				LastTransitionTime: metav1.Now(),
 			})
