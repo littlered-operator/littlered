@@ -13,10 +13,12 @@ import (
 )
 
 const (
-	modeCluster  = "cluster"
-	modeSentinel = "sentinel"
-	roleMaster   = "master"
-	redisCliBin  = "redis-cli"
+	modeCluster        = "cluster"
+	modeSentinel       = "sentinel"
+	roleMaster         = "master"
+	redisCliBin        = "redis-cli"
+	infoSubcommand     = "info"
+	sentinelMasterName = "mymaster"
 )
 
 var (

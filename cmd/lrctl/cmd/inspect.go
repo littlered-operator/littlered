@@ -62,7 +62,7 @@ var inspectCmd = &cobra.Command{
 			// ── collect sentinel pods ───────────────────────────────────────
 			for _, pod := range cCtx.SentinelPods {
 				entry := sentinelPodJSON{Pod: pod.Name, IP: pod.Status.PodIP}
-				cmdArgs := []string{redisCliBin, "-p", "26379", "sentinel", roleMaster, "mymaster"}
+				cmdArgs := []string{redisCliBin, "-p", "26379", "sentinel", roleMaster, sentinelMasterName}
 				stdout, stderr, err := k8s.Exec(ctx, coreClient, config, cCtx.Namespace, pod.Name, cCtx.SentinelContainer, cmdArgs)
 				if err != nil {
 					entry.Error = fmt.Sprintf("%v (stderr: %q)", err, stderr)
@@ -80,7 +80,7 @@ var inspectCmd = &cobra.Command{
 				if cCtx.Mode == modeCluster {
 					cmdArgs = []string{"sh", "-c", "redis-cli cluster nodes && echo --- && redis-cli cluster info"}
 				} else {
-					cmdArgs = []string{redisCliBin, "info", "replication"}
+					cmdArgs = []string{redisCliBin, infoSubcommand, "replication"}
 				}
 				stdout, stderr, err := k8s.Exec(ctx, coreClient, config, cCtx.Namespace, pod.Name, cCtx.RedisContainer, cmdArgs)
 				if err != nil {
