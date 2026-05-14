@@ -341,11 +341,10 @@ func splitImageRef(image string) (registry, path, tag string) {
 
 	// Split registry from path. A first segment with a dot or colon is a registry hostname.
 	path = ref
-	if i := strings.Index(ref, "/"); i != -1 {
-		firstSegment := ref[:i]
+	if firstSegment, rest, ok := strings.Cut(ref, "/"); ok {
 		if strings.Contains(firstSegment, ".") || strings.Contains(firstSegment, ":") {
 			registry = firstSegment
-			path = ref[i+1:]
+			path = rest
 		}
 	}
 
