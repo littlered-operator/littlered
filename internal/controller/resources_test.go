@@ -976,7 +976,7 @@ func TestBuildReplicasHeadlessService(t *testing.T) {
 	}
 
 	// Check ClusterIP is None (headless)
-	if svc.Spec.ClusterIP != "None" {
+	if svc.Spec.ClusterIP != serviceClusterNone {
 		t.Errorf("Service ClusterIP = %q, want None", svc.Spec.ClusterIP)
 	}
 
@@ -997,7 +997,7 @@ func TestBuildSentinelHeadlessService(t *testing.T) {
 	}
 
 	// Check ClusterIP is None (headless)
-	if svc.Spec.ClusterIP != "None" {
+	if svc.Spec.ClusterIP != serviceClusterNone {
 		t.Errorf("Service ClusterIP = %q, want None", svc.Spec.ClusterIP)
 	}
 
@@ -1081,7 +1081,7 @@ func TestBuildExporterContainer(t *testing.T) {
 	// Check REDIS_ADDR env var
 	var hasRedisAddr bool
 	for _, env := range container.Env {
-		if env.Name == "REDIS_ADDR" {
+		if env.Name == envRedisAddr {
 			hasRedisAddr = true
 			if env.Value != "redis://localhost:6379" {
 				t.Errorf("REDIS_ADDR = %q, want redis://localhost:6379", env.Value)
@@ -1112,7 +1112,7 @@ func TestBuildExporterContainerWithTLS(t *testing.T) {
 	// Check REDIS_ADDR uses rediss://
 	var hasRedisAddr bool
 	for _, env := range container.Env {
-		if env.Name == "REDIS_ADDR" {
+		if env.Name == envRedisAddr {
 			hasRedisAddr = true
 			if !strings.HasPrefix(env.Value, "rediss://") {
 				t.Errorf("REDIS_ADDR = %q, should use rediss:// for TLS", env.Value)
