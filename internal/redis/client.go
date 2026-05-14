@@ -503,7 +503,7 @@ func GetReplicationInfo(ctx context.Context, addr, password string, tlsEnabled b
 	masterLinkStatus = ParseInfoField(info, "master_link_status")
 
 	offsetStr := ""
-	if role == "master" {
+	if role == roleMaster {
 		offsetStr = ParseInfoField(info, "master_repl_offset")
 	} else {
 		offsetStr = ParseInfoField(info, "slave_repl_offset")
