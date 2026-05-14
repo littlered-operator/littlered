@@ -13,6 +13,11 @@ import (
 	"github.com/littlered-operator/littlered-operator/internal/cli/types"
 )
 
+const (
+	containerRedis    = "redis"
+	containerSentinel = "sentinel"
+)
+
 // GetContext builds a ClusterContext either from a CR or via heuristics
 func GetContext(ctx context.Context, k8sClient client.Client, namespace, name, mode string, unmanaged bool) (*types.ClusterContext, error) {
 	if !unmanaged {
@@ -40,16 +45,16 @@ func getFromCR(ctx context.Context, k8sClient client.Client, namespace, name str
 		Name:              name,
 		Namespace:         namespace,
 		Mode:              lr.Spec.Mode,
-		RedisContainer:    "redis",
-		SentinelContainer: "sentinel",
+		RedisContainer:    containerRedis,
+		SentinelContainer: containerSentinel,
 	}
 
 	for _, pod := range podList.Items {
 		comp := pod.Labels["app.kubernetes.io/component"]
-		if comp == "redis" || comp == "cluster" {
+		if comp == containerRedis || comp == "cluster" {
 			cCtx.RedisPods = append(cCtx.RedisPods, pod)
 		}
-		if comp == "sentinel" {
+		if comp == containerSentinel {
 			cCtx.SentinelPods = append(cCtx.SentinelPods, pod)
 		}
 	}
@@ -94,14 +99,14 @@ func discoverUnmanaged(ctx context.Context, k8sClient client.Client, namespace, 
 		if isRedis {
 			cCtx.RedisPods = append(cCtx.RedisPods, pod)
 			if !foundRedis {
-				cCtx.RedisContainer = detectContainer(pod, []string{"redis", "valkey", "cluster"}, "redis")
+				cCtx.RedisContainer = detectContainer(pod, []string{containerRedis, "valkey", "cluster"}, containerRedis)
 				foundRedis = true
 			}
 
 			// In sidecar mode (CP/Bitnami), the sentinel is in the same pod
 			if !isSentinel {
 				for _, container := range pod.Spec.Containers {
-					if strings.Contains(strings.ToLower(container.Name), "sentinel") {
+					if strings.Contains(strings.ToLower(container.Name), containerSentinel) {
 						cCtx.SentinelPods = append(cCtx.SentinelPods, pod)
 						if !foundSentinel {
 							cCtx.SentinelContainer = container.Name
@@ -116,7 +121,7 @@ func discoverUnmanaged(ctx context.Context, k8sClient client.Client, namespace, 
 		if isSentinel {
 			cCtx.SentinelPods = append(cCtx.SentinelPods, pod)
 			if !foundSentinel {
-				cCtx.SentinelContainer = detectContainer(pod, []string{"sentinel"}, "sentinel")
+				cCtx.SentinelContainer = detectContainer(pod, []string{containerSentinel}, containerSentinel)
 				foundSentinel = true
 			}
 		}
@@ -124,10 +129,10 @@ func discoverUnmanaged(ctx context.Context, k8sClient client.Client, namespace, 
 
 	// Final defaults if nothing detected
 	if cCtx.RedisContainer == "" {
-		cCtx.RedisContainer = "redis"
+		cCtx.RedisContainer = containerRedis
 	}
 	if cCtx.SentinelContainer == "" {
-		cCtx.SentinelContainer = "sentinel"
+		cCtx.SentinelContainer = containerSentinel
 	}
 
 	if len(cCtx.RedisPods) == 0 && len(cCtx.SentinelPods) == 0 {
