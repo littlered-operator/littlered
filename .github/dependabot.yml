@@ -16,14 +16,15 @@ updates:
       interval: weekly
 
   - package-ecosystem: docker
-    directory: /cmd/littlered
+    directories:
+      - /cmd/littlered
+      - /cmd/littlered-chaos-client
     schedule:
       interval: weekly
-
-  - package-ecosystem: docker
-    directory: /cmd/littlered-chaos-client
-    schedule:
-      interval: weekly
+    groups:
+      golang:
+        patterns:
+          - "golang"
 
   - package-ecosystem: helm
     directory: /charts/littlered-operator
