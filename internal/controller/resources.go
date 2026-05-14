@@ -113,6 +113,20 @@ const (
 	annotationValueTrue = "true"
 	tlsInsecureFlags    = "--tls --insecure"
 	portNameMetrics     = "metrics"
+
+	labelAppName      = "app.kubernetes.io/name"
+	labelAppInstance  = "app.kubernetes.io/instance"
+	fileRedisConf     = "redis.conf"
+	volNameConfig     = "config"
+	volNameData       = "data"
+	volNameTLS        = "tls"
+	volNameCACert     = "ca-cert"
+	mountPathTLS      = "/tls"
+	mountPathTLSCA    = "/tls-ca"
+	capAll            = "ALL"
+	envRedisPassword  = "REDIS_PASSWORD"
+	secretKeyPassword = "password"
+	appName           = "littlered"
 )
 
 // computeConfigHash computes a SHA256 hash of the ConfigMap data
@@ -135,8 +149,8 @@ func computeConfigHash(data map[string]string) string {
 // commonLabels returns the standard labels applied to all resources
 func commonLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":           "littlered",
-		"app.kubernetes.io/instance":       lr.Name,
+		labelAppName:                       appName,
+		labelAppInstance:                   lr.Name,
 		"app.kubernetes.io/managed-by":     "littlered-operator",
 		"app.kubernetes.io/version":        lr.Spec.Image.Tag,
 		"redis.chuck-chuck-chuck.net/mode": lr.Spec.Mode,
@@ -146,16 +160,16 @@ func commonLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 // selectorLabels returns labels used for selecting pods
 func selectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":     "littlered",
-		"app.kubernetes.io/instance": lr.Name,
+		labelAppName:     appName,
+		labelAppInstance: lr.Name,
 	}
 }
 
 // redisSelectorLabels returns labels for selecting Redis pods
 func redisSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":      "littlered",
-		"app.kubernetes.io/instance":  lr.Name,
+		labelAppName:                  appName,
+		labelAppInstance:              lr.Name,
 		"app.kubernetes.io/component": ComponentRedis,
 	}
 }
@@ -163,8 +177,8 @@ func redisSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 // sentinelSelectorLabels returns labels for selecting Sentinel pods
 func sentinelSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":      "littlered",
-		"app.kubernetes.io/instance":  lr.Name,
+		labelAppName:                  appName,
+		labelAppInstance:              lr.Name,
 		"app.kubernetes.io/component": ComponentSentinel,
 	}
 }
@@ -172,8 +186,8 @@ func sentinelSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 // masterSelectorLabels returns labels for selecting the master pod
 func masterSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":      "littlered",
-		"app.kubernetes.io/instance":  lr.Name,
+		labelAppName:                  appName,
+		labelAppInstance:              lr.Name,
 		"app.kubernetes.io/component": ComponentRedis,
 		LabelRole:                     RoleMaster,
 	}
@@ -182,8 +196,8 @@ func masterSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 // clusterSelectorLabels returns labels for selecting cluster pods
 func clusterSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":      "littlered",
-		"app.kubernetes.io/instance":  lr.Name,
+		labelAppName:                  appName,
+		labelAppInstance:              lr.Name,
 		"app.kubernetes.io/component": ComponentCluster,
 	}
 }
@@ -197,7 +211,7 @@ func buildConfigMap(lr *littleredv1alpha1.LittleRed) *corev1.ConfigMap {
 			Labels:    commonLabels(lr),
 		},
 		Data: map[string]string{
-			"redis.conf": buildRedisConfig(lr),
+			fileRedisConf: buildRedisConfig(lr),
 		},
 	}
 }
@@ -276,7 +290,7 @@ func buildStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSet {
 	maps.Copy(podLabels, lr.Spec.PodTemplate.Labels)
 
 	// Compute config hash for pod annotations to trigger rolling update on config change
-	configData := map[string]string{"redis.conf": buildRedisConfig(lr)}
+	configData := map[string]string{fileRedisConf: buildRedisConfig(lr)}
 	configHash := computeConfigHash(configData)
 
 	podAnnotations := make(map[string]string)
@@ -351,12 +365,12 @@ func buildRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 		Resources: lr.Spec.Resources,
 		VolumeMounts: []corev1.VolumeMount{
 			{
-				Name:      "config",
+				Name:      volNameConfig,
 				MountPath: "/etc/redis",
 				ReadOnly:  true,
 			},
 			{
-				Name:      "data",
+				Name:      volNameData,
 				MountPath: "/data",
 			},
 		},
@@ -366,7 +380,7 @@ func buildRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 			AllowPrivilegeEscalation: ptr(false),
 			ReadOnlyRootFilesystem:   ptr(true),
 			Capabilities: &corev1.Capabilities{
-				Drop: []corev1.Capability{"ALL"},
+				Drop: []corev1.Capability{capAll},
 			},
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,
@@ -377,14 +391,14 @@ func buildRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 	// Add TLS volume mounts
 	if lr.Spec.TLS.Enabled {
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-			Name:      "tls",
-			MountPath: "/tls",
+			Name:      volNameTLS,
+			MountPath: mountPathTLS,
 			ReadOnly:  true,
 		})
 		if lr.Spec.TLS.CACertSecret != "" && lr.Spec.TLS.CACertSecret != lr.Spec.TLS.ExistingSecret {
 			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-				Name:      "ca-cert",
-				MountPath: "/tls-ca",
+				Name:      volNameCACert,
+				MountPath: mountPathTLSCA,
 				ReadOnly:  true,
 			})
 		}
@@ -393,13 +407,13 @@ func buildRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 	// Add auth env var
 	if lr.Spec.Auth.Enabled {
 		container.Env = append(container.Env, corev1.EnvVar{
-			Name: "REDIS_PASSWORD",
+			Name: envRedisPassword,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: lr.Spec.Auth.ExistingSecret,
 					},
-					Key: "password",
+					Key: secretKeyPassword,
 				},
 			},
 		})
@@ -422,13 +436,13 @@ func buildExporterContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 	// Add password env if auth enabled
 	if lr.Spec.Auth.Enabled {
 		env = append(env, corev1.EnvVar{
-			Name: "REDIS_PASSWORD",
+			Name: envRedisPassword,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: lr.Spec.Auth.ExistingSecret,
 					},
-					Key: "password",
+					Key: secretKeyPassword,
 				},
 			},
 		})
@@ -459,7 +473,7 @@ func buildExporterContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 			AllowPrivilegeEscalation: ptr(false),
 			ReadOnlyRootFilesystem:   ptr(true),
 			Capabilities: &corev1.Capabilities{
-				Drop: []corev1.Capability{"ALL"},
+				Drop: []corev1.Capability{capAll},
 			},
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,
@@ -469,14 +483,14 @@ func buildExporterContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 
 	if lr.Spec.TLS.Enabled {
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-			Name:      "tls",
-			MountPath: "/tls",
+			Name:      volNameTLS,
+			MountPath: mountPathTLS,
 			ReadOnly:  true,
 		})
 		if lr.Spec.TLS.CACertSecret != "" && lr.Spec.TLS.CACertSecret != lr.Spec.TLS.ExistingSecret {
 			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-				Name:      "ca-cert",
-				MountPath: "/tls-ca",
+				Name:      volNameCACert,
+				MountPath: mountPathTLSCA,
 				ReadOnly:  true,
 			})
 		}
@@ -977,7 +991,7 @@ func buildConfigMapSentinelMode(lr *littleredv1alpha1.LittleRed) *corev1.ConfigM
 			Labels:    labels,
 		},
 		Data: map[string]string{
-			"redis.conf": buildRedisConfigSentinel(lr),
+			fileRedisConf: buildRedisConfigSentinel(lr),
 		},
 	}
 }
@@ -992,7 +1006,7 @@ func buildRedisStatefulSetSentinel(lr *littleredv1alpha1.LittleRed) *appsv1.Stat
 	maps.Copy(podLabels, lr.Spec.PodTemplate.Labels)
 
 	// Compute config hash for pod annotations to trigger rolling update on config change
-	configData := map[string]string{"redis.conf": buildRedisConfigSentinel(lr)}
+	configData := map[string]string{fileRedisConf: buildRedisConfigSentinel(lr)}
 	configHash := computeConfigHash(configData)
 
 	podAnnotations := make(map[string]string)
@@ -1276,12 +1290,12 @@ fi`))
 		Resources: lr.Spec.Resources,
 		VolumeMounts: []corev1.VolumeMount{
 			{
-				Name:      "config",
+				Name:      volNameConfig,
 				MountPath: "/etc/redis",
 				ReadOnly:  true,
 			},
 			{
-				Name:      "data",
+				Name:      volNameData,
 				MountPath: "/data",
 			},
 		},
@@ -1324,7 +1338,7 @@ fi`))
 			AllowPrivilegeEscalation: ptr(false),
 			ReadOnlyRootFilesystem:   ptr(true),
 			Capabilities: &corev1.Capabilities{
-				Drop: []corev1.Capability{"ALL"},
+				Drop: []corev1.Capability{capAll},
 			},
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,
@@ -1335,14 +1349,14 @@ fi`))
 	// Add TLS volume mounts
 	if lr.Spec.TLS.Enabled {
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-			Name:      "tls",
-			MountPath: "/tls",
+			Name:      volNameTLS,
+			MountPath: mountPathTLS,
 			ReadOnly:  true,
 		})
 		if lr.Spec.TLS.CACertSecret != "" && lr.Spec.TLS.CACertSecret != lr.Spec.TLS.ExistingSecret {
 			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-				Name:      "ca-cert",
-				MountPath: "/tls-ca",
+				Name:      volNameCACert,
+				MountPath: mountPathTLSCA,
 				ReadOnly:  true,
 			})
 		}
@@ -1351,13 +1365,13 @@ fi`))
 	// Add auth env var
 	if lr.Spec.Auth.Enabled {
 		container.Env = append(container.Env, corev1.EnvVar{
-			Name: "REDIS_PASSWORD",
+			Name: envRedisPassword,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: lr.Spec.Auth.ExistingSecret,
 					},
-					Key: "password",
+					Key: secretKeyPassword,
 				},
 			},
 		})
@@ -1512,12 +1526,12 @@ exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_A
 		Resources: sentinel.Resources,
 		VolumeMounts: []corev1.VolumeMount{
 			{
-				Name:      "config",
+				Name:      volNameConfig,
 				MountPath: "/etc/sentinel",
 				ReadOnly:  true,
 			},
 			{
-				Name:      "data",
+				Name:      volNameData,
 				MountPath: "/data",
 			},
 		},
@@ -1553,7 +1567,7 @@ exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_A
 			AllowPrivilegeEscalation: ptr(false),
 			ReadOnlyRootFilesystem:   ptr(true),
 			Capabilities: &corev1.Capabilities{
-				Drop: []corev1.Capability{"ALL"},
+				Drop: []corev1.Capability{capAll},
 			},
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,
@@ -1574,13 +1588,13 @@ exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_A
 	// Add auth env var
 	if lr.Spec.Auth.Enabled {
 		container.Env = append(container.Env, corev1.EnvVar{
-			Name: "REDIS_PASSWORD",
+			Name: envRedisPassword,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: lr.Spec.Auth.ExistingSecret,
 					},
-					Key: "password",
+					Key: secretKeyPassword,
 				},
 			},
 		})
@@ -1589,14 +1603,14 @@ exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_A
 	// Add TLS volume mounts
 	if lr.Spec.TLS.Enabled {
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-			Name:      "tls",
-			MountPath: "/tls",
+			Name:      volNameTLS,
+			MountPath: mountPathTLS,
 			ReadOnly:  true,
 		})
 		if lr.Spec.TLS.CACertSecret != "" && lr.Spec.TLS.CACertSecret != lr.Spec.TLS.ExistingSecret {
 			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-				Name:      "ca-cert",
-				MountPath: "/tls-ca",
+				Name:      volNameCACert,
+				MountPath: mountPathTLSCA,
 				ReadOnly:  true,
 			})
 		}
@@ -1719,7 +1733,7 @@ func buildClusterConfigMap(lr *littleredv1alpha1.LittleRed) *corev1.ConfigMap {
 			Labels:    labels,
 		},
 		Data: map[string]string{
-			"redis.conf": buildClusterRedisConfig(lr),
+			fileRedisConf: buildClusterRedisConfig(lr),
 		},
 	}
 }
@@ -1812,7 +1826,7 @@ func buildClusterStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSe
 	maps.Copy(podLabels, lr.Spec.PodTemplate.Labels)
 
 	// Compute config hash for pod annotations to trigger rolling update on config change
-	configData := map[string]string{"redis.conf": buildClusterRedisConfig(lr)}
+	configData := map[string]string{fileRedisConf: buildClusterRedisConfig(lr)}
 	configHash := computeConfigHash(configData)
 
 	podAnnotations := make(map[string]string)
@@ -2112,12 +2126,12 @@ echo "preStop: Failover did not complete within 10s. Proceeding with shutdown."`
 		Resources: lr.Spec.Resources,
 		VolumeMounts: []corev1.VolumeMount{
 			{
-				Name:      "config",
+				Name:      volNameConfig,
 				MountPath: "/etc/redis",
 				ReadOnly:  true,
 			},
 			{
-				Name:      "data",
+				Name:      volNameData,
 				MountPath: "/data",
 			},
 		},
@@ -2134,7 +2148,7 @@ echo "preStop: Failover did not complete within 10s. Proceeding with shutdown."`
 			AllowPrivilegeEscalation: ptr(false),
 			ReadOnlyRootFilesystem:   ptr(true),
 			Capabilities: &corev1.Capabilities{
-				Drop: []corev1.Capability{"ALL"},
+				Drop: []corev1.Capability{capAll},
 			},
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,
@@ -2145,14 +2159,14 @@ echo "preStop: Failover did not complete within 10s. Proceeding with shutdown."`
 	// Add TLS volume mounts
 	if lr.Spec.TLS.Enabled {
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-			Name:      "tls",
-			MountPath: "/tls",
+			Name:      volNameTLS,
+			MountPath: mountPathTLS,
 			ReadOnly:  true,
 		})
 		if lr.Spec.TLS.CACertSecret != "" && lr.Spec.TLS.CACertSecret != lr.Spec.TLS.ExistingSecret {
 			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-				Name:      "ca-cert",
-				MountPath: "/tls-ca",
+				Name:      volNameCACert,
+				MountPath: mountPathTLSCA,
 				ReadOnly:  true,
 			})
 		}
@@ -2197,13 +2211,13 @@ echo "preStop: Failover did not complete within 10s. Proceeding with shutdown."`
 	// Add auth env var
 	if lr.Spec.Auth.Enabled {
 		container.Env = append(container.Env, corev1.EnvVar{
-			Name: "REDIS_PASSWORD",
+			Name: envRedisPassword,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: lr.Spec.Auth.ExistingSecret,
 					},
-					Key: "password",
+					Key: secretKeyPassword,
 				},
 			},
 		})
