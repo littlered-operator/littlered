@@ -112,6 +112,7 @@ const (
 	RoleUndefined       = "undefined"
 	annotationValueTrue = "true"
 	tlsInsecureFlags    = "--tls --insecure"
+	portNameMetrics     = "metrics"
 )
 
 // computeConfigHash computes a SHA256 hash of the ConfigMap data
@@ -448,7 +449,7 @@ func buildExporterContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 		Env:             env,
 		Ports: []corev1.ContainerPort{
 			{
-				Name:          "metrics",
+				Name:          portNameMetrics,
 				ContainerPort: int32(littleredv1alpha1.RedisExporterPort),
 				Protocol:      corev1.ProtocolTCP,
 			},
