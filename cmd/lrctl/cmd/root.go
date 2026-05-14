@@ -16,6 +16,7 @@ const (
 	modeCluster  = "cluster"
 	modeSentinel = "sentinel"
 	roleMaster   = "master"
+	redisCliBin  = "redis-cli"
 )
 
 var (
