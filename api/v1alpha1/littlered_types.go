@@ -22,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
@@ -645,7 +646,11 @@ type LittleRedList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&LittleRed{}, &LittleRedList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(GroupVersion, &LittleRed{}, &LittleRedList{})
+		metav1.AddToGroupVersion(s, GroupVersion)
+		return nil
+	})
 }
 
 // Default resource values
