@@ -223,7 +223,7 @@ func buildRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 	// Basic settings
 	sb.WriteString("# LittleRed generated configuration\n")
 	sb.WriteString("bind 0.0.0.0\n")
-	sb.WriteString(fmt.Sprintf("port %d\n", littleredv1alpha1.RedisPort))
+	fmt.Fprintf(&sb, "port %d\n", littleredv1alpha1.RedisPort)
 	sb.WriteString("dir /data\n")
 
 	// Disable persistence (in-memory only)
@@ -234,18 +234,18 @@ func buildRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 	// Memory settings
 	sb.WriteString("\n# Memory configuration\n")
 	maxmemory := lr.CalculateMaxmemory()
-	sb.WriteString(fmt.Sprintf("maxmemory %s\n", maxmemory))
-	sb.WriteString(fmt.Sprintf("maxmemory-policy %s\n", lr.GetEffectiveMaxmemoryPolicy()))
+	fmt.Fprintf(&sb, "maxmemory %s\n", maxmemory)
+	fmt.Fprintf(&sb, "maxmemory-policy %s\n", lr.GetEffectiveMaxmemoryPolicy())
 
 	// Timeout settings
 	sb.WriteString("\n# Connection settings\n")
-	sb.WriteString(fmt.Sprintf("timeout %d\n", lr.Spec.Config.Timeout))
-	sb.WriteString(fmt.Sprintf("tcp-keepalive %d\n", lr.Spec.Config.TCPKeepalive))
+	fmt.Fprintf(&sb, "timeout %d\n", lr.Spec.Config.Timeout)
+	fmt.Fprintf(&sb, "tcp-keepalive %d\n", lr.Spec.Config.TCPKeepalive)
 
 	// TLS settings
 	if lr.Spec.TLS.Enabled {
 		sb.WriteString("\n# TLS configuration\n")
-		sb.WriteString(fmt.Sprintf("tls-port %d\n", littleredv1alpha1.RedisPort))
+		fmt.Fprintf(&sb, "tls-port %d\n", littleredv1alpha1.RedisPort)
 		sb.WriteString("port 0\n") // Disable non-TLS port
 		sb.WriteString("tls-cert-file /tls/tls.crt\n")
 		sb.WriteString("tls-key-file /tls/tls.key\n")
@@ -860,7 +860,7 @@ func buildSentinelConfig(lr *littleredv1alpha1.LittleRed) string {
 	var sb strings.Builder
 
 	sb.WriteString("# LittleRed Sentinel configuration\n")
-	sb.WriteString(fmt.Sprintf("port %d\n", littleredv1alpha1.SentinelPort))
+	fmt.Fprintf(&sb, "port %d\n", littleredv1alpha1.SentinelPort)
 	sb.WriteString("dir /data\n")
 
 	// Auth configuration
@@ -880,7 +880,7 @@ func buildSentinelConfig(lr *littleredv1alpha1.LittleRed) string {
 	// TLS settings
 	if lr.Spec.TLS.Enabled {
 		sb.WriteString("\n# TLS configuration\n")
-		sb.WriteString(fmt.Sprintf("tls-port %d\n", littleredv1alpha1.SentinelPort))
+		fmt.Fprintf(&sb, "tls-port %d\n", littleredv1alpha1.SentinelPort)
 		sb.WriteString("port 0\n")
 		sb.WriteString("tls-cert-file /tls/tls.crt\n")
 		sb.WriteString("tls-key-file /tls/tls.key\n")
@@ -918,7 +918,7 @@ func buildRedisConfigSentinel(lr *littleredv1alpha1.LittleRed) string {
 	// Start with base config
 	sb.WriteString("# LittleRed generated configuration (sentinel mode)\n")
 	sb.WriteString("bind 0.0.0.0\n")
-	sb.WriteString(fmt.Sprintf("port %d\n", littleredv1alpha1.RedisPort))
+	fmt.Fprintf(&sb, "port %d\n", littleredv1alpha1.RedisPort)
 	sb.WriteString("dir /data\n")
 
 	// Disable persistence (in-memory only)
@@ -929,13 +929,13 @@ func buildRedisConfigSentinel(lr *littleredv1alpha1.LittleRed) string {
 	// Memory settings
 	sb.WriteString("\n# Memory configuration\n")
 	maxmemory := lr.CalculateMaxmemory()
-	sb.WriteString(fmt.Sprintf("maxmemory %s\n", maxmemory))
-	sb.WriteString(fmt.Sprintf("maxmemory-policy %s\n", lr.GetEffectiveMaxmemoryPolicy()))
+	fmt.Fprintf(&sb, "maxmemory %s\n", maxmemory)
+	fmt.Fprintf(&sb, "maxmemory-policy %s\n", lr.GetEffectiveMaxmemoryPolicy())
 
 	// Timeout settings
 	sb.WriteString("\n# Connection settings\n")
-	sb.WriteString(fmt.Sprintf("timeout %d\n", lr.Spec.Config.Timeout))
-	sb.WriteString(fmt.Sprintf("tcp-keepalive %d\n", lr.Spec.Config.TCPKeepalive))
+	fmt.Fprintf(&sb, "timeout %d\n", lr.Spec.Config.Timeout)
+	fmt.Fprintf(&sb, "tcp-keepalive %d\n", lr.Spec.Config.TCPKeepalive)
 
 	// Replication settings - allow replicas to serve stale data during sync
 	sb.WriteString("\n# Replication settings\n")
@@ -948,7 +948,7 @@ func buildRedisConfigSentinel(lr *littleredv1alpha1.LittleRed) string {
 	// TLS settings
 	if lr.Spec.TLS.Enabled {
 		sb.WriteString("\n# TLS configuration\n")
-		sb.WriteString(fmt.Sprintf("tls-port %d\n", littleredv1alpha1.RedisPort))
+		fmt.Fprintf(&sb, "tls-port %d\n", littleredv1alpha1.RedisPort)
 		sb.WriteString("port 0\n")
 		sb.WriteString("tls-cert-file /tls/tls.crt\n")
 		sb.WriteString("tls-key-file /tls/tls.key\n")
@@ -1750,14 +1750,14 @@ func buildClusterRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 
 	sb.WriteString("# LittleRed generated configuration (cluster mode)\n")
 	sb.WriteString("bind 0.0.0.0\n")
-	sb.WriteString(fmt.Sprintf("port %d\n", littleredv1alpha1.RedisPort))
+	fmt.Fprintf(&sb, "port %d\n", littleredv1alpha1.RedisPort)
 	sb.WriteString("dir /data\n")
 
 	// Cluster configuration
 	sb.WriteString("\n# Cluster configuration\n")
 	sb.WriteString("cluster-enabled yes\n")
 	sb.WriteString("cluster-config-file /data/nodes.conf\n")
-	sb.WriteString(fmt.Sprintf("cluster-node-timeout %d\n", cluster.ClusterNodeTimeout))
+	fmt.Fprintf(&sb, "cluster-node-timeout %d\n", cluster.ClusterNodeTimeout)
 
 	// Replication settings
 	sb.WriteString("\n# Replication settings\n")
@@ -1773,18 +1773,18 @@ func buildClusterRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 	// Memory settings
 	sb.WriteString("\n# Memory configuration\n")
 	maxmemory := lr.CalculateMaxmemory()
-	sb.WriteString(fmt.Sprintf("maxmemory %s\n", maxmemory))
-	sb.WriteString(fmt.Sprintf("maxmemory-policy %s\n", lr.GetEffectiveMaxmemoryPolicy()))
+	fmt.Fprintf(&sb, "maxmemory %s\n", maxmemory)
+	fmt.Fprintf(&sb, "maxmemory-policy %s\n", lr.GetEffectiveMaxmemoryPolicy())
 
 	// Timeout settings
 	sb.WriteString("\n# Connection settings\n")
-	sb.WriteString(fmt.Sprintf("timeout %d\n", lr.Spec.Config.Timeout))
-	sb.WriteString(fmt.Sprintf("tcp-keepalive %d\n", lr.Spec.Config.TCPKeepalive))
+	fmt.Fprintf(&sb, "timeout %d\n", lr.Spec.Config.Timeout)
+	fmt.Fprintf(&sb, "tcp-keepalive %d\n", lr.Spec.Config.TCPKeepalive)
 
 	// TLS settings
 	if lr.Spec.TLS.Enabled {
 		sb.WriteString("\n# TLS configuration\n")
-		sb.WriteString(fmt.Sprintf("tls-port %d\n", littleredv1alpha1.RedisPort))
+		fmt.Fprintf(&sb, "tls-port %d\n", littleredv1alpha1.RedisPort)
 		sb.WriteString("port 0\n")
 		sb.WriteString("tls-cert-file /tls/tls.crt\n")
 		sb.WriteString("tls-key-file /tls/tls.key\n")
