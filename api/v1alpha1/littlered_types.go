@@ -150,15 +150,15 @@ type ImageSpec struct {
 func (i *ImageSpec) FullImage() string {
 	registry := i.Registry
 	if registry == "" {
-		registry = "docker.io"
+		registry = DefaultRegistry
 	}
 	path := i.Path
 	if path == "" {
-		path = "library/redis"
+		path = DefaultImagePath
 	}
 	tag := i.Tag
 	if tag == "" {
-		tag = "8.4.2"
+		tag = DefaultImageTag
 	}
 	return fmt.Sprintf("%s/%s:%s", registry, path, tag)
 }
