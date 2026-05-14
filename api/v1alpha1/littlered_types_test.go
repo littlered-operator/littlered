@@ -115,7 +115,7 @@ func TestExporterSpec_FullImage(t *testing.T) {
 				Path: "bitnami/redis-exporter",
 				Tag:  "1.50.0",
 			},
-			mainRegistry: "docker.io",
+			mainRegistry: DefaultRegistry,
 			expected:     "docker.io/bitnami/redis-exporter:1.50.0",
 		},
 		{
