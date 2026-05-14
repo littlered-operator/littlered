@@ -24,7 +24,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 )
@@ -1156,7 +1155,7 @@ func TestPDBSpec(t *testing.T) {
 		{
 			name:               "defaults to maxUnavailable=1 when nothing set",
 			setupPDB:           func(lr *littleredv1alpha1.LittleRed) {},
-			wantMaxUnavailable: ptr.To(intstr.FromInt32(1)),
+			wantMaxUnavailable: new(intstr.FromInt32(1)),
 			wantMinAvailable:   nil,
 		},
 		{
@@ -1165,7 +1164,7 @@ func TestPDBSpec(t *testing.T) {
 				v := intstr.FromInt32(2)
 				lr.Spec.PodDisruptionBudget.MaxUnavailable = &v
 			},
-			wantMaxUnavailable: ptr.To(intstr.FromInt32(2)),
+			wantMaxUnavailable: new(intstr.FromInt32(2)),
 			wantMinAvailable:   nil,
 		},
 		{
@@ -1175,7 +1174,7 @@ func TestPDBSpec(t *testing.T) {
 				lr.Spec.PodDisruptionBudget.MinAvailable = &v
 			},
 			wantMaxUnavailable: nil,
-			wantMinAvailable:   ptr.To(intstr.FromInt32(2)),
+			wantMinAvailable:   new(intstr.FromInt32(2)),
 		},
 		{
 			name: "minAvailable takes precedence over maxUnavailable",
@@ -1186,7 +1185,7 @@ func TestPDBSpec(t *testing.T) {
 				lr.Spec.PodDisruptionBudget.MaxUnavailable = &max
 			},
 			wantMaxUnavailable: nil,
-			wantMinAvailable:   ptr.To(intstr.FromInt32(2)),
+			wantMinAvailable:   new(intstr.FromInt32(2)),
 		},
 		{
 			name: "supports percentage for maxUnavailable",
@@ -1194,7 +1193,7 @@ func TestPDBSpec(t *testing.T) {
 				v := intstr.FromString("25%")
 				lr.Spec.PodDisruptionBudget.MaxUnavailable = &v
 			},
-			wantMaxUnavailable: ptr.To(intstr.FromString("25%")),
+			wantMaxUnavailable: new(intstr.FromString("25%")),
 			wantMinAvailable:   nil,
 		},
 		{
@@ -1204,7 +1203,7 @@ func TestPDBSpec(t *testing.T) {
 				lr.Spec.PodDisruptionBudget.MinAvailable = &v
 			},
 			wantMaxUnavailable: nil,
-			wantMinAvailable:   ptr.To(intstr.FromString("50%")),
+			wantMinAvailable:   new(intstr.FromString("50%")),
 		},
 	}
 
