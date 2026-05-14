@@ -272,13 +272,14 @@ func writeFile(dir, name, content string) {
 // Catches: -a <password>, --requirepass <password>, --masterauth <password>,
 // sentinel-pass <password>, AUTH_ARGS=..., SENTINEL_AUTH_ARGS=...
 func redactSecrets(s string) string {
+	const redacted = `${1}[REDACTED]`
 	patterns := []struct{ re, repl string }{
-		{`(-a\s+)\S+`, `${1}[REDACTED]`},
-		{`(--requirepass\s+)\S+`, `${1}[REDACTED]`},
-		{`(--masterauth\s+)\S+`, `${1}[REDACTED]`},
-		{`(sentinel-pass\s+)\S+`, `${1}[REDACTED]`},
-		{`(AUTH_ARGS=)\S+`, `${1}[REDACTED]`},
-		{`(SENTINEL_AUTH_ARGS=)\S+`, `${1}[REDACTED]`},
+		{`(-a\s+)\S+`, redacted},
+		{`(--requirepass\s+)\S+`, redacted},
+		{`(--masterauth\s+)\S+`, redacted},
+		{`(sentinel-pass\s+)\S+`, redacted},
+		{`(AUTH_ARGS=)\S+`, redacted},
+		{`(SENTINEL_AUTH_ARGS=)\S+`, redacted},
 	}
 	for _, p := range patterns {
 		re := regexp.MustCompile(p.re)
