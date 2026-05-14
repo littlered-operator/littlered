@@ -126,7 +126,7 @@ Works with both LittleRed-managed and unmanaged instances (--unmanaged).`,
 
 func inferMode(cCtx *types.ClusterContext, serverInfo map[string]string) string {
 	// INFO server contains redis_mode: standalone | sentinel | cluster.
-	if m := serverInfo["redis_mode"]; m == modeCluster || m == modeSentinel || m == "standalone" {
+	if m := serverInfo["redis_mode"]; m == modeCluster || m == modeSentinel || m == modeStandalone {
 		return m
 	}
 	// Fall back to what the discovery module already knows (from the CR or --kind flag).
@@ -136,7 +136,7 @@ func inferMode(cCtx *types.ClusterContext, serverInfo map[string]string) string 
 	if len(cCtx.SentinelPods) > 0 {
 		return modeSentinel
 	}
-	return "standalone"
+	return modeStandalone
 }
 
 func inferClusterTopology(nodes []redisclient.ClusterNodeInfo) (shards, replicasPerShard int) {

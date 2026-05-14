@@ -13,6 +13,7 @@ import (
 )
 
 const (
+	modeStandalone     = "standalone"
 	modeCluster        = "cluster"
 	modeSentinel       = "sentinel"
 	roleMaster         = "master"
@@ -143,7 +144,7 @@ func init() {
 		panic(err)
 	}
 	kindCompletion := func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
-		return []string{"standalone", modeSentinel, modeCluster}, cobra.ShellCompDirectiveNoFileComp
+		return []string{modeStandalone, modeSentinel, modeCluster}, cobra.ShellCompDirectiveNoFileComp
 	}
 	if err := rootCmd.RegisterFlagCompletionFunc("kind", kindCompletion); err != nil {
 		panic(err)
