@@ -129,7 +129,7 @@ func TestCommonLabels(t *testing.T) {
 		{"app.kubernetes.io/name", "littlered"},
 		{"app.kubernetes.io/instance", testLRName},
 		{"app.kubernetes.io/managed-by", "littlered-operator"},
-		{"app.kubernetes.io/version", "8.0"},
+		{"app.kubernetes.io/version", littleredv1alpha1.DefaultImageTag},
 		{"redis.chuck-chuck-chuck.net/mode", ModeStandalone},
 	}
 
@@ -380,7 +380,8 @@ func TestBuildStatefulSet(t *testing.T) {
 		if c.Name == ComponentRedis {
 			hasRedis = true
 			// Check image
-			if c.Image != "docker.io/library/redis:8.4.2" {
+			wantImage := littleredv1alpha1.DefaultRegistry + "/" + littleredv1alpha1.DefaultImagePath + ":" + littleredv1alpha1.DefaultImageTag
+			if c.Image != wantImage {
 				t.Errorf("Redis container image = %q, want default", c.Image)
 			}
 			// Check port
