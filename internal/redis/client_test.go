@@ -72,7 +72,7 @@ repl_backlog_histlen:1234
 			name:     "parse role master",
 			info:     sampleInfo,
 			field:    "role",
-			expected: "master",
+			expected: roleMaster,
 		},
 		{
 			name:     "parse role slave",
