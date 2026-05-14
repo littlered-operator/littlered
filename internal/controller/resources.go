@@ -32,6 +32,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 )
@@ -377,8 +378,8 @@ func buildRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 		LivenessProbe:  buildLivenessProbe(lr),
 		ReadinessProbe: buildReadinessProbe(lr),
 		SecurityContext: &corev1.SecurityContext{
-			AllowPrivilegeEscalation: ptr(false),
-			ReadOnlyRootFilesystem:   ptr(true),
+			AllowPrivilegeEscalation: ptr.To(false),
+			ReadOnlyRootFilesystem:   ptr.To(true),
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{capAll},
 			},
@@ -470,8 +471,8 @@ func buildExporterContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 		},
 		Resources: lr.Spec.Metrics.Exporter.Resources,
 		SecurityContext: &corev1.SecurityContext{
-			AllowPrivilegeEscalation: ptr(false),
-			ReadOnlyRootFilesystem:   ptr(true),
+			AllowPrivilegeEscalation: ptr.To(false),
+			ReadOnlyRootFilesystem:   ptr.To(true),
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{capAll},
 			},
@@ -1335,8 +1336,8 @@ fi`))
 			},
 		},
 		SecurityContext: &corev1.SecurityContext{
-			AllowPrivilegeEscalation: ptr(false),
-			ReadOnlyRootFilesystem:   ptr(true),
+			AllowPrivilegeEscalation: ptr.To(false),
+			ReadOnlyRootFilesystem:   ptr.To(true),
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{capAll},
 			},
@@ -1564,8 +1565,8 @@ exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_A
 			FailureThreshold:    3,
 		},
 		SecurityContext: &corev1.SecurityContext{
-			AllowPrivilegeEscalation: ptr(false),
-			ReadOnlyRootFilesystem:   ptr(true),
+			AllowPrivilegeEscalation: ptr.To(false),
+			ReadOnlyRootFilesystem:   ptr.To(true),
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{capAll},
 			},
@@ -1711,10 +1712,6 @@ func buildSentinelHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Servi
 			},
 		},
 	}
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }
 
 // ============================================================================
@@ -2145,8 +2142,8 @@ echo "preStop: Failover did not complete within 10s. Proceeding with shutdown."`
 			},
 		},
 		SecurityContext: &corev1.SecurityContext{
-			AllowPrivilegeEscalation: ptr(false),
-			ReadOnlyRootFilesystem:   ptr(true),
+			AllowPrivilegeEscalation: ptr.To(false),
+			ReadOnlyRootFilesystem:   ptr.To(true),
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{capAll},
 			},
