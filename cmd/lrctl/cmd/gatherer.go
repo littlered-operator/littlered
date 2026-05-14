@@ -158,8 +158,8 @@ func (g *cliGatherer) resolveIdentityToIP(identity string) string {
 	// For hostnames (pod-0.headless-svc.namespace.svc.cluster.local),
 	// the first segment is usually the pod name.
 	podNameCandidate := identity
-	if idx := strings.Index(identity, "."); idx != -1 {
-		podNameCandidate = identity[:idx]
+	if before, _, ok := strings.Cut(identity, "."); ok {
+		podNameCandidate = before
 	}
 
 	// Look up in Redis pods
