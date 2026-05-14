@@ -8,6 +8,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
+const redisConfYes = "yes"
+
 // interestingKeys are performance-relevant CONFIG keys worth including in spec.config.raw
 // when they differ from Redis defaults.
 var interestingKeys = map[string]string{
@@ -42,11 +44,11 @@ var interestingKeys = map[string]string{
 	// Scripting
 	"lua-time-limit": "5000",
 	// Latency
-	"latency-tracking": "yes",
+	"latency-tracking": redisConfYes,
 	// Cluster-specific tuning
 	"cluster-migration-barrier":      "1",
 	"cluster-allow-reads-when-down":  "no",
-	"cluster-allow-pubsub-when-down": "yes",
+	"cluster-allow-pubsub-when-down": redisConfYes,
 	// Encoding thresholds
 	"list-max-listpack-size":    "-2",
 	"list-max-ziplist-size":     "-2",
