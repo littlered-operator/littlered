@@ -605,13 +605,13 @@ func TestBuildVolumes(t *testing.T) {
 
 	var hasConfig, hasData bool
 	for _, v := range volumes {
-		if v.Name == "config" {
+		if v.Name == volNameConfig {
 			hasConfig = true
 			if v.ConfigMap == nil {
 				t.Error("config volume should be a ConfigMap")
 			}
 		}
-		if v.Name == "data" {
+		if v.Name == volNameData {
 			hasData = true
 			if v.EmptyDir == nil {
 				t.Error("data volume should be EmptyDir")
@@ -639,7 +639,7 @@ func TestBuildVolumesWithTLS(t *testing.T) {
 
 	var hasTLS bool
 	for _, v := range volumes {
-		if v.Name == "tls" {
+		if v.Name == volNameTLS {
 			hasTLS = true
 			if v.Secret == nil || v.Secret.SecretName != testTLSSecret {
 				t.Error("tls volume should reference tls-secret")
