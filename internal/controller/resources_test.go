@@ -37,7 +37,6 @@ const (
 	testNamespace       = "test-ns"
 	testTLSSecret       = "tls-secret"
 	testMaxmemPolicy    = "volatile-lru"
-	portNameMetrics     = "metrics"
 )
 
 // Helper to create a minimal LittleRed for testing
