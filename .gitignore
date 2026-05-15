@@ -33,3 +33,9 @@ go.work
 # Local Helm values overrides
 charts/*/values-local.yaml
 .aider*
+
+# Local shell configurations
+.envrc
+
+# Debug directories
+debug-*/
