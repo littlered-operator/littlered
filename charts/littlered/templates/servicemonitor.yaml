@@ -3,6 +3,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: {{ include "littlered.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "littlered.labels" . | nindent 4 }}
     control-plane: controller-manager
