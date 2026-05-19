@@ -4,8 +4,8 @@ description: A Helm chart for deploying the LittleRed Redis operator
 type: application
 version: 0.1.0
 appVersion: "latest"
-home: https://github.com/littlered-operator/littlered-operator
+home: https://github.com/littlered-operator/littlered
 sources:
-  - https://github.com/littlered-operator/littlered-operator
+  - https://github.com/littlered-operator/littlered
 maintainers:
   - name: littlered-operator
