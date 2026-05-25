@@ -138,6 +138,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Verify chart version matches tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CHART_VERSION=$(grep '^version:' charts/littlered/Chart.yaml | awk '{print $2}')
+          if [ "$TAG_VERSION" != "$CHART_VERSION" ]; then
+            echo "ERROR: Git tag version (${TAG_VERSION}) does not match Chart.yaml version (${CHART_VERSION})"
+            exit 1
+          fi
+
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username ${{ github.actor }} --password-stdin
 
