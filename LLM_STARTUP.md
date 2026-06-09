@@ -36,25 +36,25 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 
 ## 3. Architectural Pillars
 
-### 2.1 Strictly No Persistence
+### 3.1 Strictly No Persistence
 - **Decision**: Persistence (RDB/AOF) is **actively disabled** across all components.
 - **Rationale**: Eliminates dependencies on PersistentVolumes (PVCs), simplifies disaster recovery, and ensures predictable performance.
 - **Implication**: Pod restarts result in a clean slate. Data durability is achieved via replication (Sentinel/Cluster modes) across live nodes, never via disk.
 
-### 2.2 Default 'noeviction' Policy
+### 3.2 Default 'noeviction' Policy
 - **Decision**: The default `maxmemory-policy` is `noeviction`.
 - **Rationale**: Provides an "honest" data store behavior where memory exhaustion results in errors rather than silent data loss (eviction).
 - **Instruction**: Avoid calling the project "optimized for caching" to prevent users from assuming a default LRU/LFU policy. It is a general-purpose in-memory store.
 
-### 2.3 Resource Defaults
+### 3.3 Resource Defaults
 - **Decision**: Memory `limits` equal `requests` by default (preventing OOM surprises). No CPU limit by default (allowing bursting). Users can set explicit CPU limits for Guaranteed QoS if needed.
 - **Rationale**: Redis is single-threaded for commands; a CPU limit just throttles without benefit. Memory must be bounded to protect the node.
 
-### 2.4 Kubernetes as "Source of Truth"
+### 3.4 Kubernetes as "Source of Truth"
 - **Decision**: For Cluster mode, the operator uses the Kubernetes Pod list to detect "ghost" nodes.
 - **Rationale**: Redis gossip can lag (up to 15s+). Knowing a Pod is gone via the K8s API allows immediate `CLUSTER FORGET` and faster healing.
 
-### 2.5 Minimal Interference (Enablement over Intervention)
+### 3.5 Minimal Interference (Enablement over Intervention)
 - **Philosophy**: Trust and enable Redis's internal mechanisms (Gossip, Sentinel) to handle their own state transitions. Don't "work against" them or attempt to "accelerate" their built-in timers (like `cluster-node-timeout`) unless absolutely necessary.
 - **When to Intervene**:
     1. **Loss of Quorum**: When Redis cannot self-heal because it lacks a majority (e.g., `CLUSTER FAILOVER TAKEOVER`).
@@ -62,22 +62,22 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
     3. **External Knowledge**: When the operator knows something Redis doesn't (e.g., "The Pod for this NodeID is deleted from K8s, it's never coming back").
 - **Key Goal**: Support the internal workings of Sentinel and Gossip, only "helping" when a permanent stall or cluster-wide failure is detected.
 
-### 2.6 Safe Bootstrap (Sentinel Mode)
+### 3.6 Safe Bootstrap (Sentinel Mode)
 - **Decision**: Uses `status.bootstrapRequired` and Operator-led registration in Sentinel.
 - **Rationale**: Prevents empty restarted masters from wiping data on live replicas via full sync by strictly authorizing mastership via Sentinel.
 - **Instruction**: All Redis pods must start in a wait-loop querying Sentinel until a master is assigned by the Operator.
 
-### 2.7 Strict IP-Only Identity (Sentinel Mode)
+### 3.7 Strict IP-Only Identity (Sentinel Mode)
 - **Decision**: Sentinel and Redis nodes strictly use **Pod IPs** for identification, with hostname announcement and resolution explicitly disabled.
 - **Rationale**: In a pure in-memory architecture, a pod restart results in total data loss. By using ephemeral IPs, a restarted pod (with a new IP) is treated as a completely new node by Sentinel. This prevents "Ghost Masters" (empty pods reclaimed as masters) and eliminates DNS-related race conditions during failover.
 - **Implication**: Any transition to persistent storage (PVCs) will require a pivot to stable Podname-based identities. (See ADR-001)
 
-### 2.8 Discovery Deadlock Prevention (Sentinel Mode)
+### 3.8 Discovery Deadlock Prevention (Sentinel Mode)
 - **Decision**: Removed `PING` connectivity check from the Redis startup script. (See ADR-002)
 - **Rationale**: Replicas must start `redis-server` even if the reported master is unreachable. This allows them to register with Sentinel as living replicas, enabling Sentinel to perform a failover when the master is dead. Keeping the `PING` check leads to a deadlock where no replicas ever start because they are waiting for a master that Sentinel hasn't promoted yet.
 - **Assumed Risk**: We assume Redis/Valkey handles unreachable masters gracefully at startup via standard retry logic.
 
-### 2.9 Ghost Node Healing (Sentinel Mode)
+### 3.9 Ghost Node Healing (Sentinel Mode)
 - **Decision**: Proactively correct dead IPs from Sentinel's topology; strategy differs for ghost replicas vs ghost masters.
 - **Ghost replicas**: When dead pod IPs appear in Sentinel's *replica* list, issue `SENTINEL RESET` (broadcast to all sentinels). This clears the stale entries without directing Sentinel to any specific master. Only applied after Rule A passes (no terminating pods, no active failover) and the consensus master is a verified living pod.
 - **Ghost master** (LR-008): A dual-failover race can leave a sentinel permanently stuck monitoring a ghost master IP — it cannot reach `o_down` alone and cannot self-correct. `SENTINEL RESET` was tried first (LR-007) but found ineffective: RESET clears replica/sentinel lists but does **not** change the monitored master IP; the sentinel reconnects to the same ghost. The correct fix (LR-008) is `SENTINEL REMOVE` followed by `SENTINEL MONITOR <consensus-master-IP>` — this forces the sentinel to immediately point at the correct living master. Applied only after Rule A passes. See ADR-003 and `docs/RECONCILIATION_ALGORITHM_CHANGELOG.md` (LR-007, LR-008).
@@ -104,7 +104,7 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 
 ## 5. Tech Stack & Tooling
 
-- **Language**: Go (1.24+)
+- **Language**: Go (1.26+)
 - **Framework**: Kubebuilder (v4 layout)
 - **Testing**: Ginkgo & Gomega (BDD style)
 - **Metrics**: `redis_exporter` as a sidecar; optional `ServiceMonitor`.
@@ -150,6 +150,7 @@ test/e2e/                   # End-to-end tests (requires Kind)
 4. **Owner References**: Use `SetControllerReference` so K8s garbage collects child resources when the `LittleRed` CR is deleted.
 5. **Testing**: Add unit tests in `internal/controller/` and E2E tests in `test/e2e/` for any new feature or bug fix.
 6. **Documentation Maintenance**: After any non-trivial change to the data model (API/Status), operator logic, or architectural decisions, you **MUST** update all relevant documentation files (e.g., `docs/API_SPEC.md`, `docs/ARCHITECTURE.md`, `LLM_STARTUP.md`, etc.).
+7. **Licensing**: The project is Apache-2.0 (`LICENSE`). Every Go source file carries the standard header `Copyright <year> The littlered Authors.` from `hack/boilerplate.go.txt` — do not attribute copyright to any individual or company. Third-party attributions live in `NOTICE`; the full dependency-license inventory is generated (`make licenses`) into `THIRD_PARTY_LICENSES`. Regenerate it whenever dependencies change. See `AUTHORS` for maintainers.
 
 ---
 
@@ -160,6 +161,7 @@ make manifests generate # Update CRDs and DeepCopy code
 make test               # Run unit tests (envtest)
 make test-e2e           # Run E2E tests (Kind)
 make deploy             # Deploy operator to current cluster
+make licenses           # Regenerate THIRD_PARTY_LICENSES from the dependency graph
 kubectl apply -f config/samples/ # Try out sample CRs
 ```
 

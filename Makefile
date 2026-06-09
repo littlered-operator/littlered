@@ -352,6 +352,7 @@ $(LOCALBIN):
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+GO_LICENSES ?= $(LOCALBIN)/go-licenses
 
 ## Tool Versions
 CONTROLLER_TOOLS_VERSION ?= v0.20.0
@@ -367,6 +368,7 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
 GOLANGCI_LINT_VERSION ?= v2.7.2
+GO_LICENSES_VERSION ?= v1.6.0
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
@@ -390,6 +392,22 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: go-licenses
+go-licenses: $(GO_LICENSES) ## Download go-licenses locally if necessary.
+$(GO_LICENSES): $(LOCALBIN)
+	$(call go-install-tool,$(GO_LICENSES),github.com/google/go-licenses,$(GO_LICENSES_VERSION))
+
+# Main packages whose dependency graph is shipped (operator, chaos client, lrctl).
+LICENSE_BINARIES ?= ./cmd/littlered ./cmd/littlered-chaos-client ./cmd/lrctl
+
+.PHONY: licenses
+licenses: go-licenses ## Regenerate THIRD_PARTY_LICENSES from the linked dependency graph.
+	@echo "Generating THIRD_PARTY_LICENSES..."
+	@$(GO_LICENSES) report $(LICENSE_BINARIES) --template hack/third-party-licenses.tpl > THIRD_PARTY_LICENSES.tmp \
+		&& mv THIRD_PARTY_LICENSES.tmp THIRD_PARTY_LICENSES \
+		|| { rm -f THIRD_PARTY_LICENSES.tmp; echo "go-licenses failed"; exit 1; }
+	@echo "Wrote THIRD_PARTY_LICENSES ($$(grep -c '^Module:' THIRD_PARTY_LICENSES) modules)"
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
