@@ -132,7 +132,9 @@ The e2e suite creates a Kind cluster, builds and loads images, deploys the opera
 git tag v0.x.y
 make images           # build + push versioned images to ghcr.io
 make helm-push        # package + push versioned Helm chart
-make push-latest      # re-tag both images and chart as :latest
+make push-latest      # re-tag images as :latest
 ```
 
 `push-latest` is a no-op on untagged commits — it checks that `GIT_TAG` matches `vX.Y.Z` before doing anything.
+
+There is no `:latest` tag for the Helm chart: Helm treats the OCI tag (and `--version`) as a semver constraint, so `latest` is rejected (`improper constraint: latest`). To get the newest chart, omit `--version` — Helm resolves it to the highest semver tag.

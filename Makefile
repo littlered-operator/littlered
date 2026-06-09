@@ -309,18 +309,19 @@ helm-push: helm-package ## Push the Helm chart to the OCI registry (run 'helm re
 IS_RELEASE_TAG := $(shell echo '$(GIT_TAG)' | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+$$' && echo true)
 
 .PHONY: push-latest
-push-latest: ## Re-tag images and Helm chart as :latest (only runs on release tags, no-ops otherwise).
+push-latest: ## Re-tag images as :latest (only runs on release tags, no-ops otherwise).
 	@if [ -z "$(IS_RELEASE_TAG)" ]; then \
 		echo "Skipping :latest — '$(GIT_TAG)' is not a release tag (vX.Y.Z)."; \
 		exit 0; \
-	fi
-	@echo "Pushing :latest for release $(GIT_TAG)..."
+	fi; \
+	echo "Pushing :latest for release $(GIT_TAG)..."; \
 	$(foreach img,$(IMAGES), \
 		$(CONTAINER_TOOL) tag $(LITTLERED_REGISTRY)/$(img):$(GIT_TAG) $(LITTLERED_REGISTRY)/$(img):latest && \
-		$(CONTAINER_TOOL) push $(LITTLERED_REGISTRY)/$(img):latest ;)
-	$(SKOPEO) copy \
-		docker://$(LITTLERED_REGISTRY)/charts/littlered:$(CHART_VERSION) \
-		docker://$(LITTLERED_REGISTRY)/charts/littlered:latest
+		$(CONTAINER_TOOL) push $(LITTLERED_REGISTRY)/$(img):latest && ) true
+# NOTE: No :latest tag for the Helm chart. Helm treats the OCI tag / --version as a
+# semver constraint, so a 'latest' tag is unusable (`helm pull --version latest` ->
+# "improper constraint: latest"). Helm resolves the newest chart by picking the
+# highest semver tag when --version is omitted, not by reading a 'latest' tag.
 
 .PHONY: redeploy-all
 redeploy-all: undeploy ## Full reset: uninstall helm chart, delete CRDs, and deploy fresh.
