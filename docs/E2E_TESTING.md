@@ -43,7 +43,7 @@ This automatically:
 2. Builds the operator and chaos client images
 3. Loads images into the Kind cluster
 4. Deploys the operator via `make deploy`
-5. Runs all e2e tests (`go test -tags=e2e ./test/e2e/ -timeout 60m`)
+5. Runs all e2e tests (`go test -tags=e2e ./test/e2e/ -timeout 120m`)
 6. Tears down the Kind cluster (only if it was created by this run)
 
 ### Running Against an Existing Deployment
@@ -110,6 +110,8 @@ make test-e2e ARGS="-timeout 90m"
 |----------|---------|-------------|
 | `SKIP_KIND_SETUP` | `false` | Skip Kind cluster creation (use existing) |
 | `SKIP_OPERATOR_DEPLOY` | `false` | Skip operator deployment (use existing) |
+| `TEST_NAMESPACE` | `littlered-e2e` | Namespace for test resources (must not be `default`, and must not already exist) |
+| `DEBUG_ON_FAILURE` | `false` | Skip cleanup on failure (leave resources for inspection); also enables Ginkgo `--fail-fast` |
 | `KIND_CLUSTER` | `littlered-test-e2e` | Kind cluster name |
 | `OPERATOR_IMAGE` | `ghcr.io/littlered-operator/littlered:<git-tag>` | Operator image to deploy |
 | `CHAOS_CLIENT_IMAGE` | `ghcr.io/littlered-operator/littlered-chaos-client:<git-tag>` | Chaos client image |
@@ -117,6 +119,7 @@ make test-e2e ARGS="-timeout 90m"
 | `KUBECONTEXT` | (none) | Pin to a specific named context (implies pinning) |
 | `CLUSTER_SHARDS` | `3` | Number of shards for cluster mode tests (minimum 3) |
 | `CLUSTER_REPLICAS_PER_SHARD` | `1` | Replicas per shard for cluster tests that use replicas |
+| `NON_GRACEFUL_RESTART` | (none) | Advanced: when `true`, pod-restart helpers use a hard/non-graceful kill instead of a graceful delete |
 | `FOCUS` | (none) | Ginkgo focus filter (regex) |
 | `ARGS` | (none) | Extra arguments passed to `go test` |
 
@@ -295,7 +298,7 @@ kubectl get pods -n littlered-system
 
 ### Tests Timeout Waiting for Resources
 
-The default timeout is 60 minutes. Increase it:
+The default timeout is 120 minutes. Increase it:
 
 ```bash
 make test-e2e ARGS="-timeout 90m"
@@ -304,9 +307,9 @@ make test-e2e ARGS="-timeout 90m"
 ### Inspect Test Resources
 
 ```bash
-kubectl get littlered -n littlered-e2e-test
-kubectl get pods -n littlered-e2e-test
-kubectl get svc -n littlered-e2e-test
+kubectl get littlered -n littlered-e2e
+kubectl get pods -n littlered-e2e
+kubectl get svc -n littlered-e2e
 ```
 
 ### Clean Up After Interrupted Tests
@@ -314,7 +317,7 @@ kubectl get svc -n littlered-e2e-test
 Tests clean up after themselves, but if interrupted:
 
 ```bash
-kubectl delete namespace littlered-e2e-test --ignore-not-found
+kubectl delete namespace littlered-e2e --ignore-not-found
 kind delete cluster --name littlered-test-e2e
 ```
 
