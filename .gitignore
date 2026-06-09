@@ -39,3 +39,5 @@ charts/*/values-local.yaml
 
 # Debug directories
 debug-*/
+
+dist/
