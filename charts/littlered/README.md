@@ -47,7 +47,6 @@ kubectl delete crd littlereds.chuck-chuck-chuck.net
 | `nodeSelector` | Node selector for operator pods | `{}` |
 | `tolerations` | Tolerations for operator pods | `[]` |
 | `affinity` | Affinity rules for operator pods | `{}` |
-| `leaderElection.enabled` | Enable leader election | `true` |
 | `metrics.enabled` | Expose Prometheus metrics endpoint | `false` |
 | `metrics.port` | Metrics port | `8080` |
 | `metrics.serviceMonitor.enabled` | Create a Prometheus Operator ServiceMonitor | `false` |
