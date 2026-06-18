@@ -58,9 +58,11 @@ resources:
 
 # For HA setups (multiple operator replicas)
 replicas: 2
-leaderElection:
-  enabled: true
 ```
+
+> Leader election is always enabled in the operator, so running multiple
+> replicas is safe: only the pod holding the lease reconciles, regardless of
+> how the deployment is scaled (via Helm or directly with `kubectl`/`k9s`).
 
 Install with custom values:
 
