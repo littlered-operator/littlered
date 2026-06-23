@@ -19,6 +19,9 @@ updates:
     directories:
       - /cmd/littlered
       - /cmd/littlered-chaos-client
+      # Pinned default redis_exporter sidecar image (source of truth for the
+      # operator's Go defaults; embedded via //go:embed in api/v1alpha1).
+      - /api/v1alpha1
     schedule:
       interval: weekly
     groups:

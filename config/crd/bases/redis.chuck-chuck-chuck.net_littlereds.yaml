@@ -254,8 +254,11 @@ spec:
                             type: object
                         type: object
                       tag:
-                        default: v1.66.0
-                        description: Tag is the image version tag
+                        default: v1.85.0
+                        description: |-
+                          Tag is the image version tag.
+                          Keep in sync with redis-exporter.Dockerfile (the source Dependabot bumps);
+                          kubebuilder markers must be string literals so this cannot reference the const.
                         type: string
                     type: object
                   serviceMonitor:
