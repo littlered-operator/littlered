@@ -149,7 +149,7 @@ test/e2e/                   # End-to-end tests (requires Kind)
 3. **Auto-Generated Files**: Do not manually edit files marked `DO NOT EDIT` (e.g., `zz_generated.*`, `config/crd/bases/*`). Run `make manifests generate` instead.
 4. **Owner References**: Use `SetControllerReference` so K8s garbage collects child resources when the `LittleRed` CR is deleted.
 5. **Testing**: Add unit tests in `internal/controller/` and E2E tests in `test/e2e/` for any new feature or bug fix.
-6. **Documentation Maintenance**: After any non-trivial change to the data model (API/Status), operator logic, or architectural decisions, you **MUST** update all relevant documentation files (e.g., `docs/API_SPEC.md`, `docs/ARCHITECTURE.md`, `LLM_STARTUP.md`, etc.).
+6. **Documentation Maintenance**: After any non-trivial change to the data model (API/Status), operator logic, or architectural decisions, you **MUST** update all relevant documentation files (e.g., `docs/API_SPEC.md`, `docs/ARCHITECTURE.md`, `CLAUDE.md`, etc.).
 7. **Licensing**: The project is Apache-2.0 (`LICENSE`). Every Go source file carries the standard header `Copyright <year> The littlered Authors.` from `hack/boilerplate.go.txt` — do not attribute copyright to any individual or company. Third-party attributions live in `NOTICE`; the full dependency-license inventory is generated (`make licenses`) into `THIRD_PARTY_LICENSES`. Regenerate it whenever dependencies change. See `AUTHORS` for maintainers.
 
 ---

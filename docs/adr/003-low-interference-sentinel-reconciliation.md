@@ -4,7 +4,7 @@
 Accepted
 
 ## Context
-Starting with commit 89ea364, the sentinel reconciliation loop (`reconcileSentinelCluster`) was progressively expanded to actively heal the cluster by issuing SLAVEOF and SENTINEL MONITOR commands to individual Redis and Sentinel nodes. While well-intentioned, this violated the "Minimal Interference" principle (Section 2.5 of LLM_STARTUP.md) and introduced regressions where the operator fought Sentinel's built-in failover mechanisms.
+Starting with commit 89ea364, the sentinel reconciliation loop (`reconcileSentinelCluster`) was progressively expanded to actively heal the cluster by issuing SLAVEOF and SENTINEL MONITOR commands to individual Redis and Sentinel nodes. While well-intentioned, this violated the "Minimal Interference" principle (Section 2.5 of CLAUDE.md) and introduced regressions where the operator fought Sentinel's built-in failover mechanisms.
 
 Specific problems observed:
 - **SLAVEOF interference**: The operator issued `SLAVEOF` commands to nodes it believed were misconfigured, sometimes racing with Sentinel's own reconfiguration during failovers.
