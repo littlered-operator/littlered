@@ -944,7 +944,7 @@ func TestBuildSentinelStatefulSet(t *testing.T) {
 
 	// Check exporter sidecar scrapes the Sentinel port, not the Redis port
 	exporter := containers[1]
-	if exporter.Name != "exporter" {
+	if exporter.Name != containerNameExporter {
 		t.Fatalf("second container name = %q, want exporter", exporter.Name)
 	}
 	var exporterAddr string
@@ -1054,7 +1054,7 @@ func TestBuildReplicasHeadlessService(t *testing.T) {
 	if !hasMetricsPort {
 		t.Error("Replicas headless service should expose metrics port 9121 when metrics enabled")
 	}
-	if svc.Annotations["prometheus.io/scrape"] != "true" {
+	if svc.Annotations["prometheus.io/scrape"] != annotationValueTrue {
 		t.Error("Replicas headless service missing prometheus.io/scrape annotation")
 	}
 }
@@ -1109,7 +1109,7 @@ func TestBuildSentinelHeadlessService(t *testing.T) {
 	}
 
 	// Check Prometheus scrape annotations are present
-	if svc.Annotations["prometheus.io/scrape"] != "true" {
+	if svc.Annotations["prometheus.io/scrape"] != annotationValueTrue {
 		t.Error("Sentinel service missing prometheus.io/scrape annotation")
 	}
 }
@@ -1175,7 +1175,7 @@ func TestBuildExporterContainer(t *testing.T) {
 	container := buildExporterContainer(lr, int32(littleredv1alpha1.RedisPort))
 
 	// Check name
-	if container.Name != "exporter" {
+	if container.Name != containerNameExporter {
 		t.Errorf("Container name = %q, want exporter", container.Name)
 	}
 

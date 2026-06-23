@@ -99,20 +99,22 @@ func clusterPodDisruptionBudgetName(lr *littleredv1alpha1.LittleRed) string {
 
 // Label keys
 const (
-	ComponentRedis      = "redis"
-	ComponentSentinel   = "sentinel"
-	ComponentCluster    = "cluster"
-	LabelRole           = "redis.chuck-chuck-chuck.net/role"
-	ModeStandalone      = "standalone"
-	ModeSentinel        = "sentinel"
-	ModeCluster         = "cluster"
-	RoleMaster          = "master"
-	RoleReplica         = "replica"
-	RoleOrphan          = "orphan"
-	RoleUndefined       = "undefined"
-	annotationValueTrue = "true"
-	tlsInsecureFlags    = "--tls --insecure"
-	portNameMetrics     = "metrics"
+	ComponentRedis        = "redis"
+	ComponentSentinel     = "sentinel"
+	ComponentCluster      = "cluster"
+	LabelRole             = "redis.chuck-chuck-chuck.net/role"
+	ModeStandalone        = "standalone"
+	ModeSentinel          = "sentinel"
+	ModeCluster           = "cluster"
+	RoleMaster            = "master"
+	RoleReplica           = "replica"
+	RoleOrphan            = "orphan"
+	RoleUndefined         = "undefined"
+	annotationValueTrue   = "true"
+	tlsInsecureFlags      = "--tls --insecure"
+	portNameMetrics       = "metrics"
+	containerNameExporter = "exporter"
+	pathMetrics           = "/metrics"
 
 	labelAppName      = "app.kubernetes.io/name"
 	labelAppInstance  = "app.kubernetes.io/instance"
@@ -465,12 +467,12 @@ func buildExporterContainer(lr *littleredv1alpha1.LittleRed, targetPort int32) c
 	if lr.Spec.TLS.Enabled {
 		env[0].Value = fmt.Sprintf("rediss://localhost:%d", littleredv1alpha1.RedisPort)
 		env = append(env,
-			corev1.EnvVar{Name: "REDIS_EXPORTER_SKIP_TLS_VERIFICATION", Value: "true"},
+			corev1.EnvVar{Name: "REDIS_EXPORTER_SKIP_TLS_VERIFICATION", Value: annotationValueTrue},
 		)
 	}
 
 	container := corev1.Container{
-		Name:            "exporter",
+		Name:            containerNameExporter,
 		Image:           lr.Spec.Metrics.Exporter.FullImage(lr.Spec.Image.Registry),
 		ImagePullPolicy: lr.Spec.Image.PullPolicy,
 		Env:             env,
@@ -751,9 +753,9 @@ func serviceAnnotations(lr *littleredv1alpha1.LittleRed) map[string]string {
 	annotations := map[string]string{}
 	maps.Copy(annotations, lr.Spec.Service.Annotations)
 	if lr.Spec.Metrics.IsEnabled() {
-		annotations["prometheus.io/scrape"] = "true"
+		annotations["prometheus.io/scrape"] = annotationValueTrue
 		annotations["prometheus.io/port"] = fmt.Sprintf("%d", littleredv1alpha1.RedisExporterPort)
-		annotations["prometheus.io/path"] = "/metrics"
+		annotations["prometheus.io/path"] = pathMetrics
 	}
 	return annotations
 }
@@ -1699,9 +1701,9 @@ func buildReplicasHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Servi
 			Protocol:   corev1.ProtocolTCP,
 		})
 		annotations = map[string]string{
-			"prometheus.io/scrape": "true",
+			"prometheus.io/scrape": annotationValueTrue,
 			"prometheus.io/port":   fmt.Sprintf("%d", littleredv1alpha1.RedisExporterPort),
-			"prometheus.io/path":   "/metrics",
+			"prometheus.io/path":   pathMetrics,
 		}
 	}
 
@@ -1747,9 +1749,9 @@ func buildSentinelHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Servi
 			Protocol:   corev1.ProtocolTCP,
 		})
 		annotations = map[string]string{
-			"prometheus.io/scrape": "true",
+			"prometheus.io/scrape": annotationValueTrue,
 			"prometheus.io/port":   fmt.Sprintf("%d", littleredv1alpha1.RedisExporterPort),
-			"prometheus.io/path":   "/metrics",
+			"prometheus.io/path":   pathMetrics,
 		}
 	}
 
