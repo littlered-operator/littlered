@@ -1076,7 +1076,7 @@ func TestBuildExporterContainer(t *testing.T) {
 	}
 
 	// Check image
-	expectedImage := "docker.io/oliver006/redis_exporter:v1.66.0"
+	expectedImage := "docker.io/oliver006/redis_exporter:v1.85.0"
 	if container.Image != expectedImage {
 		t.Errorf("Container image = %q, want %q", container.Image, expectedImage)
 	}
