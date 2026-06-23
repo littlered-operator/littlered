@@ -312,7 +312,7 @@ func buildStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSet {
 
 	// Add exporter sidecar if metrics enabled
 	if lr.Spec.Metrics.IsEnabled() {
-		containers = append(containers, buildExporterContainer(lr))
+		containers = append(containers, buildExporterContainer(lr, int32(littleredv1alpha1.RedisPort)))
 	}
 
 	sts := &appsv1.StatefulSet{
@@ -433,12 +433,16 @@ func buildRedisContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
 	return container
 }
 
-// buildExporterContainer creates the redis_exporter sidecar container
-func buildExporterContainer(lr *littleredv1alpha1.LittleRed) corev1.Container {
+// buildExporterContainer creates a redis_exporter sidecar that scrapes the
+// node listening on targetPort. Redis data nodes use RedisPort; Sentinel nodes
+// use SentinelPort — oliver006/redis_exporter detects a Sentinel endpoint and
+// exposes redis_sentinel_* series. The exporter itself always listens on
+// RedisExporterPort regardless of the target.
+func buildExporterContainer(lr *littleredv1alpha1.LittleRed, targetPort int32) corev1.Container {
 	env := []corev1.EnvVar{
 		{
 			Name:  envRedisAddr,
-			Value: fmt.Sprintf("redis://localhost:%d", littleredv1alpha1.RedisPort),
+			Value: fmt.Sprintf("redis://localhost:%d", targetPort),
 		},
 	}
 
@@ -1028,7 +1032,7 @@ func buildRedisStatefulSetSentinel(lr *littleredv1alpha1.LittleRed) *appsv1.Stat
 
 	// Add exporter sidecar if metrics enabled
 	if lr.Spec.Metrics.IsEnabled() {
-		containers = append(containers, buildExporterContainer(lr))
+		containers = append(containers, buildExporterContainer(lr, int32(littleredv1alpha1.RedisPort)))
 	}
 
 	// MinReadySeconds for Sentinel mode: allow time for Sentinel-managed failover
@@ -1450,6 +1454,13 @@ func buildSentinelStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulS
 
 	replicas := int32(3)
 
+	containers := []corev1.Container{buildSentinelContainer(lr)}
+	// Add exporter sidecar if metrics enabled — points at the Sentinel port so
+	// oliver006/redis_exporter emits redis_sentinel_* series for these pods.
+	if lr.Spec.Metrics.IsEnabled() {
+		containers = append(containers, buildExporterContainer(lr, int32(littleredv1alpha1.SentinelPort)))
+	}
+
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      sentinelStatefulSetName(lr),
@@ -1469,7 +1480,7 @@ func buildSentinelStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulS
 				},
 				Spec: corev1.PodSpec{
 					SecurityContext:  lr.Spec.PodTemplate.SecurityContext,
-					Containers:       []corev1.Container{buildSentinelContainer(lr)},
+					Containers:       containers,
 					Volumes:          buildSentinelVolumes(lr),
 					NodeSelector:     lr.Spec.PodTemplate.NodeSelector,
 					Tolerations:      lr.Spec.PodTemplate.Tolerations,
@@ -1628,60 +1639,27 @@ exec redis-sentinel /data/sentinel.conf --sentinel announce-ip ${POD_IP} $AUTH_A
 	return container
 }
 
-// buildMasterService creates the Service that points to the current master
+// buildMasterService creates the Service that points to the current master.
+// It is a role-scoped client entrypoint (selector role=master) and deliberately
+// does not expose metrics or Prometheus scrape annotations: the all-pods
+// replicas headless service is the scrape target, so the master is scraped once.
 func buildMasterService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 	labels := commonLabels(lr)
 	maps.Copy(labels, lr.Spec.Service.Labels)
 
-	ports := []corev1.ServicePort{
-		{
-			Name:       ComponentRedis,
-			Port:       int32(littleredv1alpha1.RedisPort),
-			TargetPort: intstr.FromString(ComponentRedis),
-			Protocol:   corev1.ProtocolTCP,
-		},
-	}
-
-	if lr.Spec.Metrics.IsEnabled() {
-		ports = append(ports, corev1.ServicePort{
-			Name:       portNameMetrics,
-			Port:       int32(littleredv1alpha1.RedisExporterPort),
-			TargetPort: intstr.FromString(portNameMetrics),
-			Protocol:   corev1.ProtocolTCP,
-		})
-	}
+	annotations := map[string]string{}
+	maps.Copy(annotations, lr.Spec.Service.Annotations)
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        serviceName(lr),
 			Namespace:   lr.Namespace,
 			Labels:      labels,
-			Annotations: serviceAnnotations(lr),
+			Annotations: annotations,
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     lr.Spec.Service.Type,
 			Selector: masterSelectorLabels(lr),
-			Ports:    ports,
-		},
-	}
-}
-
-// buildReplicasHeadlessService creates the headless Service for all Redis pods
-func buildReplicasHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
-	labels := commonLabels(lr)
-	labels[labelAppComponent] = ComponentRedis
-
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      replicasServiceName(lr),
-			Namespace: lr.Namespace,
-			Labels:    labels,
-		},
-		Spec: corev1.ServiceSpec{
-			Type:                     corev1.ServiceTypeClusterIP,
-			ClusterIP:                serviceClusterNone,
-			Selector:                 redisSelectorLabels(lr),
-			PublishNotReadyAddresses: true,
 			Ports: []corev1.ServicePort{
 				{
 					Name:       ComponentRedis,
@@ -1694,30 +1672,100 @@ func buildReplicasHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Servi
 	}
 }
 
+// buildReplicasHeadlessService creates the headless Service for all Redis pods
+func buildReplicasHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
+	labels := commonLabels(lr)
+	labels[labelAppComponent] = ComponentRedis
+
+	ports := []corev1.ServicePort{
+		{
+			Name:       ComponentRedis,
+			Port:       int32(littleredv1alpha1.RedisPort),
+			TargetPort: intstr.FromString(ComponentRedis),
+			Protocol:   corev1.ProtocolTCP,
+		},
+	}
+
+	var annotations map[string]string
+	// This headless service selects every Redis data pod (master + replicas),
+	// so it is the scrape target for the whole sentinel data plane — the
+	// role-scoped master service deliberately does not expose metrics to avoid
+	// scraping the master twice.
+	if lr.Spec.Metrics.IsEnabled() {
+		ports = append(ports, corev1.ServicePort{
+			Name:       portNameMetrics,
+			Port:       int32(littleredv1alpha1.RedisExporterPort),
+			TargetPort: intstr.FromString(portNameMetrics),
+			Protocol:   corev1.ProtocolTCP,
+		})
+		annotations = map[string]string{
+			"prometheus.io/scrape": "true",
+			"prometheus.io/port":   fmt.Sprintf("%d", littleredv1alpha1.RedisExporterPort),
+			"prometheus.io/path":   "/metrics",
+		}
+	}
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        replicasServiceName(lr),
+			Namespace:   lr.Namespace,
+			Labels:      labels,
+			Annotations: annotations,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:                     corev1.ServiceTypeClusterIP,
+			ClusterIP:                serviceClusterNone,
+			Selector:                 redisSelectorLabels(lr),
+			PublishNotReadyAddresses: true,
+			Ports:                    ports,
+		},
+	}
+}
+
 // buildSentinelHeadlessService creates the headless Service for Sentinel pods
 func buildSentinelHeadlessService(lr *littleredv1alpha1.LittleRed) *corev1.Service {
 	labels := commonLabels(lr)
 	labels[labelAppComponent] = ComponentSentinel
 
+	ports := []corev1.ServicePort{
+		{
+			Name:       ComponentSentinel,
+			Port:       int32(littleredv1alpha1.SentinelPort),
+			TargetPort: intstr.FromString(ComponentSentinel),
+			Protocol:   corev1.ProtocolTCP,
+		},
+	}
+
+	var annotations map[string]string
+	// Expose the exporter port so the ServiceMonitor (selects on name+instance)
+	// and prometheus.io annotations pick up the Sentinel pods' metrics.
+	if lr.Spec.Metrics.IsEnabled() {
+		ports = append(ports, corev1.ServicePort{
+			Name:       portNameMetrics,
+			Port:       int32(littleredv1alpha1.RedisExporterPort),
+			TargetPort: intstr.FromString(portNameMetrics),
+			Protocol:   corev1.ProtocolTCP,
+		})
+		annotations = map[string]string{
+			"prometheus.io/scrape": "true",
+			"prometheus.io/port":   fmt.Sprintf("%d", littleredv1alpha1.RedisExporterPort),
+			"prometheus.io/path":   "/metrics",
+		}
+	}
+
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      sentinelServiceName(lr),
-			Namespace: lr.Namespace,
-			Labels:    labels,
+			Name:        sentinelServiceName(lr),
+			Namespace:   lr.Namespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: corev1.ServiceSpec{
 			Type:                     corev1.ServiceTypeClusterIP,
 			ClusterIP:                serviceClusterNone,
 			Selector:                 sentinelSelectorLabels(lr),
 			PublishNotReadyAddresses: true,
-			Ports: []corev1.ServicePort{
-				{
-					Name:       ComponentSentinel,
-					Port:       int32(littleredv1alpha1.SentinelPort),
-					TargetPort: intstr.FromString(ComponentSentinel),
-					Protocol:   corev1.ProtocolTCP,
-				},
-			},
+			Ports:                    ports,
 		},
 	}
 }
@@ -1850,7 +1898,7 @@ func buildClusterStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSe
 
 	// Add exporter sidecar if metrics enabled
 	if lr.Spec.Metrics.IsEnabled() {
-		containers = append(containers, buildExporterContainer(lr))
+		containers = append(containers, buildExporterContainer(lr, int32(littleredv1alpha1.RedisPort)))
 	}
 
 	// MinReadySeconds ensures pods are stable before next pod is restarted during rolling updates.

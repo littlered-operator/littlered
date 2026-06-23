@@ -922,10 +922,10 @@ func TestBuildSentinelStatefulSet(t *testing.T) {
 		t.Errorf("StatefulSet serviceName = %q, want %q", sts.Spec.ServiceName, testSentinelName)
 	}
 
-	// Check container
+	// Check containers: sentinel + exporter sidecar (metrics default-on)
 	containers := sts.Spec.Template.Spec.Containers
-	if len(containers) != 1 {
-		t.Errorf("StatefulSet has %d containers, want 1", len(containers))
+	if len(containers) != 2 {
+		t.Errorf("StatefulSet has %d containers, want 2 (sentinel + exporter)", len(containers))
 	}
 	if containers[0].Name != ComponentSentinel {
 		t.Errorf("Container name = %q, want sentinel", containers[0].Name)
@@ -942,6 +942,21 @@ func TestBuildSentinelStatefulSet(t *testing.T) {
 		t.Error("Sentinel container missing port 26379")
 	}
 
+	// Check exporter sidecar scrapes the Sentinel port, not the Redis port
+	exporter := containers[1]
+	if exporter.Name != "exporter" {
+		t.Fatalf("second container name = %q, want exporter", exporter.Name)
+	}
+	var exporterAddr string
+	for _, env := range exporter.Env {
+		if env.Name == envRedisAddr {
+			exporterAddr = env.Value
+		}
+	}
+	if exporterAddr != "redis://localhost:26379" {
+		t.Errorf("exporter REDIS_ADDR = %q, want redis://localhost:26379", exporterAddr)
+	}
+
 	// Check config hash annotation is present
 	annotations := sts.Spec.Template.Annotations
 	if annotations == nil {
@@ -949,6 +964,34 @@ func TestBuildSentinelStatefulSet(t *testing.T) {
 	}
 	if _, ok := annotations[AnnotationConfigHash]; !ok {
 		t.Error("StatefulSet pod template missing config hash annotation")
+	}
+}
+
+func TestBuildSentinelStatefulSetWithoutMetrics(t *testing.T) {
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ModeSentinel
+	enabled := false
+	lr.Spec.Metrics.Enabled = &enabled
+	sts := buildSentinelStatefulSet(lr)
+
+	// Should only have the sentinel container, no exporter sidecar
+	containers := sts.Spec.Template.Spec.Containers
+	if len(containers) != 1 {
+		t.Errorf("StatefulSet has %d containers, want 1 (sentinel only)", len(containers))
+	}
+	if containers[0].Name != ComponentSentinel {
+		t.Errorf("Container name = %q, want sentinel", containers[0].Name)
+	}
+
+	// Sentinel headless service should not expose a metrics port
+	svc := buildSentinelHeadlessService(lr)
+	for _, p := range svc.Spec.Ports {
+		if p.Name == portNameMetrics {
+			t.Error("Sentinel service should not have metrics port when metrics disabled")
+		}
+	}
+	if svc.Annotations["prometheus.io/scrape"] != "" {
+		t.Error("Sentinel service should not have scrape annotation when metrics disabled")
 	}
 }
 
@@ -965,6 +1008,18 @@ func TestBuildMasterService(t *testing.T) {
 	// Check selector includes role=master
 	if svc.Spec.Selector[LabelRole] != RoleMaster {
 		t.Error("Master service selector should have role=master")
+	}
+
+	// Master service is role-scoped and must NOT expose metrics or scrape
+	// annotations — the all-pods replicas headless service is the scrape target,
+	// so the master is not scraped twice.
+	for _, p := range svc.Spec.Ports {
+		if p.Name == portNameMetrics {
+			t.Error("Master service should not expose metrics port (avoid double-scrape of master)")
+		}
+	}
+	if svc.Annotations["prometheus.io/scrape"] != "" {
+		t.Error("Master service should not carry prometheus scrape annotation")
 	}
 }
 
@@ -987,6 +1042,38 @@ func TestBuildReplicasHeadlessService(t *testing.T) {
 	if !svc.Spec.PublishNotReadyAddresses {
 		t.Error("Headless service should publishNotReadyAddresses")
 	}
+
+	// Selects all redis data pods, so it carries the metrics port + scrape
+	// annotations (metrics default-on) — this is the data-plane scrape target.
+	var hasMetricsPort bool
+	for _, p := range svc.Spec.Ports {
+		if p.Name == portNameMetrics && p.Port == 9121 {
+			hasMetricsPort = true
+		}
+	}
+	if !hasMetricsPort {
+		t.Error("Replicas headless service should expose metrics port 9121 when metrics enabled")
+	}
+	if svc.Annotations["prometheus.io/scrape"] != "true" {
+		t.Error("Replicas headless service missing prometheus.io/scrape annotation")
+	}
+}
+
+func TestBuildReplicasHeadlessServiceWithoutMetrics(t *testing.T) {
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ModeSentinel
+	enabled := false
+	lr.Spec.Metrics.Enabled = &enabled
+	svc := buildReplicasHeadlessService(lr)
+
+	for _, p := range svc.Spec.Ports {
+		if p.Name == portNameMetrics {
+			t.Error("Replicas headless service should not expose metrics port when metrics disabled")
+		}
+	}
+	if svc.Annotations["prometheus.io/scrape"] != "" {
+		t.Error("Replicas headless service should not carry scrape annotation when metrics disabled")
+	}
 }
 
 func TestBuildSentinelHeadlessService(t *testing.T) {
@@ -1004,9 +1091,26 @@ func TestBuildSentinelHeadlessService(t *testing.T) {
 		t.Errorf("Service ClusterIP = %q, want None", svc.Spec.ClusterIP)
 	}
 
-	// Check port
-	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 26379 {
+	// Check ports: sentinel + metrics (metrics default-on)
+	var hasSentinelPort, hasMetricsPort bool
+	for _, p := range svc.Spec.Ports {
+		switch {
+		case p.Name == ComponentSentinel && p.Port == 26379:
+			hasSentinelPort = true
+		case p.Name == portNameMetrics && p.Port == 9121:
+			hasMetricsPort = true
+		}
+	}
+	if !hasSentinelPort {
 		t.Error("Sentinel service should have port 26379")
+	}
+	if !hasMetricsPort {
+		t.Error("Sentinel service should expose metrics port 9121 when metrics enabled")
+	}
+
+	// Check Prometheus scrape annotations are present
+	if svc.Annotations["prometheus.io/scrape"] != "true" {
+		t.Error("Sentinel service missing prometheus.io/scrape annotation")
 	}
 }
 
@@ -1068,7 +1172,7 @@ func TestBuildServiceMonitorWithCustomLabels(t *testing.T) {
 
 func TestBuildExporterContainer(t *testing.T) {
 	lr := newTestLittleRed(testLRName, testNamespace)
-	container := buildExporterContainer(lr)
+	container := buildExporterContainer(lr, int32(littleredv1alpha1.RedisPort))
 
 	// Check name
 	if container.Name != "exporter" {
@@ -1110,7 +1214,7 @@ func TestBuildExporterContainer(t *testing.T) {
 func TestBuildExporterContainerWithTLS(t *testing.T) {
 	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.TLS.Enabled = true
-	container := buildExporterContainer(lr)
+	container := buildExporterContainer(lr, int32(littleredv1alpha1.RedisPort))
 
 	// Check REDIS_ADDR uses rediss://
 	var hasRedisAddr bool
