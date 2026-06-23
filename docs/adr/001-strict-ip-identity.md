@@ -128,5 +128,5 @@ If LittleRed eventually supports PersistentVolumes (PVCs), this decision **must 
 - **Logic Pivot**: The Operator will need an internal `IdentityMode` switch (derived from the `PersistenceEnabled` state) to toggle between IP-based and Hostname-based logic.
 
 ## References
-- `LLM_STARTUP.md` (Architectural Pillars)
+- `CLAUDE.md` (Architectural Pillars)
 - `docs/ARCHITECTURE.md` (Safe Bootstrap)
