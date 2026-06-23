@@ -30,6 +30,8 @@ import (
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 )
 
+const testNamespaceDefault = "default"
+
 var _ = Describe("LittleRed Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"
@@ -38,7 +40,7 @@ var _ = Describe("LittleRed Controller", func() {
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+			Namespace: testNamespaceDefault, // TODO(user):Modify as needed
 		}
 		littlered := &littleredv1alpha1.LittleRed{}
 
@@ -49,7 +51,7 @@ var _ = Describe("LittleRed Controller", func() {
 				resource := &littleredv1alpha1.LittleRed{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
-						Namespace: "default",
+						Namespace: testNamespaceDefault,
 					},
 					// TODO(user): Specify other spec details if needed.
 				}
@@ -79,6 +81,55 @@ var _ = Describe("LittleRed Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
+		})
+	})
+
+	// Mode-mismatch validation is enforced by CEL x-kubernetes-validations rules
+	// on the CRD, so it is rejected by the apiserver at admission time.
+	Context("When validating mode-specific spec blocks (issue #61)", func() {
+		ctx := context.Background()
+
+		newLR := func(name string) *littleredv1alpha1.LittleRed {
+			return &littleredv1alpha1.LittleRed{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespaceDefault},
+			}
+		}
+
+		It("rejects spec.cluster when mode is not cluster", func() {
+			lr := newLR("mismatch-cluster")
+			lr.Spec.Mode = ModeStandalone
+			lr.Spec.Cluster = &littleredv1alpha1.ClusterSpec{Shards: 3}
+
+			err := k8sClient.Create(ctx, lr)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.cluster may only be set when spec.mode is 'cluster'"))
+		})
+
+		It("rejects spec.sentinel when mode is not sentinel", func() {
+			lr := newLR("mismatch-sentinel")
+			lr.Spec.Mode = ModeStandalone
+			lr.Spec.Sentinel = &littleredv1alpha1.SentinelSpec{}
+
+			err := k8sClient.Create(ctx, lr)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("spec.sentinel may only be set when spec.mode is 'sentinel'"))
+		})
+
+		It("allows the matching mode-specific block", func() {
+			lr := newLR("match-cluster")
+			lr.Spec.Mode = ModeCluster
+			lr.Spec.Cluster = &littleredv1alpha1.ClusterSpec{Shards: 3}
+
+			Expect(k8sClient.Create(ctx, lr)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, lr)).To(Succeed())
+		})
+
+		It("allows a CR with no mode-specific block", func() {
+			lr := newLR("no-block")
+			lr.Spec.Mode = ModeStandalone
+
+			Expect(k8sClient.Create(ctx, lr)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, lr)).To(Succeed())
 		})
 	})
 })

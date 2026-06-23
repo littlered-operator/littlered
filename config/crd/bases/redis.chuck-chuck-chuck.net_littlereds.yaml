@@ -1931,6 +1931,11 @@ spec:
                     type: string
                 type: object
             type: object
+            x-kubernetes-validations:
+            - message: spec.cluster may only be set when spec.mode is 'cluster'
+              rule: self.mode == 'cluster' || !has(self.cluster)
+            - message: spec.sentinel may only be set when spec.mode is 'sentinel'
+              rule: self.mode == 'sentinel' || !has(self.sentinel)
           status:
             description: LittleRedStatus defines the observed state of LittleRed
             properties:
