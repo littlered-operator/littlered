@@ -27,6 +27,8 @@ import (
 )
 
 // LittleRedSpec defines the desired state of LittleRed
+// +kubebuilder:validation:XValidation:rule="self.mode == 'cluster' || !has(self.cluster)",message="spec.cluster may only be set when spec.mode is 'cluster'"
+// +kubebuilder:validation:XValidation:rule="self.mode == 'sentinel' || !has(self.sentinel)",message="spec.sentinel may only be set when spec.mode is 'sentinel'"
 type LittleRedSpec struct {
 	// Mode is the deployment mode: standalone, sentinel, or cluster
 	// +kubebuilder:validation:Enum=standalone;sentinel;cluster
