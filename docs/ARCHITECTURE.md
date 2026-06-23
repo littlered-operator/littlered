@@ -630,7 +630,7 @@ littlered/
 │       └── 004-tls-insecure-skip-verify.md
 ├── Makefile
 ├── go.mod
-└── LLM_STARTUP.md
+└── CLAUDE.md
 ```
 
 ---
@@ -666,4 +666,4 @@ littlered/
 - [ADR-003: Low-Interference Sentinel Reconciliation](adr/003-low-interference-sentinel-reconciliation.md)
 - [ADR-004: TLS InsecureSkipVerify](adr/004-tls-insecure-skip-verify.md)
 - [Reconciliation Algorithm Changelog](RECONCILIATION_ALGORITHM_CHANGELOG.md)
-- [LLM_STARTUP.md](../LLM_STARTUP.md) — condensed project overview for LLM onboarding
+- [CLAUDE.md](../CLAUDE.md) — condensed project overview for LLM onboarding

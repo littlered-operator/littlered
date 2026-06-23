@@ -221,4 +221,4 @@ See [SCOPE.md](SCOPE.md) for the full in/out of scope breakdown.
 - [Scope Definition](SCOPE.md)
 - [Reconciliation Algorithm Changelog](RECONCILIATION_ALGORITHM_CHANGELOG.md)
 - Architecture Decision Records: `docs/adr/`
-- [LLM Startup Guide](../LLM_STARTUP.md)
+- [LLM Startup Guide](../CLAUDE.md)
