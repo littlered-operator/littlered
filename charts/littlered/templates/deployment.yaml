@@ -39,9 +39,6 @@ spec:
             - --metrics-bind-address=:{{ .Values.metrics.port }}
             - --metrics-secure=false
             {{- end }}
-            {{- if .Values.podDisruptionBudget.create }}
-            - --pdb-create-default
-            {{- end }}
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false

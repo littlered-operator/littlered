@@ -415,6 +415,37 @@ spec:
 | `requeueIntervals.fast` | `Duration` | No | `2s` | Interval during init/recovery |
 | `requeueIntervals.steadyState` | `Duration` | No | `30s` | Interval when stable |
 
+### 2.14 PodDisruptionBudget
+
+A [PodDisruptionBudget](https://kubernetes.io/docs/concepts/workloads/pods/disruptions/) (PDB)
+protects the Redis pods from voluntary disruptions (node drains, rolling node
+upgrades). One is **created by default**; set `create: false` to opt out.
+
+```yaml
+spec:
+  podDisruptionBudget:
+    create: true               # Created by default; set false to opt out
+    maxUnavailable: 1          # Mutually exclusive with minAvailable
+    # minAvailable: 2          # Alternative to maxUnavailable
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `podDisruptionBudget.create` | `*bool` | No | `true` | Whether to create a PDB for the managed StatefulSet(s). In Sentinel mode, separate PDBs are created for the Redis and Sentinel StatefulSets. |
+| `podDisruptionBudget.maxUnavailable` | `IntOrString` | No | `1` | Max pods unavailable during a disruption. Mutually exclusive with `minAvailable`. |
+| `podDisruptionBudget.minAvailable` | `IntOrString` | No | — | Min pods that must stay available. Mutually exclusive with `maxUnavailable`. |
+
+When neither `maxUnavailable` nor `minAvailable` is set, the operator defaults to
+`maxUnavailable: 1`.
+
+> **Upgrade note:** the default flipped from `false` to `true`. Defaulting is
+> enforced by the CRD's OpenAPI schema, so the **new CRD must be applied** for the
+> new default to take effect. If you upgrade only the operator image and leave an
+> old CRD in place, instances that omit `create` keep the old behavior (no PDB) —
+> nothing fails, the feature is simply inert. Note that `helm upgrade` does **not**
+> upgrade CRDs in the chart's `crds/` directory, so Helm users must apply the CRD
+> manually. To disable the PDB after upgrading, set `create: false` explicitly.
+
 ---
 
 ## 3. Status Fields

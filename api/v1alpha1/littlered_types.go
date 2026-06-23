@@ -92,10 +92,11 @@ type LittleRedSpec struct {
 
 // PodDisruptionBudgetSpec defines whether a PodDisruptionBudget should be created
 type PodDisruptionBudgetSpec struct {
-	// Create controls whether a PodDisruptionBudget is created for the StatefulSet(s)
-	// +kubebuilder:default=false
+	// Create controls whether a PodDisruptionBudget is created for the StatefulSet(s).
+	// Defaults to true; set to false to opt out.
+	// +kubebuilder:default=true
 	// +optional
-	Create bool `json:"create,omitempty"`
+	Create *bool `json:"create,omitempty"`
 
 	// MaxUnavailable is the maximum number of pods that can be unavailable during a disruption.
 	// Mutually exclusive with MinAvailable.

@@ -1372,6 +1372,29 @@ func TestBuildPodDisruptionBudget(t *testing.T) {
 	}
 }
 
+func TestPdbEnabled(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	tests := []struct {
+		name   string
+		create *bool
+		want   bool
+	}{
+		{"nil defaults to enabled", nil, true},
+		{"explicit true", boolPtr(true), true},
+		{"explicit false opts out", boolPtr(false), false},
+	}
+	r := &LittleRedReconciler{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lr := newTestLittleRed(testLRName, testNamespace)
+			lr.Spec.PodDisruptionBudget.Create = tt.create
+			if got := r.pdbEnabled(lr); got != tt.want {
+				t.Errorf("pdbEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildPodDisruptionBudgetCustomValues(t *testing.T) {
 	t.Run("custom maxUnavailable", func(t *testing.T) {
 		lr := newTestLittleRed(testLRName, testNamespace)
