@@ -48,4 +48,7 @@ podDisruptionBudget:
   # PDBs for managed LittleRed instances are controlled per-CR via
   # spec.podDisruptionBudget (created by default; set create: false to opt out).
   create: false
+  # Set one of maxUnavailable / minAvailable (mutually exclusive).
+  # minAvailable takes precedence when set.
   maxUnavailable: 1
+  # minAvailable: 1
