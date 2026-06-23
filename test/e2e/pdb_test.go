@@ -37,6 +37,9 @@ import (
 	clik8s "github.com/littlered-operator/littlered-operator/internal/cli/k8s"
 )
 
+// pdbCreate returns a pointer to b for the *bool spec.podDisruptionBudget.create field.
+func pdbCreate(b bool) *bool { return &b }
+
 var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 	var k8sClient client.Client
 	ctx := context.Background()
@@ -111,10 +114,10 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 	}
 
 	// ============================================================================
-	// PDB disabled by default
+	// PDB opt-out (create=false)
 	// ============================================================================
 
-	Context("PDB disabled by default", func() {
+	Context("PDB opt-out (create=false)", func() {
 		type modeCase struct {
 			mode     string
 			pdbNames []string
@@ -142,7 +145,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			tc := tc
 			crName := fmt.Sprintf("pdb-off-%s", tc.mode)
 
-			It(fmt.Sprintf("should not create any PDB in %s mode when create is not set", tc.mode), func() {
+			It(fmt.Sprintf("should not create any PDB in %s mode when create is false", tc.mode), func() {
 				AddReportEntry("cr:" + crName)
 
 				var cr *littleredv1alpha1.LittleRed
@@ -154,7 +157,9 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 				case "cluster":
 					cr = newClusterCR(crName)
 				}
-				// Do not set PodDisruptionBudget — create defaults to false.
+				cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{
+					Create: pdbCreate(false),
+				}
 				Expect(k8sClient.Create(ctx, cr)).To(Succeed())
 				DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
 
@@ -172,10 +177,10 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 	})
 
 	// ============================================================================
-	// PDB enabled with default values
+	// PDB created by default (create unset)
 	// ============================================================================
 
-	Context("PDB enabled with default values", func() {
+	Context("PDB created by default", func() {
 		type modeCase struct {
 			mode     string
 			pdbNames []string
@@ -203,7 +208,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			tc := tc
 			crName := fmt.Sprintf("pdb-on-%s", tc.mode)
 
-			It(fmt.Sprintf("should create PDB(s) with maxUnavailable=1 in %s mode", tc.mode), func() {
+			It(fmt.Sprintf("should create PDB(s) with maxUnavailable=1 in %s mode when create is not set", tc.mode), func() {
 				AddReportEntry("cr:" + crName)
 
 				var cr *littleredv1alpha1.LittleRed
@@ -215,9 +220,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 				case "cluster":
 					cr = newClusterCR(crName)
 				}
-				cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{
-					Create: true,
-				}
+				// Do not set PodDisruptionBudget — create defaults to true (CRD default).
 				Expect(k8sClient.Create(ctx, cr)).To(Succeed())
 				DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
 
@@ -255,7 +258,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 
 			cr := newStandaloneCR(crName)
 			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{
-				Create:         true,
+				Create:         pdbCreate(true),
 				MaxUnavailable: &maxUnavailable,
 			}
 			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
@@ -281,7 +284,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 
 			cr := newStandaloneCR(crName)
 			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{
-				Create:       true,
+				Create:       pdbCreate(true),
 				MinAvailable: &minAvailable,
 			}
 			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
@@ -308,7 +311,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 
 			cr := newStandaloneCR(crName)
 			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{
-				Create:         true,
+				Create:         pdbCreate(true),
 				MinAvailable:   &minAvailable,
 				MaxUnavailable: &maxUnavailable,
 			}
@@ -335,7 +338,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 
 			cr := newStandaloneCR(crName)
 			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{
-				Create:         true,
+				Create:         pdbCreate(true),
 				MaxUnavailable: &maxUnavailable,
 			}
 			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
@@ -364,7 +367,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			pdbName := crName + "-redis-pdb"
 
 			cr := newStandaloneCR(crName)
-			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{Create: true}
+			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{Create: pdbCreate(true)}
 			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
 
@@ -384,7 +387,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 				current := &littleredv1alpha1.LittleRed{}
 				err := k8sClient.Get(ctx, types.NamespacedName{Name: crName, Namespace: testNamespace}, current)
 				g.Expect(err).NotTo(HaveOccurred())
-				current.Spec.PodDisruptionBudget.Create = false
+				current.Spec.PodDisruptionBudget.Create = pdbCreate(false)
 				g.Expect(k8sClient.Update(ctx, current)).To(Succeed())
 			}, 30*time.Second, 5*time.Second).Should(Succeed())
 
@@ -401,7 +404,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			pdbName := crName + "-redis-pdb"
 
 			cr := newStandaloneCR(crName)
-			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{Create: true}
+			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{Create: pdbCreate(true)}
 			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
 
@@ -437,7 +440,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			}
 
 			cr := newSentinelCR(crName)
-			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{Create: true}
+			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{Create: pdbCreate(true)}
 			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
 			// DeferCleanup as a safety net in case the test fails before the explicit delete.
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
