@@ -67,6 +67,8 @@ graph TD
 | `CLUSTER NODES` on each pod | Full topology: roles, slots, master-replica relationships, link state |
 | K8s pod list | Which NodeIDs have living pods (vs ghosts) |
 
+Probes run **concurrently** with a hard per-pod deadline (`ClusterProbeTimeout`) so a stale/dead pod IP (handed over by the K8s cache during churn) cannot serialize-block the gather and starve the reconcile loop of iterations. See LR-012.
+
 ### Partition Detection
 
 The operator builds an adjacency graph from each node's `CLUSTER NODES` output and runs BFS to find connected components. More than one component = partition.

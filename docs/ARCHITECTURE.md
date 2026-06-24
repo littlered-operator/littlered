@@ -435,6 +435,8 @@ A background goroutine per LittleRed CR subscribes to the Sentinel `+switch-mast
 
 On each reconcile, the operator queries every pod for `CLUSTER MYID`, `CLUSTER INFO`, and `CLUSTER NODES`. It builds a `ClusterGroundTruth` containing: node identities, slot assignments, role/replica relationships, partition detection (BFS on the adjacency graph), and ghost node detection (NodeIDs without living K8s pods).
 
+Pods are probed **concurrently**, and each probe carries a hard per-pod deadline (`ClusterProbeTimeout`). During pod churn the K8s pod cache can hand the operator a stale IP belonging to a deleted pod; without these two properties a single dead IP would block the whole gather (and thus the reconcile loop) on dial retries for ~25s, starving the loop of the iterations it needs to converge. See LR-012.
+
 ### 6.2 Repair Loop
 
 When the cluster is unhealthy, the operator runs a prioritized repair sequence:

@@ -81,18 +81,26 @@ func (g *operatorGatherer) GetSentinelState(ctx context.Context, podName, ip str
 }
 
 func (g *operatorGatherer) GetClusterID(ctx context.Context, podName, ip string) (string, error) {
+	// Hard per-probe deadline: a stale/dead pod IP must fail fast instead of
+	// blocking the gather (and thus the reconcile loop) on dial retries. See LR-012.
+	ctx, cancel := context.WithTimeout(ctx, redisclient.ClusterProbeTimeout)
+	defer cancel()
 	cc := redisclient.NewClusterClient(g.password, g.tlsEnabled)
 	addr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.RedisPort)
 	return cc.GetMyID(ctx, addr)
 }
 
 func (g *operatorGatherer) GetClusterInfo(ctx context.Context, podName, ip string) (*redisclient.ClusterInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, redisclient.ClusterProbeTimeout)
+	defer cancel()
 	cc := redisclient.NewClusterClient(g.password, g.tlsEnabled)
 	addr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.RedisPort)
 	return cc.GetClusterInfo(ctx, addr)
 }
 
 func (g *operatorGatherer) GetClusterNodes(ctx context.Context, podName, ip string) ([]redisclient.ClusterNodeInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, redisclient.ClusterProbeTimeout)
+	defer cancel()
 	cc := redisclient.NewClusterClient(g.password, g.tlsEnabled)
 	addr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.RedisPort)
 	return cc.GetClusterNodes(ctx, addr)

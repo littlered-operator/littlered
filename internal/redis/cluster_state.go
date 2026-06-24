@@ -16,7 +16,10 @@ limitations under the License.
 
 package redis
 
-const roleMaster = "master"
+const (
+	roleMaster  = "master"
+	roleReplica = "replica"
+)
 
 // ClusterNodeState represents the state of a single node in the Redis Cluster
 type ClusterNodeState struct {
@@ -135,7 +138,7 @@ func (gt *ClusterGroundTruth) HasEmptyMasters() bool {
 func (gt *ClusterGroundTruth) GetMastersWithReplicas() map[string][]string {
 	m := make(map[string][]string)
 	for _, n := range gt.Nodes {
-		if n.Role == "replica" && n.MasterNodeID != "-" {
+		if n.Role == roleReplica && n.MasterNodeID != "-" {
 			m[n.MasterNodeID] = append(m[n.MasterNodeID], n.NodeID)
 		}
 	}

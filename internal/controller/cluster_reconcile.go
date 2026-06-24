@@ -314,6 +314,11 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 			for _, ghostID := range ghostsToRemove {
 				auditLog.Info("Forgetting ghost node", "id", ghostID)
 				for _, node := range gt.Nodes {
+					// Only issue FORGET to live nodes; dialing an unreachable pod
+					// would block the loop on dial retries for no benefit (LR-012).
+					if !node.Reachable {
+						continue
+					}
 					addr := fmt.Sprintf("%s:%d", node.PodIP, littleredv1alpha1.RedisPort)
 					if err := clusterClient.ClusterForget(ctx, addr, ghostID); err != nil {
 						log.Info("Failed to forget node (might already be gone)", "node", addr, "ghost", ghostID, "error", err)
