@@ -418,7 +418,7 @@ The sentinel reconciler gathers ground truth from every Redis and Sentinel pod, 
 | Rule 0 | Sentinel reachable but not monitoring | SENTINEL MONITOR + settings |
 | Rule A | Pod terminating or failover active | Skip all healing |
 | Ghost Master | Sentinel points at ghost or wrong IP | SENTINEL REMOVE + MONITOR |
-| Ghost Replicas | Ghost IPs in s_down in replica list | SENTINEL RESET |
+| Ghost Replicas | Ghost IPs in s_down in replica list, **and cluster whole** (all Redis reachable) | SENTINEL RESET |
 | Rule R | Redis pod not following consensus master | SLAVEOF |
 
 See [RECONCILIATION_LOOP_SENTINEL.md](RECONCILIATION_LOOP_SENTINEL.md) for the full algorithm.
