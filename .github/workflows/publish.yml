@@ -112,23 +112,47 @@ jobs:
           done
           GOOS=windows GOARCH=amd64 go build -o dist/lrctl-windows-amd64.exe ./cmd/lrctl/main.go
 
+      - name: Build release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # Print the body of the CHANGELOG.md section whose heading starts with
+          # the literal prefix $1, stopping at the next "## " heading.
+          extract() {
+            awk -v prefix="$1" '
+              index($0, prefix) == 1 { capture = 1; next }
+              capture && /^## / { exit }
+              capture { print }
+            ' CHANGELOG.md
+          }
+          # Prefer the section for the exact released version, fall back to [Unreleased].
+          notes="$(extract "## [${version}]")"
+          printf '%s' "$notes" | grep -q '[^[:space:]]' || notes="$(extract '## [Unreleased]')"
+          : > release-notes.md
+          if printf '%s' "$notes" | grep -q '[^[:space:]]'; then
+            printf "## What's Changed\n%s\n\n" "$notes" >> release-notes.md
+          fi
+          cat >> release-notes.md <<'EOF'
+          ## Container Images
+
+          ```
+          ghcr.io/${{ github.repository_owner }}/littlered:${{ github.ref_name }}
+          ghcr.io/${{ github.repository_owner }}/littlered-chaos-client:${{ github.ref_name }}
+          ```
+
+          ## Helm Chart
+
+          ```
+          helm install littlered oci://ghcr.io/${{ github.repository_owner }}/charts/littlered --version ${{ github.ref_name }}
+          ```
+          EOF
+          echo "----- generated release notes -----"
+          cat release-notes.md
+
       - name: Upload to release
         uses: softprops/action-gh-release@v3
         with:
           files: dist/*
-          body: |
-            ## Container Images
-
-            ```
-            ghcr.io/${{ github.repository_owner }}/littlered:${{ github.ref_name }}
-            ghcr.io/${{ github.repository_owner }}/littlered-chaos-client:${{ github.ref_name }}
-            ```
-
-            ## Helm Chart
-
-            ```
-            helm install littlered oci://ghcr.io/${{ github.repository_owner }}/charts/littlered --version ${{ github.ref_name }}
-            ```
+          body_path: release-notes.md
 
   chart:
     name: Push Helm chart
