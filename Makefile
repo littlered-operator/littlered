@@ -355,7 +355,9 @@ GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 GO_LICENSES ?= $(LOCALBIN)/go-licenses
 
 ## Tool Versions
-CONTROLLER_TOOLS_VERSION ?= v0.20.0
+# Derived from the `tool` directives in go.mod so Dependabot's gomod ecosystem
+# keeps them up to date. Override on the command line if you need a specific one.
+CONTROLLER_TOOLS_VERSION ?= $(call gomodver,sigs.k8s.io/controller-tools)
 
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
 ENVTEST_VERSION ?= $(shell v='$(call gomodver,sigs.k8s.io/controller-runtime)'; \
@@ -367,8 +369,8 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   [ -n "$$v" ] || { echo "Set ENVTEST_K8S_VERSION manually (k8s.io/api replace has no tag)" >&2; exit 1; }; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
-GOLANGCI_LINT_VERSION ?= v2.7.2
-GO_LICENSES_VERSION ?= v1.6.0
+GOLANGCI_LINT_VERSION ?= $(call gomodver,github.com/golangci/golangci-lint/v2)
+GO_LICENSES_VERSION ?= $(call gomodver,github.com/google/go-licenses)
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
