@@ -56,6 +56,14 @@ const (
 	SentinelMasterName = "mymaster"
 	// DefaultTimeout for redis operations
 	DefaultTimeout = 5 * time.Second
+	// ClusterProbeTimeout bounds a single ground-truth probe (CLUSTER MYID/INFO/NODES)
+	// against one pod. Ground-truth gathering dials every expected pod IP, and during
+	// pod churn the K8s pod cache can hand us a stale IP belonging to a deleted pod.
+	// Without a hard per-probe deadline, go-redis spends ~25s (5 dial attempts ×
+	// DefaultTimeout) on each dead IP, serializing the whole reconcile loop behind it.
+	// A short deadline lets a dead IP fail fast while staying far above the sub-second
+	// response time of a live in-cluster node. See LR-012.
+	ClusterProbeTimeout = 3 * time.Second
 )
 
 // MasterInfo contains information about the current master
