@@ -123,6 +123,57 @@ func (s *SentinelClusterState) IsGhost(ip string) bool {
 	return !s.ValidIPs[ip]
 }
 
+// HasHealthyKnownReplica reports whether at least one monitoring sentinel knows a
+// replica that is neither a ghost nor s_down — i.e. a candidate Sentinel could
+// promote during a failover.
+func (s *SentinelClusterState) HasHealthyKnownReplica() bool {
+	for _, sn := range s.SentinelNodes {
+		if !sn.Reachable || !sn.Monitoring {
+			continue
+		}
+		for _, replica := range sn.Replicas {
+			if !s.IsGhost(replica.IP) && !strings.Contains(replica.Flags, "s_down") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// GhostReplicaResetSafe reports whether it is safe to issue a broadcast SENTINEL
+// RESET to prune ghost replica entries from the topology.
+//
+// SENTINEL RESET wipes Sentinel's ENTIRE replica list, which can only be rebuilt by
+// querying the current master's INFO (replicas never self-announce to Sentinel).
+// Issuing it while the cluster is missing a node — e.g. a RESET racing a master
+// crash — strands every sentinel with an o_down master and zero promotable
+// replicas: a permanent, non-self-healing failover deadlock (LR-013).
+//
+// It returns true only when ALL hold:
+//   - a ghost replica was actually observed (ghostFound);
+//   - the cluster is whole (clusterWhole): every expected Redis pod is reachable, so
+//     a RESET cannot strand us mid-disruption — this is the K8s-grounded guard that
+//     the snapshot-time healthyReplicas check (LR-011) missed during the race;
+//   - the consensus master is a living, reachable pod, not a ghost (LR-008);
+//   - at least one healthy replica is already known to Sentinel (LR-011), so Sentinel
+//     can recover from the RESET.
+//
+// When not whole we simply defer: the ghost entry is harmless and will be pruned on a
+// later reconcile once the cluster is whole again. Deferring a RESET never causes a
+// deadlock; issuing one at the wrong moment does.
+func (s *SentinelClusterState) GhostReplicaResetSafe(ghostFound, clusterWhole bool) bool {
+	if !ghostFound || !clusterWhole {
+		return false
+	}
+	if s.RealMasterIP == "" || s.IsGhost(s.RealMasterIP) {
+		return false
+	}
+	if m := s.RedisNodes[s.RealMasterIP]; m == nil || !m.Reachable {
+		return false
+	}
+	return s.HasHealthyKnownReplica()
+}
+
 // GetHealActions returns a list of recommended actions to fix the cluster state
 func (s *SentinelClusterState) GetHealActions() []string {
 	var actions []string
