@@ -1028,7 +1028,7 @@ func buildRedisStatefulSetSentinel(lr *littleredv1alpha1.LittleRed) *appsv1.Stat
 	maps.Copy(podAnnotations, lr.Spec.PodTemplate.Annotations)
 	podAnnotations[AnnotationConfigHash] = configHash
 
-	replicas := int32(3)
+	replicas := littleredv1alpha1.SentinelRedisReplicas
 
 	containers := []corev1.Container{buildRedisContainerSentinel(lr)}
 
