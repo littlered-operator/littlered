@@ -30,7 +30,7 @@ graph TD
     STSReady -- No --> WaitPods["Set Phase: Initializing<br/>Requeue @ fast"]
     STSReady -- Yes --> GatherGT["gatherGroundTruth<br/><i>Query CLUSTER INFO + CLUSTER NODES<br/>on every pod</i>"]
 
-    GatherGT --> HealthCheck{"Cluster healthy?<br/><i>all nodes known, 16384 slots,<br/>correct master count, no partitions</i>"}
+    GatherGT --> HealthCheck{"Cluster healthy?<br/><i>all nodes known, 16384 slots,<br/>correct master count, no partitions,<br/>no empty masters</i>"}
 
     HealthCheck -- Yes --> UpdateStatus["updateClusterStatus<br/><i>Phase: Running</i>"]
     HealthCheck -- No --> NeedsRepair{"Partitions? Ghosts?<br/>Orphaned slots?<br/>Empty masters?"}
@@ -156,9 +156,11 @@ The operator therefore blocks CLUSTER MEET while `HasOrphanedReplicas()` is true
 
 ### Step 4: Replication Repair
 
-**Trigger**: Master nodes with 0 slots and no replicas (empty masters) in a cluster that has `replicasPerShard > 0`.
+**Trigger**: Master nodes with 0 slots (empty masters) in a cluster that has `replicasPerShard > 0`. An empty master is the cold-start state of any restarted pod (pure in-memory, no `cluster-config-file` to persist its old identity), so this is the normal path back from a pod replacement.
 
 **Action**: Find a shard master that has fewer replicas than expected, and issue `CLUSTER REPLICATE <masterNodeID>` from the empty master.
+
+**Health gating (LR-014)**: An empty master makes the cluster **not healthy** (`IsHealthy` returns false), so the operator stays on the fast requeue cadence until the reattach completes. Otherwise the cluster would be declared `Running` with one shard under-replicated, dropping to the 30s steady cadence and stalling the reattach. The `CLUSTER REPLICATE` can transiently fail with `ERR Unknown node` when gossip has not yet propagated the target master's NodeID to the freshly-MEETed empty master; the fast cadence retries within ~2s once gossip converges.
 
 ### Step 5: Bootstrap
 
