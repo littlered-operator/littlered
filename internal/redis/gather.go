@@ -79,6 +79,9 @@ func GatherClusterGroundTruth(ctx context.Context, g Gatherer, clusterPods map[s
 
 	// 2. Query topology (CLUSTER INFO + NODES) from all reachable nodes and merge.
 	adj := gatherTopology(ctx, g, gt)
+	// Retain the per-node adjacency (who each node directly knows) so repair can
+	// gate CLUSTER REPLICATE on the empty master actually knowing its target.
+	gt.KnownNodes = adj
 
 	// Detect ghosts: NodeIDs seen in the mesh that have no backing pod.
 	for nodeID := range gt.AllNodeIDs {
