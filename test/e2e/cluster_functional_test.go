@@ -95,25 +95,34 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 				g.Expect(output).To(ContainSubstring("cluster_slots_assigned:16384"))
 			}, 1*time.Minute, 5*time.Second).Should(Succeed())
 
+			// Role flags propagate across the gossip bus a beat after the operator
+			// reattaches the last replica: CLUSTER REPLICATE flips a node's own role
+			// to slave instantly (so the operator's self-view gather declares Running),
+			// but a single node's CLUSTER NODES view can still show that replica as a
+			// master for ~1-2s while its sync completes and gossip converges. Poll
+			// until cluster-0's view reflects the settled topology, mirroring the
+			// cluster_state Eventually above.
 			By(fmt.Sprintf("verifying %d masters and %d replicas", clusterShards, clusterShards*clusterReplicasPerShard))
-			cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
-				"-n", testNamespace, "-c", "redis", "--",
-				"redis-cli", "CLUSTER", "NODES")
-			output, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			lines := strings.Split(strings.TrimSpace(output), "\n")
-			masterCount := 0
-			replicaCount := 0
-			for _, line := range lines {
-				if strings.Contains(line, "master") {
-					masterCount++
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
+					"-n", testNamespace, "-c", "redis", "--",
+					"redis-cli", "CLUSTER", "NODES")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				lines := strings.Split(strings.TrimSpace(output), "\n")
+				masterCount := 0
+				replicaCount := 0
+				for _, line := range lines {
+					if strings.Contains(line, "master") {
+						masterCount++
+					}
+					if strings.Contains(line, "slave") {
+						replicaCount++
+					}
 				}
-				if strings.Contains(line, "slave") {
-					replicaCount++
-				}
-			}
-			Expect(masterCount).To(Equal(clusterShards))
-			Expect(replicaCount).To(Equal(clusterShards * clusterReplicasPerShard))
+				g.Expect(masterCount).To(Equal(clusterShards))
+				g.Expect(replicaCount).To(Equal(clusterShards * clusterReplicasPerShard))
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		It("should store and retrieve data with redirection", func() {
