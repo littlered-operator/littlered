@@ -261,8 +261,10 @@ type ExporterSpec struct {
 	// +optional
 	Path string `json:"path,omitempty"`
 
-	// Tag is the image version tag
-	// +kubebuilder:default="v1.66.0"
+	// Tag is the image version tag.
+	// Keep in sync with redis-exporter.Dockerfile (the source Dependabot bumps);
+	// kubebuilder markers must be string literals so this cannot reference the const.
+	// +kubebuilder:default="v1.85.0"
 	// +optional
 	Tag string `json:"tag,omitempty"`
 
@@ -277,16 +279,16 @@ func (e *ExporterSpec) FullImage(mainRegistry string) string {
 	if registry == "" {
 		registry = mainRegistry
 		if registry == "" {
-			registry = "docker.io"
+			registry = DefaultRegistry
 		}
 	}
 	path := e.Path
 	if path == "" {
-		path = "oliver006/redis_exporter"
+		path = DefaultExporterPath
 	}
 	tag := e.Tag
 	if tag == "" {
-		tag = "v1.66.0"
+		tag = DefaultExporterTag
 	}
 	return fmt.Sprintf("%s/%s:%s", registry, path, tag)
 }
