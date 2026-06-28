@@ -418,7 +418,7 @@ The sentinel reconciler gathers ground truth from every Redis and Sentinel pod, 
 | Rule 0 | Sentinel reachable but not monitoring | SENTINEL MONITOR + settings |
 | Rule A | Pod terminating or failover active | Skip all healing |
 | Ghost Master | Sentinel points at ghost or wrong IP | SENTINEL REMOVE + MONITOR |
-| Ghost Replicas | Ghost IPs in s_down in replica list | SENTINEL RESET |
+| Ghost Replicas | Ghost IPs in s_down in replica list, **and cluster whole** (all Redis reachable) | SENTINEL RESET |
 | Rule R | Redis pod not following consensus master | SLAVEOF |
 
 See [RECONCILIATION_LOOP_SENTINEL.md](RECONCILIATION_LOOP_SENTINEL.md) for the full algorithm.
@@ -434,6 +434,8 @@ A background goroutine per LittleRed CR subscribes to the Sentinel `+switch-mast
 ### 6.1 Ground Truth Gathering
 
 On each reconcile, the operator queries every pod for `CLUSTER MYID`, `CLUSTER INFO`, and `CLUSTER NODES`. It builds a `ClusterGroundTruth` containing: node identities, slot assignments, role/replica relationships, partition detection (BFS on the adjacency graph), and ghost node detection (NodeIDs without living K8s pods).
+
+Pods are probed **concurrently**, and each probe carries a hard per-pod deadline (`ClusterProbeTimeout`). During pod churn the K8s pod cache can hand the operator a stale IP belonging to a deleted pod; without these two properties a single dead IP would block the whole gather (and thus the reconcile loop) on dial retries for ~25s, starving the loop of the iterations it needs to converge. See LR-012.
 
 ### 6.2 Repair Loop
 

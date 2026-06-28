@@ -314,6 +314,11 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 			for _, ghostID := range ghostsToRemove {
 				auditLog.Info("Forgetting ghost node", "id", ghostID)
 				for _, node := range gt.Nodes {
+					// Only issue FORGET to live nodes; dialing an unreachable pod
+					// would block the loop on dial retries for no benefit (LR-012).
+					if !node.Reachable {
+						continue
+					}
 					addr := fmt.Sprintf("%s:%d", node.PodIP, littleredv1alpha1.RedisPort)
 					if err := clusterClient.ClusterForget(ctx, addr, ghostID); err != nil {
 						log.Info("Failed to forget node (might already be gone)", "node", addr, "ghost", ghostID, "error", err)
@@ -444,6 +449,17 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 				}
 
 				if targetMaster != nil {
+					// CLUSTER REPLICATE is executed on the empty master and requires it
+					// to already know the target's NodeID; right after a CLUSTER MEET that
+					// knowledge may not have propagated yet, and the command would fail with
+					// "ERR Unknown node". Defer rather than issue a doomed command (pillar
+					// 3.5); IsHealthy keeps us on the fast cadence (LR-014), so the next loop
+					// retries within ~2s once gossip converges.
+					if !gt.NodeKnows(em.NodeID, targetMaster.NodeID) {
+						stateLog.Info("Empty master does not yet know its target master; deferring reattach until gossip converges",
+							"pod", em.PodName, "targetNodeID", targetMaster.NodeID)
+						continue
+					}
 					auditLog.Info("Assigning empty master as replica", "pod", em.PodName, "masterNodeID", targetMaster.NodeID)
 					addr := fmt.Sprintf("%s:%d", em.PodIP, littleredv1alpha1.RedisPort)
 					if err := clusterClient.ClusterReplicate(ctx, addr, targetMaster.NodeID); err != nil {

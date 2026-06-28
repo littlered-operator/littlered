@@ -50,6 +50,10 @@ const (
 	RedisExporterPort      = 9121
 	SentinelPort           = 26379
 
+	// SentinelRedisReplicas is the fixed number of Redis pods in sentinel mode
+	// (1 master + 2 replicas). Sentinel HA is not horizontally scalable.
+	SentinelRedisReplicas int32 = 3
+
 	// Requeue defaults
 	DefaultFastRequeueInterval        = 2 * time.Second
 	DefaultSteadyStateRequeueInterval = 30 * time.Second
