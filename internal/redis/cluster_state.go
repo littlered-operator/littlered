@@ -16,7 +16,12 @@ limitations under the License.
 
 package redis
 
-const roleMaster = "master"
+import "slices"
+
+const (
+	roleMaster  = "master"
+	roleReplica = "replica"
+)
 
 // ClusterNodeState represents the state of a single node in the Redis Cluster
 type ClusterNodeState struct {
@@ -38,6 +43,12 @@ type ClusterGroundTruth struct {
 	ClusterState string                       // "ok" if ANY node says ok, else "fail" or "unknown"
 	TotalSlots   int                          // Max slots assigned reported by any node
 	AllNodeIDs   map[string]bool              // Set of all NodeIDs seen in the mesh
+	// KnownNodes maps a reachable node's NodeID to the set of NodeIDs it directly
+	// knows in its own CLUSTER NODES view (excluding fail/noaddr/handshake). It is
+	// the same adjacency used to compute Partitions, retained so the operator can
+	// avoid issuing CLUSTER REPLICATE before gossip has propagated the target
+	// master's NodeID to the executing node (which returns ERR Unknown node).
+	KnownNodes map[string][]string
 }
 
 // NewClusterGroundTruth initializes a new cluster ground truth
@@ -59,6 +70,16 @@ func (gt *ClusterGroundTruth) IsHealthy(expectedNodes, expectedShards int32) boo
 		return false
 	}
 	if gt.CountMasters() != int(expectedShards) {
+		return false
+	}
+	// An empty master (a node that is a master with no slots) means a shard is
+	// under-replicated and a node is dead weight — not a healthy steady state.
+	// Reporting it as healthy lets updateClusterStatus declare Phase=Running and
+	// drop to the slow steady requeue cadence, which can stall the empty-master
+	// reattach (Step 4) past the e2e topology-sync window. Step 4 always has a
+	// reattach target while an empty master exists, so this clause is operator-
+	// actionable and cannot deadlock. See RECONCILIATION_ALGORITHM_CHANGELOG.md (LR-014).
+	if gt.HasEmptyMasters() {
 		return false
 	}
 	return gt.ClusterState == "ok" && gt.TotalSlots == 16384
@@ -132,10 +153,19 @@ func (gt *ClusterGroundTruth) HasEmptyMasters() bool {
 	return false
 }
 
+// NodeKnows reports whether the node identified by observerID directly knows
+// targetID in its own gossip view. Returns false when the observer's view was
+// not gathered (e.g. it was unreachable, or KnownNodes was never populated) —
+// the safe default for gating CLUSTER REPLICATE, which fails with ERR Unknown
+// node if the executing node does not yet know the target.
+func (gt *ClusterGroundTruth) NodeKnows(observerID, targetID string) bool {
+	return slices.Contains(gt.KnownNodes[observerID], targetID)
+}
+
 func (gt *ClusterGroundTruth) GetMastersWithReplicas() map[string][]string {
 	m := make(map[string][]string)
 	for _, n := range gt.Nodes {
-		if n.Role == "replica" && n.MasterNodeID != "-" {
+		if n.Role == roleReplica && n.MasterNodeID != "-" {
 			m[n.MasterNodeID] = append(m[n.MasterNodeID], n.NodeID)
 		}
 	}

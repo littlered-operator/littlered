@@ -65,9 +65,11 @@ graph TD
         GhostMaster -- No --> GhostReplica
 
         GhostReplica{"Ghost replicas in s_down?"}
-        GhostReplica -- Yes --> ReplicaCheck{"≥1 healthy replica<br/>known to Sentinel?"}
-        ReplicaCheck -- Yes --> Reset["SENTINEL RESET mymaster<br/><i>Master living + reachable + replicas known</i>"]
-        ReplicaCheck -- No --> SkipReset["Skip RESET, requeue<br/><i>Wait for Sentinel to re-learn replicas</i>"]
+        GhostReplica -- Yes --> WholeCheck{"Cluster whole?<br/>all Redis pods reachable"}
+        WholeCheck -- No --> SkipReset["Skip RESET, requeue<br/><i>Defer: RESET racing a node loss<br/>would strand failover (LR-013)</i>"]
+        WholeCheck -- Yes --> ReplicaCheck{"≥1 healthy replica<br/>known to Sentinel?"}
+        ReplicaCheck -- Yes --> Reset["SENTINEL RESET mymaster<br/><i>Whole + master living/reachable + replicas known</i>"]
+        ReplicaCheck -- No --> SkipReset
         GhostReplica -- No --> RuleR
 
         RuleR["Rule R: Replica Rescue<br/><i>Any non-master pod with role=master<br/>or following wrong master?<br/>→ SLAVEOF RealMasterIP</i>"]
@@ -151,11 +153,14 @@ The **ghost-majority guard** (LR-004) is critical: if most sentinels still point
 
 **Action**: `SENTINEL RESET mymaster` (broadcast to all sentinels via headless service).
 
-**Safety** (LR-001, LR-007, LR-008, LR-011): RESET is only issued when ALL of these hold:
-1. `RealMasterIP` is confirmed living and reachable
-2. At least 1 healthy (non-ghost, non-`s_down`) replica is known to Sentinel
+**Safety** (LR-001, LR-007, LR-008, LR-011, LR-013): RESET is only issued when ALL of these hold (encoded in the pure predicate `SentinelClusterState.GhostReplicaResetSafe`):
+1. The cluster is **whole** — every expected Redis pod (`SentinelRedisReplicas` = 3) is reachable
+2. `RealMasterIP` is confirmed living and reachable
+3. At least 1 healthy (non-ghost, non-`s_down`) replica is known to Sentinel
 
-Condition 2 (LR-011) prevents a race after failover: RESET wipes Sentinel's entire replica list. If issued before Sentinel re-discovers the surviving replicas (which takes a few seconds after `+switch-master`), the next failover attempt fails with `-failover-abort-no-good-slave`. The operator logs a skip and retries on the next reconcile cycle, giving Sentinel time to re-learn the topology.
+Conditions 2–3 (LR-011) prevent a race after failover: RESET wipes Sentinel's entire replica list. If issued before Sentinel re-discovers the surviving replicas (which takes a few seconds after `+switch-master`), the next failover attempt fails with `-failover-abort-no-good-slave`.
+
+Condition 1 (LR-013) closes the gap that 2–3 missed: a **force-deleted master** (`--grace-period=0`) *vanishes* rather than *terminates*, so the snapshot can still show it reachable with healthy replicas while the cluster is actually down a node. Issuing RESET then strands every sentinel with an `o_down` master and an empty, un-rebuildable replica list (replicas are only learned via the master's `INFO`) — a permanent deadlock. The wholeness check is K8s-grounded and computed from ground truth already gathered each loop, so it costs no extra requests. Deferring the RESET while not whole is always safe: the ghost entry is harmless and is pruned once the cluster is whole again. The operator logs a skip and retries on the next reconcile cycle.
 
 ### Rule R: Replica Rescue (LR-009, LR-010)
 
