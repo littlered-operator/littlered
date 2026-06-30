@@ -391,11 +391,12 @@ func (r *LittleRedReconciler) pdbEnabled(littleRed *littleredv1alpha1.LittleRed)
 	return create == nil || *create
 }
 
-// reconcilePodDisruptionBudget creates or deletes the PDB for standalone mode based on spec.
+// reconcilePodDisruptionBudget ensures no PodDisruptionBudget exists for standalone mode.
+// Standalone runs a single Redis pod; a PDB over a single-pod workload is counter-productive
+// (it can only ever block node drains, never protect availability), so we never create one
+// regardless of spec.podDisruptionBudget.create. The deletion handles upgrades from earlier
+// versions that created a standalone PDB. See PR #92.
 func (r *LittleRedReconciler) reconcilePodDisruptionBudget(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	if r.pdbEnabled(littleRed) {
-		return r.apply(ctx, littleRed, buildPodDisruptionBudget(littleRed))
-	}
 	return r.deleteIfExists(ctx, littleRed, &policyv1.PodDisruptionBudget{}, podDisruptionBudgetName(littleRed))
 }
 

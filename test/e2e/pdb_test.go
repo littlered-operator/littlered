@@ -114,6 +114,66 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 	}
 
 	// ============================================================================
+	// Single-pod workloads never get a PDB (PR #92)
+	// ============================================================================
+	//
+	// A PodDisruptionBudget over a single-pod workload is counter-productive: it can
+	// only ever block node drains, never protect availability. The operator therefore
+	// never creates one for standalone mode or for a cluster with no replicas per
+	// shard, regardless of spec.podDisruptionBudget.create.
+
+	Context("Single-pod workloads", func() {
+		It("should never create a PDB in standalone mode, even when create=true", func() {
+			crName := "pdb-standalone-none"
+			pdbName := crName + "-redis-pdb"
+
+			cr := newStandaloneCR(crName)
+			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{Create: pdbCreate(true)}
+			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
+
+			By("waiting for CR to be Running to ensure at least one full reconciliation")
+			waitForRunning(crName, 2*time.Minute)
+
+			By("verifying no PDB is created for the single standalone pod")
+			Consistently(func(g Gomega) {
+				_, found, err := getPDB(pdbName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(found).To(BeFalse(), "standalone is a single pod and must not get a PDB")
+			}, 15*time.Second, 5*time.Second).Should(Succeed())
+		})
+
+		It("should never create a PDB in cluster mode with replicasPerShard=0", func() {
+			crName := "pdb-cluster-zero"
+			pdbName := crName + "-cluster-pdb"
+
+			zero := 0
+			cr := &littleredv1alpha1.LittleRed{
+				ObjectMeta: metav1.ObjectMeta{Name: crName, Namespace: testNamespace},
+				Spec: littleredv1alpha1.LittleRedSpec{
+					Mode: "cluster",
+					Cluster: &littleredv1alpha1.ClusterSpec{
+						Shards:           clusterShards,
+						ReplicasPerShard: &zero,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
+
+			By("waiting for CR to be Running")
+			waitForRunning(crName, 5*time.Minute)
+
+			By("verifying no PDB is created when shards have no replicas")
+			Consistently(func(g Gomega) {
+				_, found, err := getPDB(pdbName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(found).To(BeFalse(), "a cluster with no replicas has no redundancy and must not get a PDB")
+			}, 15*time.Second, 5*time.Second).Should(Succeed())
+		})
+	})
+
+	// ============================================================================
 	// PDB opt-out (create=false)
 	// ============================================================================
 
@@ -124,11 +184,6 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			timeout  time.Duration
 		}
 		cases := []modeCase{
-			{
-				mode:     "standalone",
-				pdbNames: []string{"pdb-off-standalone-redis-pdb"},
-				timeout:  2 * time.Minute,
-			},
 			{
 				mode:     "sentinel",
 				pdbNames: []string{"pdb-off-sentinel-redis-pdb", "pdb-off-sentinel-sentinel-pdb"},
@@ -150,8 +205,6 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 
 				var cr *littleredv1alpha1.LittleRed
 				switch tc.mode {
-				case "standalone":
-					cr = newStandaloneCR(crName)
 				case "sentinel":
 					cr = newSentinelCR(crName)
 				case "cluster":
@@ -177,7 +230,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 	})
 
 	// ============================================================================
-	// PDB created by default (create unset)
+	// PDB created by default (create unset) for redundant modes
 	// ============================================================================
 
 	Context("PDB created by default", func() {
@@ -187,11 +240,6 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			timeout  time.Duration
 		}
 		cases := []modeCase{
-			{
-				mode:     "standalone",
-				pdbNames: []string{"pdb-on-standalone-redis-pdb"},
-				timeout:  2 * time.Minute,
-			},
 			{
 				mode:     "sentinel",
 				pdbNames: []string{"pdb-on-sentinel-redis-pdb", "pdb-on-sentinel-sentinel-pdb"},
@@ -213,8 +261,6 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 
 				var cr *littleredv1alpha1.LittleRed
 				switch tc.mode {
-				case "standalone":
-					cr = newStandaloneCR(crName)
 				case "sentinel":
 					cr = newSentinelCR(crName)
 				case "cluster":
@@ -256,7 +302,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			pdbName := crName + "-redis-pdb"
 			maxUnavailable := intstr.FromInt32(2)
 
-			cr := newStandaloneCR(crName)
+			cr := newSentinelCR(crName)
 			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{
 				Create:         pdbCreate(true),
 				MaxUnavailable: &maxUnavailable,
@@ -265,7 +311,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
 
 			By("waiting for CR to be Running")
-			waitForRunning(crName, 2*time.Minute)
+			waitForRunning(crName, 3*time.Minute)
 
 			By("verifying PDB has maxUnavailable=2")
 			Eventually(func(g Gomega) {
@@ -282,7 +328,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			pdbName := crName + "-redis-pdb"
 			minAvailable := intstr.FromInt32(1)
 
-			cr := newStandaloneCR(crName)
+			cr := newSentinelCR(crName)
 			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{
 				Create:       pdbCreate(true),
 				MinAvailable: &minAvailable,
@@ -291,7 +337,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
 
 			By("waiting for CR to be Running")
-			waitForRunning(crName, 2*time.Minute)
+			waitForRunning(crName, 3*time.Minute)
 
 			By("verifying PDB has minAvailable=1 and no maxUnavailable")
 			Eventually(func(g Gomega) {
@@ -309,7 +355,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			minAvailable := intstr.FromInt32(2)
 			maxUnavailable := intstr.FromInt32(1)
 
-			cr := newStandaloneCR(crName)
+			cr := newSentinelCR(crName)
 			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{
 				Create:         pdbCreate(true),
 				MinAvailable:   &minAvailable,
@@ -319,7 +365,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
 
 			By("waiting for CR to be Running")
-			waitForRunning(crName, 2*time.Minute)
+			waitForRunning(crName, 3*time.Minute)
 
 			By("verifying PDB uses minAvailable=2 and ignores maxUnavailable")
 			Eventually(func(g Gomega) {
@@ -336,7 +382,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			pdbName := crName + "-redis-pdb"
 			maxUnavailable := intstr.FromString("50%")
 
-			cr := newStandaloneCR(crName)
+			cr := newSentinelCR(crName)
 			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{
 				Create:         pdbCreate(true),
 				MaxUnavailable: &maxUnavailable,
@@ -345,7 +391,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
 
 			By("waiting for CR to be Running")
-			waitForRunning(crName, 2*time.Minute)
+			waitForRunning(crName, 3*time.Minute)
 
 			By("verifying PDB has maxUnavailable=50%")
 			Eventually(func(g Gomega) {
@@ -366,13 +412,13 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			crName := "pdb-toggle-off"
 			pdbName := crName + "-redis-pdb"
 
-			cr := newStandaloneCR(crName)
+			cr := newSentinelCR(crName)
 			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{Create: pdbCreate(true)}
 			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
 
 			By("waiting for CR to be Running")
-			waitForRunning(crName, 2*time.Minute)
+			waitForRunning(crName, 3*time.Minute)
 
 			By("waiting for PDB to exist")
 			Eventually(func(g Gomega) {
@@ -403,13 +449,13 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			crName := "pdb-self-heal"
 			pdbName := crName + "-redis-pdb"
 
-			cr := newStandaloneCR(crName)
+			cr := newSentinelCR(crName)
 			cr.Spec.PodDisruptionBudget = littleredv1alpha1.PodDisruptionBudgetSpec{Create: pdbCreate(true)}
 			Expect(k8sClient.Create(ctx, cr)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, cr) })
 
 			By("waiting for CR to be Running")
-			waitForRunning(crName, 2*time.Minute)
+			waitForRunning(crName, 3*time.Minute)
 
 			By("waiting for PDB to exist")
 			Eventually(func(g Gomega) {

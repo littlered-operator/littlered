@@ -775,9 +775,21 @@ func (r *LittleRedReconciler) reconcileClusterClientService(ctx context.Context,
 }
 
 // reconcileClusterPDB creates or deletes the PDB for the cluster StatefulSet based on spec.
+// A PDB is only created when the cluster has redundancy (replicasPerShard >= 1). With
+// replicasPerShard == 0 every pod is the sole owner of its slots, so a PDB cannot protect
+// availability without blocking node drains — we never create one in that case.
 func (r *LittleRedReconciler) reconcileClusterPDB(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	if r.pdbEnabled(littleRed) {
+	if r.pdbEnabled(littleRed) && clusterHasReplicas(littleRed) {
 		return r.apply(ctx, littleRed, buildClusterPDB(littleRed))
 	}
 	return r.deleteIfExists(ctx, littleRed, &policyv1.PodDisruptionBudget{}, clusterPodDisruptionBudgetName(littleRed))
+}
+
+// clusterHasReplicas reports whether cluster mode runs with at least one replica per shard.
+// The CRD default for replicasPerShard is 1, so a nil spec is treated as redundant.
+func clusterHasReplicas(lr *littleredv1alpha1.LittleRed) bool {
+	if lr.Spec.Cluster == nil || lr.Spec.Cluster.ReplicasPerShard == nil {
+		return true
+	}
+	return *lr.Spec.Cluster.ReplicasPerShard > 0
 }
