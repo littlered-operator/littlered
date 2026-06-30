@@ -296,9 +296,10 @@ spec:
                 description: PodDisruptionBudget defines PodDisruptionBudget settings
                 properties:
                   create:
-                    default: false
-                    description: Create controls whether a PodDisruptionBudget is
-                      created for the StatefulSet(s)
+                    default: true
+                    description: |-
+                      Create controls whether a PodDisruptionBudget is created for the StatefulSet(s).
+                      Defaults to true; set to false to opt out.
                     type: boolean
                   maxUnavailable:
                     anyOf:

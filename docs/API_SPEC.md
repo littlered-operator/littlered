@@ -415,6 +415,50 @@ spec:
 | `requeueIntervals.fast` | `Duration` | No | `2s` | Interval during init/recovery |
 | `requeueIntervals.steadyState` | `Duration` | No | `30s` | Interval when stable |
 
+### 2.14 PodDisruptionBudget
+
+A [PodDisruptionBudget](https://kubernetes.io/docs/concepts/workloads/pods/disruptions/) (PDB)
+protects the Redis pods from voluntary disruptions (node drains, rolling node
+upgrades). It is **created by default for redundant deployments**; set
+`create: false` to opt out.
+
+A PDB is only meaningful when there is redundancy. A PDB over a single-pod
+workload is counter-productive — it can only ever block node drains, never protect
+availability — so the operator **never creates one** for such deployments,
+regardless of `create`:
+
+| Mode | PDB? |
+|------|------|
+| `standalone` (1 pod) | ❌ never |
+| `sentinel` (1 master + 2 replicas, 3 sentinels) | ✅ |
+| `cluster`, `replicasPerShard ≥ 1` | ✅ |
+| `cluster`, `replicasPerShard = 0` (single pod per shard) | ❌ never |
+
+```yaml
+spec:
+  podDisruptionBudget:
+    create: true               # Created by default for redundant modes; set false to opt out
+    maxUnavailable: 1          # Mutually exclusive with minAvailable
+    # minAvailable: 2          # Alternative to maxUnavailable
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `podDisruptionBudget.create` | `*bool` | No | `true` | Whether to create a PDB for the managed StatefulSet(s). Ignored (no PDB created) for single-pod deployments — `standalone` mode and `cluster` mode with `replicasPerShard: 0`. In Sentinel mode, separate PDBs are created for the Redis and Sentinel StatefulSets. |
+| `podDisruptionBudget.maxUnavailable` | `IntOrString` | No | `1` | Max pods unavailable during a disruption. Mutually exclusive with `minAvailable`. |
+| `podDisruptionBudget.minAvailable` | `IntOrString` | No | — | Min pods that must stay available. Mutually exclusive with `maxUnavailable`. |
+
+When neither `maxUnavailable` nor `minAvailable` is set, the operator defaults to
+`maxUnavailable: 1`.
+
+> **Upgrade note:** the default flipped from `false` to `true`. Defaulting is
+> enforced by the CRD's OpenAPI schema, so the **new CRD must be applied** for the
+> new default to take effect. If you upgrade only the operator image and leave an
+> old CRD in place, instances that omit `create` keep the old behavior (no PDB) —
+> nothing fails, the feature is simply inert. Note that `helm upgrade` does **not**
+> upgrade CRDs in the chart's `crds/` directory, so Helm users must apply the CRD
+> manually. To disable the PDB after upgrading, set `create: false` explicitly.
+
 ---
 
 ## 3. Status Fields

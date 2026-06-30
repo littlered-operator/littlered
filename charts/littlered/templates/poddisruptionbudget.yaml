@@ -1,4 +1,11 @@
-{{- if .Values.podDisruptionBudget.create }}
+{{- /*
+A PodDisruptionBudget over a single-pod workload is counter-productive: it can only
+ever block node drains, never protect availability. The operator Deployment runs a
+single replica by default, so its own PDB is only rendered when running with
+redundancy (replicas > 1). This mirrors the rule the operator applies to the
+managed Redis instances it creates (spec.podDisruptionBudget).
+*/}}
+{{- if and .Values.podDisruptionBudget.create (gt (int .Values.replicas) 1) }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -7,8 +14,11 @@ metadata:
   labels:
     {{- include "littlered.labels" . | nindent 4 }}
 spec:
+  {{- if .Values.podDisruptionBudget.minAvailable }}
   minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
-  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  {{- else }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable | default 1 }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "littlered.selectorLabels" . | nindent 6 }}

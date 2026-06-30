@@ -2476,24 +2476,6 @@ func pdbSpec(lr *littleredv1alpha1.LittleRed) (maxUnavailable, minAvailable *int
 	return &defaultMax, nil
 }
 
-func buildPodDisruptionBudget(lr *littleredv1alpha1.LittleRed) *policyv1.PodDisruptionBudget {
-	maxUnavailable, minAvailable := pdbSpec(lr)
-	return &policyv1.PodDisruptionBudget{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podDisruptionBudgetName(lr),
-			Namespace: lr.Namespace,
-			Labels:    commonLabels(lr),
-		},
-		Spec: policyv1.PodDisruptionBudgetSpec{
-			MaxUnavailable: maxUnavailable,
-			MinAvailable:   minAvailable,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: redisSelectorLabels(lr),
-			},
-		},
-	}
-}
-
 func buildSentinelRedisPDB(lr *littleredv1alpha1.LittleRed) *policyv1.PodDisruptionBudget {
 	maxUnavailable, minAvailable := pdbSpec(lr)
 	return &policyv1.PodDisruptionBudget{
