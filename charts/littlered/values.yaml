@@ -44,9 +44,13 @@ networkPolicy:
   enabled: false
 
 podDisruptionBudget:
-  # Creates a PodDisruptionBudget for the operator deployment itself.
-  # PDBs for managed LittleRed instances are controlled per-CR via
-  # spec.podDisruptionBudget (created by default; set create: false to opt out).
+  # Controls the PodDisruptionBudget for the OPERATOR Deployment itself only.
+  # PDBs for managed LittleRed instances are a separate concern, controlled per-CR
+  # via spec.podDisruptionBudget (created by default; set create: false to opt out).
+  #
+  # A PDB is only rendered when create is true AND replicas > 1: over a single
+  # operator pod a PDB is counter-productive (it can only block node drains, never
+  # protect availability), so it is suppressed regardless of create.
   create: false
   # Set one of maxUnavailable / minAvailable (mutually exclusive).
   # minAvailable takes precedence when set.
