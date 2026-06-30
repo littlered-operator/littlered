@@ -419,19 +419,32 @@ spec:
 
 A [PodDisruptionBudget](https://kubernetes.io/docs/concepts/workloads/pods/disruptions/) (PDB)
 protects the Redis pods from voluntary disruptions (node drains, rolling node
-upgrades). One is **created by default**; set `create: false` to opt out.
+upgrades). It is **created by default for redundant deployments**; set
+`create: false` to opt out.
+
+A PDB is only meaningful when there is redundancy. A PDB over a single-pod
+workload is counter-productive — it can only ever block node drains, never protect
+availability — so the operator **never creates one** for such deployments,
+regardless of `create`:
+
+| Mode | PDB? |
+|------|------|
+| `standalone` (1 pod) | ❌ never |
+| `sentinel` (1 master + 2 replicas, 3 sentinels) | ✅ |
+| `cluster`, `replicasPerShard ≥ 1` | ✅ |
+| `cluster`, `replicasPerShard = 0` (single pod per shard) | ❌ never |
 
 ```yaml
 spec:
   podDisruptionBudget:
-    create: true               # Created by default; set false to opt out
+    create: true               # Created by default for redundant modes; set false to opt out
     maxUnavailable: 1          # Mutually exclusive with minAvailable
     # minAvailable: 2          # Alternative to maxUnavailable
 ```
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `podDisruptionBudget.create` | `*bool` | No | `true` | Whether to create a PDB for the managed StatefulSet(s). In Sentinel mode, separate PDBs are created for the Redis and Sentinel StatefulSets. |
+| `podDisruptionBudget.create` | `*bool` | No | `true` | Whether to create a PDB for the managed StatefulSet(s). Ignored (no PDB created) for single-pod deployments — `standalone` mode and `cluster` mode with `replicasPerShard: 0`. In Sentinel mode, separate PDBs are created for the Redis and Sentinel StatefulSets. |
 | `podDisruptionBudget.maxUnavailable` | `IntOrString` | No | `1` | Max pods unavailable during a disruption. Mutually exclusive with `minAvailable`. |
 | `podDisruptionBudget.minAvailable` | `IntOrString` | No | — | Min pods that must stay available. Mutually exclusive with `maxUnavailable`. |
 
