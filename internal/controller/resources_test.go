@@ -1342,64 +1342,51 @@ func TestPDBSpec(t *testing.T) {
 	}
 }
 
-func TestBuildPodDisruptionBudget(t *testing.T) {
-	lr := newTestLittleRed(testLRName, testNamespace)
-	pdb := buildPodDisruptionBudget(lr)
-
-	if pdb.Name != testPDBName {
-		t.Errorf("PDB name = %q, want %q", pdb.Name, testPDBName)
+func TestPdbEnabled(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	tests := []struct {
+		name   string
+		create *bool
+		want   bool
+	}{
+		{"nil defaults to enabled", nil, true},
+		{"explicit true", boolPtr(true), true},
+		{"explicit false opts out", boolPtr(false), false},
 	}
-	if pdb.Namespace != testNamespace {
-		t.Errorf("PDB namespace = %q, want %q", pdb.Namespace, testNamespace)
-	}
-
-	// Default: maxUnavailable=1
-	if pdb.Spec.MaxUnavailable == nil {
-		t.Fatal("PDB MaxUnavailable should be set by default")
-	}
-	if *pdb.Spec.MaxUnavailable != intstr.FromInt32(1) {
-		t.Errorf("PDB MaxUnavailable = %v, want 1", *pdb.Spec.MaxUnavailable)
-	}
-	if pdb.Spec.MinAvailable != nil {
-		t.Error("PDB MinAvailable should not be set by default")
-	}
-
-	if pdb.Spec.Selector.MatchLabels["app.kubernetes.io/component"] != ComponentRedis {
-		t.Error("PDB selector should have component=redis")
-	}
-	if pdb.Spec.Selector.MatchLabels["app.kubernetes.io/instance"] != testLRName {
-		t.Errorf("PDB selector instance = %q, want %q", pdb.Spec.Selector.MatchLabels["app.kubernetes.io/instance"], testLRName)
+	r := &LittleRedReconciler{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lr := newTestLittleRed(testLRName, testNamespace)
+			lr.Spec.PodDisruptionBudget.Create = tt.create
+			if got := r.pdbEnabled(lr); got != tt.want {
+				t.Errorf("pdbEnabled() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
-func TestBuildPodDisruptionBudgetCustomValues(t *testing.T) {
-	t.Run("custom maxUnavailable", func(t *testing.T) {
-		lr := newTestLittleRed(testLRName, testNamespace)
-		v := intstr.FromInt32(2)
-		lr.Spec.PodDisruptionBudget.MaxUnavailable = &v
-		pdb := buildPodDisruptionBudget(lr)
-
-		if pdb.Spec.MaxUnavailable == nil || *pdb.Spec.MaxUnavailable != intstr.FromInt32(2) {
-			t.Errorf("PDB MaxUnavailable = %v, want 2", pdb.Spec.MaxUnavailable)
-		}
-		if pdb.Spec.MinAvailable != nil {
-			t.Error("PDB MinAvailable should not be set")
-		}
-	})
-
-	t.Run("custom minAvailable", func(t *testing.T) {
-		lr := newTestLittleRed(testLRName, testNamespace)
-		v := intstr.FromInt32(2)
-		lr.Spec.PodDisruptionBudget.MinAvailable = &v
-		pdb := buildPodDisruptionBudget(lr)
-
-		if pdb.Spec.MinAvailable == nil || *pdb.Spec.MinAvailable != intstr.FromInt32(2) {
-			t.Errorf("PDB MinAvailable = %v, want 2", pdb.Spec.MinAvailable)
-		}
-		if pdb.Spec.MaxUnavailable != nil {
-			t.Error("PDB MaxUnavailable should not be set when minAvailable is specified")
-		}
-	})
+func TestClusterHasReplicas(t *testing.T) {
+	intPtr := func(i int) *int { return &i }
+	tests := []struct {
+		name    string
+		cluster *littleredv1alpha1.ClusterSpec
+		want    bool
+	}{
+		{"nil cluster defaults to redundant", nil, true},
+		{"nil replicasPerShard defaults to redundant", &littleredv1alpha1.ClusterSpec{Shards: 3}, true},
+		{"replicasPerShard 0 has no redundancy", &littleredv1alpha1.ClusterSpec{Shards: 3, ReplicasPerShard: intPtr(0)}, false},
+		{"replicasPerShard 1 is redundant", &littleredv1alpha1.ClusterSpec{Shards: 3, ReplicasPerShard: intPtr(1)}, true},
+		{"replicasPerShard 2 is redundant", &littleredv1alpha1.ClusterSpec{Shards: 3, ReplicasPerShard: intPtr(2)}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lr := newTestLittleRed(testLRName, testNamespace)
+			lr.Spec.Cluster = tt.cluster
+			if got := clusterHasReplicas(lr); got != tt.want {
+				t.Errorf("clusterHasReplicas() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestBuildSentinelRedisPDB(t *testing.T) {

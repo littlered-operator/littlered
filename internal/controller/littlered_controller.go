@@ -91,10 +91,6 @@ type LittleRedReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	// PDBCreateDefault is the operator-level default for PDB creation.
-	// When true, PDBs are created for all LittleRed instances unless the CR explicitly disables it.
-	PDBCreateDefault bool
-
 	// Sentinel monitoring
 	sentinelEvents chan event.GenericEvent
 	monitors       map[types.NamespacedName]func()
@@ -388,16 +384,19 @@ func (r *LittleRedReconciler) reconcileServiceMonitor(ctx context.Context, littl
 }
 
 // pdbEnabled returns true if PDB creation should be active for the given LittleRed CR.
-// The CR setting and the operator-level default are OR'd: either one being true enables PDB.
+// spec.podDisruptionBudget.create is a *bool defaulted to true by the CRD; a nil value
+// (e.g. a CR created against an older CRD that lacked the default) is treated as enabled.
 func (r *LittleRedReconciler) pdbEnabled(littleRed *littleredv1alpha1.LittleRed) bool {
-	return littleRed.Spec.PodDisruptionBudget.Create || r.PDBCreateDefault
+	create := littleRed.Spec.PodDisruptionBudget.Create
+	return create == nil || *create
 }
 
-// reconcilePodDisruptionBudget creates or deletes the PDB for standalone mode based on spec.
+// reconcilePodDisruptionBudget ensures no PodDisruptionBudget exists for standalone mode.
+// Standalone runs a single Redis pod; a PDB over a single-pod workload is counter-productive
+// (it can only ever block node drains, never protect availability), so we never create one
+// regardless of spec.podDisruptionBudget.create. The deletion handles upgrades from earlier
+// versions that created a standalone PDB. See PR #92.
 func (r *LittleRedReconciler) reconcilePodDisruptionBudget(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	if r.pdbEnabled(littleRed) {
-		return r.apply(ctx, littleRed, buildPodDisruptionBudget(littleRed))
-	}
 	return r.deleteIfExists(ctx, littleRed, &policyv1.PodDisruptionBudget{}, podDisruptionBudgetName(littleRed))
 }
 
