@@ -17,7 +17,9 @@ limitations under the License.
 package v1alpha1
 
 import (
+	_ "embed"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,8 +38,6 @@ const (
 	DefaultTCPKeepalive    = 300
 	DefaultServiceType     = corev1.ServiceTypeClusterIP
 	DefaultUpdateStrategy  = "RollingUpdate"
-	DefaultExporterPath    = "oliver006/redis_exporter"
-	DefaultExporterTag     = "v1.66.0"
 	DefaultScrapeInterval  = "30s"
 	DefaultScrapeTimeout   = "10s"
 	DefaultSentinelQuorum  = 2
@@ -66,6 +66,55 @@ const (
 	ClusterBusPortOffset       = 10000
 	ClusterBusPort             = RedisPort + ClusterBusPortOffset // 16379
 )
+
+// redis-exporter.Dockerfile is the single source of truth for the default
+// redis_exporter sidecar image. Dependabot's docker ecosystem bumps the FROM
+// line there; the values below are parsed from it at init time so a Dependabot
+// PR is all that's needed to update the default version.
+//
+//go:embed redis-exporter.Dockerfile
+var redisExporterDockerfile string
+
+// DefaultExporterPath and DefaultExporterTag are parsed from
+// redis-exporter.Dockerfile. Keep the kubebuilder default marker on
+// ExporterSpec.Tag in sync (it must be a string literal); TestExporterDefaultsMatchDockerfile guards against drift.
+var DefaultExporterPath, DefaultExporterTag = parseExporterImage(redisExporterDockerfile)
+
+// parseExporterImage extracts the image path (without registry host) and tag
+// from the first FROM line of the embedded Dockerfile. It panics on a malformed
+// reference, surfacing the problem at startup/test time rather than shipping a
+// broken default.
+func parseExporterImage(dockerfile string) (path, tag string) {
+	var ref string
+	for line := range strings.SplitSeq(dockerfile, "\n") {
+		line = strings.TrimSpace(line)
+		if rest, ok := strings.CutPrefix(line, "FROM "); ok {
+			ref = strings.TrimSpace(rest)
+			break
+		}
+	}
+
+	// Split off the tag: the last ':' that comes after the last '/'.
+	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
+		tag = ref[i+1:]
+		ref = ref[:i]
+	}
+
+	// Strip the registry host. The first path segment is a registry if it
+	// contains a '.' or ':' (or is "localhost"); otherwise the registry is
+	// implicit and handled separately via ExporterSpec.Registry inheritance.
+	if i := strings.Index(ref, "/"); i >= 0 {
+		if first := ref[:i]; strings.ContainsAny(first, ".:") || first == "localhost" {
+			ref = ref[i+1:]
+		}
+	}
+	path = ref
+
+	if path == "" || tag == "" {
+		panic(fmt.Sprintf("redis-exporter.Dockerfile: could not parse image path/tag from FROM line %q", ref))
+	}
+	return path, tag
+}
 
 // SetDefaults applies default values to the LittleRed spec
 func (r *LittleRed) SetDefaults() {
