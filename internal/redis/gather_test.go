@@ -96,7 +96,7 @@ func twoMasterOneReplicaGossip() []ClusterNodeInfo {
 		{NodeID: "m1", Flags: []string{roleMaster}, MasterID: "-", Slots: []string{"0-8191"}},
 		{NodeID: "m2", Flags: []string{roleMaster}, MasterID: "-", Slots: []string{"8192-16383"}},
 		{NodeID: "r1", Flags: []string{flagSlave}, MasterID: "m1"},
-		{NodeID: "ghost", Flags: []string{roleMaster, "fail"}, MasterID: "-"},
+		{NodeID: "ghost", Flags: []string{roleMaster, flagFail}, MasterID: "-"},
 	}
 }
 
