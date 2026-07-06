@@ -30,7 +30,7 @@
 - [x] Full redis.conf override capability
 - [x] Prometheus metrics (redis_exporter sidecar)
 - [x] Configurable resources (CPU/memory)
-- [x] Guaranteed QoS by default (requests = limits)
+- [x] Burstable QoS by default (memory limit = request, no CPU limit)
 - [x] CR status reporting
 
 ### MVP (Sentinel) ✅

@@ -106,13 +106,16 @@ spec:
       tcp-keepalive 300
       hz 10
 
-  # Resources (limits always equal requests for Guaranteed QoS)
+  # Resources: memory limit == request; a CPU request but no CPU limit (Burstable QoS).
+  # Redis's CPU use is bounded by its thread count (main thread + io-threads), so
+  # size the request to that budget. A CPU limit has no upside — it can only throttle
+  # Redis under load, cascading into latency and downstream timeouts. Add one only if
+  # your platform mandates Guaranteed QoS.
   resources:
     requests:
       cpu: "500m"
       memory: "1Gi"
     limits:
-      cpu: "500m"
       memory: "1Gi"
 
   # Authentication

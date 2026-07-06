@@ -67,7 +67,7 @@ kubectl lr verify my-store
 
 - **Three deployment modes**: `standalone` (single pod), `sentinel` (1 master + 2 replicas monitored by 3 sentinels for automatic failover), and `cluster` (sharded Redis Cluster for horizontal scaling).
 - **Redis 8.4.2 by default**, compatible with Redis 7.2+.
-- **Burstable QoS by default**: memory limits equal requests (preventing OOM surprises), no CPU limit (allowing bursting). Set explicit CPU limits if you need Guaranteed QoS.
+- **Burstable QoS by default**: memory limit equals request (preventing OOM surprises); a CPU *request* but no CPU *limit*. Redis's CPU use is bounded by its thread count, so a limit can only throttle it under load — size the request to the thread budget instead. Set an explicit CPU limit only if you need Guaranteed QoS.
 - **`noeviction` by default**: memory exhaustion returns an error rather than silently dropping data. Explicitly configure a different policy if you need eviction semantics.
 - **Security**: password authentication and TLS encryption, both via Kubernetes Secrets.
 - **Observability**: `redis_exporter` sidecar included by default, with optional `ServiceMonitor` for Prometheus.

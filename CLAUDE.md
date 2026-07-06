@@ -47,8 +47,8 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 - **Instruction**: Avoid calling the project "optimized for caching" to prevent users from assuming a default LRU/LFU policy. It is a general-purpose in-memory store.
 
 ### 3.3 Resource Defaults
-- **Decision**: Memory `limits` equal `requests` by default (preventing OOM surprises). No CPU limit by default (allowing bursting). Users can set explicit CPU limits for Guaranteed QoS if needed.
-- **Rationale**: Redis is single-threaded for commands; a CPU limit just throttles without benefit. Memory must be bounded to protect the node.
+- **Decision**: Memory `limits` equal `requests` by default (preventing OOM surprises). No CPU limit by default. Set the CPU *request* to match the instance's thread budget; users can add an explicit CPU limit for Guaranteed QoS if their platform requires it.
+- **Rationale**: Redis's CPU consumption is **bounded by its thread count**, not unbounded — command execution runs on a single main thread, plus a configurable set of `io-threads` for socket reads/writes and protocol parsing (the `io-threads` count *includes* the main thread; since Redis 6.0 it offloads I/O, and Redis 8 always threads both reads and writes when `io-threads > 1` — `io-threads-do-reads` is obsolete there — but command execution stays single-threaded). Because Redis can't exceed its thread budget, a CPU *limit* has no upside: it can only throttle Redis under load, which turns into rising latency, request pile-up, and cascading timeouts in dependent services. Size the CPU *request* to the thread budget instead. Memory must still be bounded to protect the node.
 
 ### 3.4 Kubernetes as "Source of Truth"
 - **Decision**: For Cluster mode, the operator uses the Kubernetes Pod list to detect "ghost" nodes.

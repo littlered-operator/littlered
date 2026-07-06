@@ -163,8 +163,7 @@ spec:
       cpu: "500m"
       memory: "1Gi"
     limits:
-      cpu: "500m"
-      memory: "1Gi"
+      memory: "1Gi"     # memory limit == request; no CPU limit (Burstable QoS)
 ```
 
 | Field | Type | Required | Default | Description |
@@ -180,6 +179,8 @@ resources:
   limits:
     memory: "512Mi"
 ```
+
+**QoS convention**: LittleRed sets a memory limit equal to the memory request and deliberately omits the CPU limit, placing pods in the **Burstable** QoS class. Redis's CPU consumption is *bounded by its thread count* — one main thread for command execution, plus (if `io-threads` is enabled) a fixed number of I/O threads for socket reads/writes and protocol parsing, the count of which includes the main thread. Redis therefore never uses more CPU than its threads occupy. Size the CPU *request* to that thread budget so the scheduler reserves those cores. Do not set a CPU *limit*: Redis can't exceed its thread budget anyway, so a limit can only throttle it under load, turning into latency spikes, request pile-up, and downstream timeouts. Set an explicit CPU limit only if your platform mandates the Guaranteed QoS class.
 
 **Behavior**: If `config.maxmemory` is not set, the operator auto-calculates it as ~90% of `resources.limits.memory` to leave headroom for Redis overhead (buffers, connections, etc.). User can always override with explicit value.
 
@@ -237,10 +238,9 @@ spec:
       resources:
         requests:
           cpu: "50m"
-          memory: "32Mi"
-        limits:
-          cpu: "100m"
           memory: "64Mi"
+        limits:
+          memory: "64Mi"    # memory limit == request; no CPU limit
     serviceMonitor:
       enabled: false            # Create ServiceMonitor CR
       namespace: ""             # Override namespace (default: same as CR)
@@ -346,7 +346,7 @@ Only applicable when `mode: sentinel`:
 ```yaml
 spec:
   sentinel:
-    quorum: 2                   # Sentinel quorum for failover
+    quorum: 2                   # Sentinels needed to agree on failure (default: 2)
     downAfterMilliseconds: 30000  # Time before marking master down
     failoverTimeout: 180000     # Failover timeout
     parallelSyncs: 1            # Replicas to sync in parallel
@@ -357,8 +357,7 @@ spec:
         cpu: "100m"
         memory: "64Mi"
       limits:
-        cpu: "100m"
-        memory: "64Mi"
+        memory: "64Mi"    # memory limit == request; no CPU limit
 ```
 
 | Field | Type | Required | Default | Description |
@@ -609,8 +608,7 @@ spec:
       cpu: "1"
       memory: "2Gi"
     limits:
-      cpu: "1"
-      memory: "2Gi"
+      memory: "2Gi"     # memory limit == request; no CPU limit (Burstable QoS)
   config:
     maxmemoryPolicy: allkeys-lfu
 ```
@@ -707,8 +705,7 @@ spec:
       cpu: "500m"
       memory: "1Gi"
     limits:
-      cpu: "500m"
-      memory: "1Gi"
+      memory: "1Gi"     # memory limit == request; no CPU limit (Burstable QoS)
 
   config:
     maxmemory: "900Mi"
@@ -784,13 +781,16 @@ spec:
     registry: docker.io
     # Uses default path (library/redis) and tag (8.4.2)
 
+  podDisruptionBudget:
+    create: true
+    maxUnavailable: 1
+
   resources:
     requests:
       cpu: "1"
       memory: "4Gi"
     limits:
-      cpu: "1"
-      memory: "4Gi"
+      memory: "4Gi"     # memory limit == request; no CPU limit (Burstable QoS)
 
   config:
     maxmemory: "3500Mi"
@@ -801,7 +801,7 @@ spec:
     existingSecret: redis-password
 
   sentinel:
-    quorum: 2
+    # quorum defaults to 2 — only set it if you need a different value
     downAfterMilliseconds: 5000
     failoverTimeout: 60000
     resources:
@@ -809,8 +809,7 @@ spec:
         cpu: "100m"
         memory: "128Mi"
       limits:
-        cpu: "100m"
-        memory: "128Mi"
+        memory: "128Mi"   # memory limit == request; no CPU limit
 
   metrics:
     enabled: true
@@ -863,8 +862,7 @@ spec:
       cpu: "1"
       memory: "2Gi"
     limits:
-      cpu: "1"
-      memory: "2Gi"
+      memory: "2Gi"     # memory limit == request; no CPU limit (Burstable QoS)
 
   config:
     maxmemory: "1800Mi"

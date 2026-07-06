@@ -461,16 +461,58 @@ spec:
 
   resources:
     requests:
-      cpu: "500m"
+      cpu: "500m"       # CPU request only — set a request, not a limit
       memory: "1Gi"
     limits:
-      cpu: "500m"
-      memory: "1Gi"
+      memory: "1Gi"     # memory limit == request; no CPU limit (Burstable QoS)
 
   config:
     maxmemory: "900Mi"
     maxmemoryPolicy: noeviction
 ```
+
+> **Why a CPU request but no CPU limit?** Redis's CPU usage is *bounded by its
+> thread count*, not unbounded. Command execution runs on a single main thread;
+> enabling `io-threads` adds a fixed number of I/O threads for socket
+> reads/writes and protocol parsing (the `io-threads` count *includes* the main
+> thread). So Redis will only ever saturate the cores its threads occupy —
+> never more. Size the CPU **request** to that thread budget so the scheduler
+> reserves the cores Redis can actually use, and set a memory limit equal to the
+> memory request to bound the node (Burstable QoS).
+>
+> A CPU **limit**, by contrast, has no upside. Redis can't exceed its thread
+> budget regardless, so a limit can only *throttle* it under load — and a
+> throttled Redis just produces rising latency, piled-up requests, and client
+> timeouts that cascade into every service that depends on it. Nobody benefits
+> from that. Set an explicit CPU limit only if your platform mandates the
+> Guaranteed QoS class.
+>
+> If you enable `io-threads` for higher throughput, raise the CPU request to
+> match (e.g. `io-threads: 3` → request ~3–4 CPUs). On Redis 8, `io-threads`
+> threads both reads and writes automatically — the old `io-threads-do-reads`
+> setting is obsolete.
+
+### With a PodDisruptionBudget
+
+A PodDisruptionBudget (PDB) protects a multi-pod instance from losing too many
+pods at once during voluntary disruptions (node drains, upgrades). PDB creation
+is opt-in; enable it for any HA instance (sentinel or cluster):
+
+```yaml
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
+kind: LittleRed
+metadata:
+  name: store
+spec:
+  mode: sentinel
+  podDisruptionBudget:
+    create: true
+    maxUnavailable: 1   # or set minAvailable instead — the two are mutually exclusive
+```
+
+> PDBs only make sense for instances with more than one pod. Do not enable one
+> for a standalone instance or a cluster with `replicasPerShard: 0` — a
+> single-pod PDB would block node drains entirely.
 
 ### With authentication
 
@@ -523,13 +565,16 @@ metadata:
 spec:
   mode: sentinel
 
+  podDisruptionBudget:
+    create: true
+    maxUnavailable: 1
+
   resources:
     requests:
       cpu: "1"
       memory: "2Gi"
     limits:
-      cpu: "1"
-      memory: "2Gi"
+      memory: "2Gi"     # memory limit == request; no CPU limit (Burstable QoS)
 
   config:
     maxmemory: "1800Mi"
@@ -547,7 +592,7 @@ spec:
         release: prometheus
 
   sentinel:
-    quorum: 2
+    # quorum defaults to 2 — only set it if you need a different value
     downAfterMilliseconds: 5000
     failoverTimeout: 60000
 
@@ -576,13 +621,16 @@ spec:
     replicasPerShard: 1
     clusterNodeTimeout: 15000
 
+  podDisruptionBudget:
+    create: true
+    maxUnavailable: 1
+
   resources:
     requests:
       cpu: "1"
       memory: "2Gi"
     limits:
-      cpu: "1"
-      memory: "2Gi"
+      memory: "2Gi"     # memory limit == request; no CPU limit (Burstable QoS)
 
   config:
     maxmemory: "1800Mi"
@@ -719,10 +767,9 @@ spec:
   resources:
     requests:
       cpu: "500m"
-      memory: "512Mi"
-    limits:
-      cpu: "1000m"
       memory: "1Gi"
+    limits:
+      memory: "1Gi"     # memory limit == request; no CPU limit (Burstable QoS)
 ```
 
 **Rollout timeline for this config:**
@@ -744,6 +791,76 @@ The `should maintain data integrity during rolling restart` test verifies:
 - 0 data corruptions
 - ≥95% read availability during rollout
 - All slots remain assigned (cluster_slots_assigned:16384)
+
+---
+
+## High-Throughput Tuning (I/O threads)
+
+By default Redis runs its network I/O on the main thread. On a busy instance
+that main thread can become the bottleneck long before memory or the network
+does. Enabling **I/O threads** lets Redis offload socket reads, writes, and
+protocol parsing to additional threads, while command execution stays on the
+main thread (so atomicity is preserved). This is a *vertical* throughput lever
+and is independent of mode — it applies to standalone, sentinel, and cluster
+instances alike.
+
+Enable it via `config.raw` and size the CPU **request** to match the thread
+count:
+
+```yaml
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
+kind: LittleRed
+metadata:
+  name: store
+spec:
+  mode: cluster
+  cluster:
+    shards: 3
+    replicasPerShard: 1
+
+  resources:
+    requests:
+      cpu: "4"          # ~ io-threads budget (incl. main) + 1 spare core
+      memory: "8Gi"
+    limits:
+      memory: "8Gi"     # memory limit == request; deliberately NO CPU limit
+
+  config:
+    maxmemory: "6gb"    # leave headroom below the memory limit
+    raw: |-
+      # I/O threads: offload socket reads/writes + protocol parsing.
+      # The count INCLUDES the main thread, so "3" = main + 2 helpers.
+      # Redis docs suggest (cores - 1); leave at least one spare core.
+      io-threads 3
+
+      # Accept-queue depth for bursty connection storms (default 511). The
+      # kernel caps this at net.core.somaxconn, so raising it only helps if the
+      # node's sysctl is also raised; otherwise the effective backlog is
+      # somaxconn. Cheap to set, so a higher ceiling is "free".
+      tcp-backlog 4096
+```
+
+**Sizing rule of thumb:**
+
+| `io-threads` | Threads doing I/O (incl. main) | Suggested CPU request |
+|--------------|-------------------------------|-----------------------|
+| unset / `1`  | 1 (main only)                 | ~1 (the default `128m`–`1` range) |
+| `3`          | 3                             | ~3–4 (thread budget + a spare core) |
+| `7`          | 7                             | ~7–8 |
+
+> **Why no CPU limit here either?** The whole point of I/O threads is to let
+> Redis saturate the cores you've given it under peak load. A CPU limit would
+> throttle exactly the workload you enabled threading for — turning a
+> throughput win into latency and timeouts. Set the CPU *request* to the thread
+> budget so the scheduler reserves those cores, and leave the limit off.
+
+**Version note:** On Redis 8+, enabling `io-threads` threads both reads and
+writes automatically. The Redis 6.x/7.x `io-threads-do-reads` toggle is obsolete
+on Redis 8 and should be omitted — reads are always threaded when `io-threads > 1`.
+
+**When to reach for this:** only when an instance is actually CPU-bound on
+network I/O (high ops/sec, large values, or TLS). For most instances the
+single-threaded default is faster to reason about and wastes no reserved cores.
 
 ---
 

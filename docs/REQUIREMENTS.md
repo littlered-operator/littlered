@@ -94,7 +94,7 @@ spec:
 
 | Aspect | Approach |
 |--------|----------|
-| **Defaults** | Performance-optimized: noeviction, no persistence, Guaranteed QoS |
+| **Defaults** | Performance-optimized: noeviction, no persistence, Burstable QoS (no CPU limit) |
 | **Override** | Full redis.conf override via `spec.config.raw` |
 | **Explicit Config** | Key settings exposed as CRD fields (maxmemory, maxmemoryPolicy) |
 | **Safety** | Persistence actively disabled (`save ""`, `appendonly no`) |
@@ -165,7 +165,7 @@ spec:
 ## 5. Non-Functional Requirements
 
 ### 5.1 Performance
-- Guaranteed QoS class by default (requests = limits)
+- Burstable QoS class by default (memory limit = request, no CPU limit); Guaranteed available by setting an explicit CPU limit
 - No persistence overhead
 - No unnecessary reconciliation (GenerationChangedPredicate)
 
