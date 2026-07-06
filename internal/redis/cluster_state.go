@@ -21,6 +21,9 @@ import "slices"
 const (
 	roleMaster  = "master"
 	roleReplica = "replica"
+
+	// flagFail is the CLUSTER NODES gossip flag marking a node as failed.
+	flagFail = "fail"
 )
 
 // ClusterNodeState represents the state of a single node in the Redis Cluster

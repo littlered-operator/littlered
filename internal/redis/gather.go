@@ -214,7 +214,7 @@ func probeNodeTopology(ctx context.Context, g Gatherer, n *ClusterNodeState) *to
 
 		isFailed := false
 		for _, f := range knownNode.Flags {
-			if f == "fail" || f == "noaddr" || f == "handshake" {
+			if f == flagFail || f == "noaddr" || f == "handshake" {
 				isFailed = true
 			}
 		}
