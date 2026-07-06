@@ -237,7 +237,8 @@ func probeNodeTopology(ctx context.Context, g Gatherer, n *ClusterNodeState) *to
 // computePartitions groups live nodes into connected components over the adjacency
 // graph built from each node's CLUSTER NODES view.
 func computePartitions(nodeIDtoPod map[string]string, adj map[string][]string) [][]string {
-	var partitions [][]string
+	// At most one partition per node (fully disconnected graph).
+	partitions := make([][]string, 0, len(nodeIDtoPod))
 	visited := make(map[string]bool)
 	for id := range nodeIDtoPod {
 		if visited[id] {
