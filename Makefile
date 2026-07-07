@@ -15,6 +15,11 @@ CHAOS_CLIENT_IMAGE ?= $(LITTLERED_REGISTRY)/littlered-chaos-client:$(GIT_TAG)
 # Operator image
 OPERATOR_IMAGE ?= $(LITTLERED_REGISTRY)/littlered:$(GIT_TAG)
 
+# IMG is the canonical kubebuilder knob for the operator image. It defaults to
+# OPERATOR_IMAGE; override it (e.g. `make docker-build docker-push deploy IMG=...`)
+# to point the build/deploy at a different registry or tag.
+IMG ?= $(OPERATOR_IMAGE)
+
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
@@ -26,7 +31,7 @@ endif
 # Be aware that the target commands are only tested with Docker which is
 # scaffolded by default. However, you might want to replace it to use other
 # tools. (i.e. podman)
-CONTAINER_TOOL ?= podman
+CONTAINER_TOOL ?= docker
 HELM ?= helm
 SKOPEO ?= skopeo
 
@@ -230,6 +235,17 @@ helm-package: manifests ## Package the Helm chart into dist/ with the current ve
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/littlered/main.go
 
+.PHONY: docker-build
+docker-build: ## Build the operator image (override registry/tag with IMG=).
+	$(CONTAINER_TOOL) build -t $(IMG) -f cmd/littlered/Dockerfile .
+
+.PHONY: docker-push
+docker-push: ## Push the operator image (override with IMG=).
+	$(CONTAINER_TOOL) push $(IMG)
+
+# The project ships two images (operator + chaos client used by e2e). The
+# `images`/`build-images`/`push-images` targets below build/push the whole set;
+# the canonical `docker-build`/`docker-push` above cover just the operator image.
 BUILD_TARGETS = $(addsuffix .build_image,$(IMAGES))
 PUSH_TARGETS  = $(addsuffix .push_image,$(IMAGES))
 
@@ -254,19 +270,19 @@ $(PUSH_TARGETS): %.push_image:
 	$(CONTAINER_TOOL) push $(LITTLERED_REGISTRY)/$*:$(GIT_TAG)
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
-# architectures. (i.e. make img-buildx OPERATOR_IMAGE=myregistry/mypoperator:0.0.1). To use this option you need to:
+# architectures. (i.e. make docker-buildx IMG=myregistry/littlered:0.0.1). To use this option you need to:
 # - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
 # - have enabled BuildKit. More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 # - be able to push the image to your registry (i.e. if you do not set a valid value via OPERATOR_IMAGE=<myregistry/image:<tag>> then the export will fail)
 # To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
 PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
-.PHONY: img-buildx
-img-buildx: ## Build and push container image for the manager for cross-platform support
+.PHONY: docker-buildx
+docker-buildx: ## Build and push the operator image for cross-platform support (override with IMG=).
 	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
 	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' cmd/littlered/Dockerfile > Dockerfile.cross
 	- $(CONTAINER_TOOL) buildx create --name littlered-builder
 	$(CONTAINER_TOOL) buildx use littlered-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${OPERATOR_IMAGE} -f Dockerfile.cross .
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag $(IMG) -f Dockerfile.cross .
 	- $(CONTAINER_TOOL) buildx rm littlered-builder
 	rm Dockerfile.cross
 
@@ -288,17 +304,30 @@ KUBECTL_CTX_FLAGS := --context $(KUBECONTEXT)
 HELM_CTX_FLAGS := --kube-context $(KUBECONTEXT)
 endif
 
-.PHONY: deploy
-deploy: manifests
+# Split IMG into repository and tag on the LAST ':' so registries with a port
+# (host:5000/littlered:tag) are handled correctly. Fed to the Helm chart's
+# image.repository / image.tag values by the deploy target.
+IMG_REPOSITORY = $(shell printf '%s' '$(IMG)' | sed 's/:[^:/]*$$//')
+IMG_TAG        = $(shell printf '%s' '$(IMG)' | sed 's/.*://')
+
+.PHONY: install
+install: manifests ## Install CRDs into the cluster.
 	kubectl $(KUBECTL_CTX_FLAGS) apply -f charts/littlered/crds/
+
+.PHONY: uninstall
+uninstall: ## Uninstall CRDs from the cluster (use ignore-not-found=true to ignore missing).
+	kubectl $(KUBECTL_CTX_FLAGS) delete -f charts/littlered/crds/ --ignore-not-found=$(ignore-not-found)
+
+.PHONY: deploy
+deploy: install ## Deploy the operator to the cluster via Helm (override image with IMG=).
 	helm $(HELM_CTX_FLAGS) upgrade --install littlered ./charts/littlered \
 		-n littlered-system --create-namespace \
-		--set image.repository=$(LITTLERED_REGISTRY)/littlered \
-		--set image.tag=$(GIT_TAG) \
+		--set image.repository=$(IMG_REPOSITORY) \
+		--set image.tag=$(IMG_TAG) \
 		--set image.pullPolicy=$(PULL_POLICY)
 
 .PHONY: undeploy
-undeploy:
+undeploy: ## Uninstall the operator's Helm release from the cluster.
 	-helm $(HELM_CTX_FLAGS) uninstall -n littlered-system littlered 2>/dev/null
 
 .PHONY: helm-push
@@ -329,14 +358,14 @@ redeploy-all: undeploy ## Full reset: uninstall helm chart, delete CRDs, and dep
 	$(MAKE) deploy KUBECONTEXT=$(KUBECONTEXT)
 
 .PHONY: pipeline
-pipeline: images deploy install
+pipeline: images deploy install-lrctl
 
-.PHONY: install
-install: lrctl ## Install lrctl binary to /usr/local/bin.
+.PHONY: install-lrctl
+install-lrctl: lrctl ## Install the lrctl binary to /usr/local/bin.
 	sudo install -o root -g root -m 0755 bin/lrctl /usr/local/bin/lrctl
 
 .PHONY: install-plugin
-install-plugin: install ## Install lrctl as a kubectl plugin (requires kubectl).
+install-plugin: install-lrctl ## Install lrctl as a kubectl plugin (requires kubectl).
 	@sudo ln -sf /usr/local/bin/lrctl /usr/local/bin/kubectl-lr
 	@sudo ln -sf /usr/local/bin/lrctl /usr/local/bin/kubectl_complete-lr
 	@echo "Plugin installed: you can now use 'kubectl lr ...' with shell completion."

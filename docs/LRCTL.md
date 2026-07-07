@@ -13,7 +13,7 @@ make lrctl
 ```
 The binary will be created in `bin/lrctl`. To install it globally:
 ```bash
-make install
+make install-lrctl
 ```
 
 ### Use as a kubectl plugin

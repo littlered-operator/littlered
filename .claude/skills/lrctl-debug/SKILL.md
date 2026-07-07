@@ -15,7 +15,7 @@ When debugging, **do not** hand-roll `kubectl exec ... redis-cli` loops to disco
 topology. `lrctl` already gathers operator-side ground truth and cross-checks it.
 Reach for it first.
 
-`lrctl` is on PATH (installed via `make install`). If it's missing, build it:
+`lrctl` is on PATH (installed via `make install-lrctl`). If it's missing, build it:
 `make lrctl` → `./bin/lrctl`. It's also a kubectl plugin (`kubectl lr ...`) after
 `make install-plugin`.
 

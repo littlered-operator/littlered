@@ -156,16 +156,16 @@ Tests use **Ginkgo + Gomega** (BDD style). Check `suite_test.go` for setup.
 # 1. Regenerate manifests
 make manifests generate
 
-# 2. Build & deploy
-export IMG=<registry>/<project>:tag
-make img-build img-push IMG=$IMG  # Or: kind load docker-image $IMG --name <cluster>
+# 2. Build & push the operator image, then deploy via Helm
+export IMG=<registry>/littlered:tag
+make docker-build docker-push IMG=$IMG   # or: make build-images && make kind-load
 make deploy IMG=$IMG
 
-# 3. Test
+# 3. Try a sample
 kubectl apply -k config/samples/
 
 # 4. Debug
-kubectl logs -n <project>-system deployment/<project>-controller-manager -c manager -f
+kubectl logs -n littlered-system -l app.kubernetes.io/name=littlered -c manager -f
 ```
 
 ### API Design
