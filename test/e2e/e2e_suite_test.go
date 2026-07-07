@@ -162,6 +162,23 @@ var _ = BeforeSuite(func() {
 	_, err = utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "Failed to create test namespace %q", testNamespace)
 
+	// The kill-9 chaos tests launch a helper pod with hostPID:true and a
+	// privileged container to SIGKILL the in-container PID 1 from the host PID
+	// namespace. That is forbidden under the "baseline" and "restricted"
+	// Pod Security Standards. Kind (the default e2e target) enforces nothing,
+	// but hardened/real clusters often set a cluster-wide default of
+	// enforce=baseline that every unlabeled namespace inherits — which rejects
+	// the helper pod. Pin this test-only namespace to the "privileged" level so
+	// the helper is admitted regardless of the cluster default.
+	By("labeling test namespace " + testNamespace + " as pod-security privileged")
+	cmd = exec.Command("kubectl", "label", "ns", testNamespace,
+		"pod-security.kubernetes.io/enforce=privileged",
+		"pod-security.kubernetes.io/warn=privileged",
+		"pod-security.kubernetes.io/audit=privileged",
+		"--overwrite")
+	_, err = utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to set pod-security level on namespace %q", testNamespace)
+
 	if skipOperatorDeploy {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping operator deployment (SKIP_OPERATOR_DEPLOY=true)\n")
 	} else {

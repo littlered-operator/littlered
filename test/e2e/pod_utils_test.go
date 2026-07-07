@@ -30,6 +30,8 @@ import (
 	"sync"
 	"time"
 
+	. "github.com/onsi/ginkgo/v2" //nolint:revive // dot-import is the Ginkgo/Gomega convention in tests
+
 	"github.com/littlered-operator/littlered-operator/test/utils"
 )
 
@@ -392,8 +394,15 @@ func killPodProcess(namespace, podName string) {
 	cmd = exec.Command("kubectl", "apply", "-f", "-")
 	cmd.Stdin = strings.NewReader(podManifest)
 	if _, err := utils.Run(cmd); err != nil {
-		fmt.Printf("[Utility] killPodProcess: failed to create helper pod: %v\n", err)
-		return
+		// Fail loudly here: a swallowed error surfaces later as a confusing
+		// "restart count 0 to be > 0" timeout that hides the real cause.
+		// The most common cause is Pod Security Standards forbidding the
+		// hostPID/privileged helper — the test namespace must be labeled
+		// pod-security.kubernetes.io/enforce=privileged (see BeforeSuite).
+		Fail(fmt.Sprintf("killPodProcess: failed to create privileged hostPID helper pod %q "+
+			"(the SIGKILL never happened). If this is a PodSecurity 'Forbidden' error, the "+
+			"namespace %q must allow hostPID+privileged. Underlying error: %v",
+			helperPodName, namespace, err))
 	}
 	defer func() {
 		cmd := exec.Command("kubectl", "delete", "pod", helperPodName,
