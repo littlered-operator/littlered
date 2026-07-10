@@ -8,6 +8,7 @@ import (
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 	"github.com/littlered-operator/littlered-operator/internal/cli/k8s"
 	"github.com/spf13/cobra"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 )
 
 var statusCmd = &cobra.Command{
@@ -90,6 +91,18 @@ func printStatus(lr *littleredv1alpha1.LittleRed) {
 		fmt.Printf("Sentinels: %d/%d Ready\n", lr.Status.Sentinels.Ready, lr.Status.Sentinels.Total)
 	}
 	fmt.Printf("Redis Nodes: %d/%d Ready\n", lr.Status.Redis.Ready, lr.Status.Redis.Total)
+
+	// Surface the leaderless bootstrap-deadlock condition (ADR-005 / LR-015).
+	if c := apimeta.FindStatusCondition(lr.Status.Conditions, littleredv1alpha1.ConditionLeaderlessRecovery); c != nil {
+		marker := "[recovered]"
+		if c.Status == "True" {
+			marker = "[!] ACTION MAY BE REQUIRED"
+		}
+		fmt.Printf("Leaderless Recovery: %s %s: %s\n", marker, c.Reason, c.Message)
+	} else if lr.Status.LeaderlessSince != nil {
+		since := lr.Status.LeaderlessSince.Format("2006-01-02T15:04:05Z07:00")
+		fmt.Printf("Leaderless Recovery: [!] bare-Sentinel deadlock since %s\n", since)
+	}
 }
 
 func init() {

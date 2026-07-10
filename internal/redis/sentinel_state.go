@@ -28,7 +28,12 @@ type RedisNodeState struct {
 	MasterHost string
 	LinkStatus string
 	Offset     int64
-	Reachable  bool
+	// Keys is the total number of keys the node currently holds (INFO keyspace).
+	// Zero means empty. Used to decide whether leaderless recovery is data-safe.
+	Keys int64
+	// Replid is the node's master_replid — its replication lineage identity.
+	Replid    string
+	Reachable bool
 }
 
 // SentinelNodeState represents the monitoring state of a Sentinel pod
@@ -113,6 +118,76 @@ func (s *SentinelClusterState) DetermineRealMaster() {
 			}
 		}
 	}
+}
+
+// AllSentinelsBare reports whether at least one Sentinel is reachable and NONE of
+// the reachable Sentinels is monitoring a master. This is the signature of a
+// bootstrap deadlock (as opposed to a recent master death, where the Sentinels
+// still monitor the now-dead master and know its replicas). It returns the count
+// of reachable Sentinels so callers can gate on quorum.
+func (s *SentinelClusterState) AllSentinelsBare() (bare bool, reachable int) {
+	monitoring := 0
+	for _, sn := range s.SentinelNodes {
+		if !sn.Reachable {
+			continue
+		}
+		reachable++
+		if sn.Monitoring {
+			monitoring++
+		}
+	}
+	return reachable > 0 && monitoring == 0, reachable
+}
+
+// DataHolders returns the reachable Redis nodes that currently hold keys.
+func (s *SentinelClusterState) DataHolders() []*RedisNodeState {
+	var holders []*RedisNodeState
+	for _, rn := range s.RedisNodes {
+		if rn.Reachable && rn.Keys > 0 {
+			holders = append(holders, rn)
+		}
+	}
+	return holders
+}
+
+// BestDataHolder picks the most-complete data-holding node to elect as master when
+// an unsafe rebootstrap is authorized. Selection is: highest replication offset,
+// tie-broken by key count, then by IP for determinism. The rationale (see ADR-005)
+// is that the usual failure is a lost replication link leaving one node with newer,
+// more-complete data and the other with an older snapshot — the higher offset is
+// the newer node, so full-syncs should flow outward from it.
+//
+// diverged reports whether the holders span more than one replication lineage
+// (distinct master_replid). When true, the offsets are NOT comparable across
+// lineages and electing any single master will discard genuinely independent
+// writes — callers should surface this loudly.
+//
+// Returns (nil, false) when no node holds data.
+func (s *SentinelClusterState) BestDataHolder() (best *RedisNodeState, diverged bool) {
+	holders := s.DataHolders()
+	if len(holders) == 0 {
+		return nil, false
+	}
+	replids := make(map[string]bool)
+	best = holders[0]
+	for _, h := range holders {
+		if h.Replid != "" {
+			replids[h.Replid] = true
+		}
+		switch {
+		case h.Offset != best.Offset:
+			if h.Offset > best.Offset {
+				best = h
+			}
+		case h.Keys != best.Keys:
+			if h.Keys > best.Keys {
+				best = h
+			}
+		case h.IP < best.IP:
+			best = h
+		}
+	}
+	return best, len(replids) > 1
 }
 
 // IsGhost returns true if the given IP is not in the set of valid pod IPs

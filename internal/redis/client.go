@@ -489,8 +489,28 @@ func SlaveOf(ctx context.Context, addr, password, masterIP, masterPort string, t
 	return client.Do(ctx, "REPLICAOF", masterIP, masterPort).Err()
 }
 
-// GetReplicationInfo gets replication info from a redis instance
-func GetReplicationInfo(ctx context.Context, addr, password string, tlsEnabled bool) (role string, masterHost string, masterLinkStatus string, offset int64, err error) {
+// ReplicationSnapshot is the subset of a Redis node's INFO that the reconciler
+// needs to reason about replication topology and data safety.
+type ReplicationSnapshot struct {
+	Role             string
+	MasterHost       string
+	MasterLinkStatus string
+	Offset           int64
+	// Keys is the total number of keys across all databases (INFO keyspace).
+	// Zero means the node currently holds no data. This is the signal used to
+	// decide whether a leaderless-recovery rebootstrap is data-safe — role does
+	// not answer that question (a freshly restarted empty pod reports role:master).
+	Keys int64
+	// Replid is the master_replid — it identifies the replication lineage. Two
+	// nodes with different Replids have independent write histories, so their
+	// offsets are not comparable and their data cannot be safely reconciled.
+	Replid string
+}
+
+// GetReplicationInfo gets replication + keyspace state from a redis instance.
+// It fetches the default INFO (a superset of the replication section) so a single
+// round trip yields role/offset, the replication id, and the total key count.
+func GetReplicationInfo(ctx context.Context, addr, password string, tlsEnabled bool) (*ReplicationSnapshot, error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:        addr,
 		Password:    password,
@@ -500,28 +520,55 @@ func GetReplicationInfo(ctx context.Context, addr, password string, tlsEnabled b
 	})
 	defer func() { _ = client.Close() }()
 
-	info, err := client.Info(ctx, "replication").Result()
+	info, err := client.Info(ctx).Result()
 	if err != nil {
-		return "", "", "", 0, fmt.Errorf("failed to get replication info: %w", err)
+		return nil, fmt.Errorf("failed to get info: %w", err)
 	}
 
-	// Parse the info string
-	role = ParseInfoField(info, "role")
-	masterHost = ParseInfoField(info, "master_host")
-	masterLinkStatus = ParseInfoField(info, "master_link_status")
-
-	offsetStr := ""
-	if role == roleMaster {
-		offsetStr = ParseInfoField(info, "master_repl_offset")
-	} else {
-		offsetStr = ParseInfoField(info, "slave_repl_offset")
+	snap := &ReplicationSnapshot{
+		Role:             ParseInfoField(info, "role"),
+		MasterHost:       ParseInfoField(info, "master_host"),
+		MasterLinkStatus: ParseInfoField(info, "master_link_status"),
+		Replid:           ParseInfoField(info, "master_replid"),
+		Keys:             ParseKeyspaceKeys(info),
 	}
 
-	if offsetStr != "" {
-		offset, _ = strconv.ParseInt(offsetStr, 10, 64)
+	offsetField := "slave_repl_offset"
+	if snap.Role == roleMaster {
+		offsetField = "master_repl_offset"
+	}
+	if offsetStr := ParseInfoField(info, offsetField); offsetStr != "" {
+		snap.Offset, _ = strconv.ParseInt(offsetStr, 10, 64)
 	}
 
-	return role, masterHost, masterLinkStatus, offset, nil
+	return snap, nil
+}
+
+// ParseKeyspaceKeys sums the keys across all databases reported in the INFO
+// keyspace section. Each database line has the form:
+//
+//	db0:keys=42,expires=0,avg_ttl=0
+//
+// It returns 0 when no keyspace lines are present (an empty node).
+func ParseKeyspaceKeys(info string) int64 {
+	var total int64
+	for line := range strings.SplitSeq(info, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "db") {
+			continue
+		}
+		_, after, found := strings.Cut(line, "keys=")
+		if !found {
+			continue
+		}
+		if before, _, ok := strings.Cut(after, ","); ok {
+			after = before
+		}
+		if n, err := strconv.ParseInt(strings.TrimSpace(after), 10, 64); err == nil {
+			total += n
+		}
+	}
+	return total
 }
 
 // ParseInfoField extracts a field value from redis INFO output

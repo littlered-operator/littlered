@@ -238,6 +238,7 @@ func verifySentinel(
 		if rn.Role == "slave" {
 			status += fmt.Sprintf(", following:%s, link:%s", rn.MasterHost, rn.LinkStatus)
 		}
+		status += fmt.Sprintf(", keys:%d", rn.Keys)
 		if !rn.Reachable {
 			status = "unreachable"
 		}

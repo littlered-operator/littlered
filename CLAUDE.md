@@ -82,6 +82,11 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 - **Ghost replicas**: When dead pod IPs appear in Sentinel's *replica* list, issue `SENTINEL RESET` (broadcast to all sentinels). This clears the stale entries without directing Sentinel to any specific master. Only applied after Rule A passes (no terminating pods, no active failover) and the consensus master is a verified living pod.
 - **Ghost master** (LR-008): A dual-failover race can leave a sentinel permanently stuck monitoring a ghost master IP — it cannot reach `o_down` alone and cannot self-correct. `SENTINEL RESET` was tried first (LR-007) but found ineffective: RESET clears replica/sentinel lists but does **not** change the monitored master IP; the sentinel reconnects to the same ghost. The correct fix (LR-008) is `SENTINEL REMOVE` followed by `SENTINEL MONITOR <consensus-master-IP>` — this forces the sentinel to immediately point at the correct living master. Applied only after Rule A passes. See ADR-003 and `docs/RECONCILIATION_ALGORITHM_CHANGELOG.md` (LR-007, LR-008).
 
+### 3.10 Leaderless Bootstrap-Deadlock Recovery (Sentinel Mode)
+- **Decision**: The operator self-heals a *leaderless bootstrap deadlock* — the state where every Sentinel is bare (reachable but monitoring nothing) and no reachable Redis node is a master, so `RealMasterIP == ""` and every consensus-master-gated rule short-circuits. This happens on a mass pod restart of an already-initialized instance, because `bootstrapRequired` is set only once (at `Phase == ""`) and never re-armed. (See ADR-005, changelog LR-015.)
+- **Rule L** (`recoverLeaderlessDeadlock`) is the *only* rule that runs while leaderless, and is deliberately conservative: it fires only when all reachable Sentinels are bare (distinguishing a bootstrap deadlock from a recent master death, where Sentinels still monitor the dead master and can fail over), a reachable Sentinel quorum exists, Rule A passes, and the state has persisted past a 30s cooldown (`status.leaderlessSince`).
+- **Data safety**: recovery is data-aware. The gatherer collects per-pod key count and replication id (`RedisNodeState.Keys`/`.Replid`). If no reachable pod holds data (the common case — a pure-in-memory server that is unreachable or wait-looping has no data), it seeds `redis-0` as master. If any pod holds data it **refuses** unless the owner opted in via `sentinel.allowUnsafeRebootstrapOnDeadlock`, in which case it force-elects the most-complete pod (`BestDataHolder`: highest offset, tiebreak keys) and logs that the other pods' data will be discarded.
+
 ---
 
 ## 4. Deployment Modes
@@ -177,3 +182,10 @@ kubectl apply -f config/samples/ # Try out sample CRs
 **Root cause:** The hybrid test runs a graceful failover immediately followed by a crash failover on the same cluster. Two sentinels race to lead the second failover; one is superseded before it records `+switch-master` and is left permanently monitoring the ghost master IP — stuck at `s_down`, unable to reach `o_down` alone (quorum = 2). Classic non-self-healing split-brain caused entirely within Sentinel's election mechanism.
 
 **Fix (LR-008):** Ghost master correction via `SENTINEL REMOVE` + `SENTINEL MONITOR <consensus-master-IP>`. A prior attempt with targeted `SENTINEL RESET` (LR-007) was found ineffective — RESET does not change the monitored master IP. The REMOVE+MONITOR sequence forces the stuck sentinel to immediately point at the correct living master. See `docs/RECONCILIATION_ALGORITHM_CHANGELOG.md` (LR-007, LR-008) and ADR-003.
+
+### Leaderless Sentinel Bootstrap Deadlock (2026-07-09, LR-015)
+**Symptom:** Two sentinel instances stuck not-serving for ~50 min after a mass pod restart. All Sentinels bare (monitoring nothing), all Redis pods `1/2 Running` (`redis-server` in the startup wait-loop). `RealMasterIP == ""`, so every consensus-master-gated healing rule short-circuited. Manual `SENTINEL MONITOR` on one sentinel (or a CR delete+redeploy) was required to recover.
+
+**Root cause:** No re-bootstrap path for an already-initialized instance. `bootstrapRequired` is set once at `Phase == ""` and never re-armed; Rule 0 / LR-008 / LR-013 all require `RealMasterIP != ""`. So when the whole Sentinel quorum loses its config there is no rule that fires.
+
+**Fix (LR-015):** Rule L (`recoverLeaderlessDeadlock`) — see pillar 3.10 and ADR-005. Data-aware: safe no-data reseed of `redis-0` by default; destructive rebootstrap-over-data only with `sentinel.allowUnsafeRebootstrapOnDeadlock`.

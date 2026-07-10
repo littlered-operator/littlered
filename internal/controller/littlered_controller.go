@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -89,12 +90,24 @@ func (e *SentinelError) Error() string {
 // LittleRedReconciler reconciles a LittleRed object
 type LittleRedReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 
 	// Sentinel monitoring
 	sentinelEvents chan event.GenericEvent
 	monitors       map[types.NamespacedName]func()
 	monitorsMu     sync.Mutex
+}
+
+// event emits a Kubernetes Event for lr, tolerating a nil Recorder (e.g. in unit
+// tests that construct the reconciler directly). Events are the operator's only
+// human-facing "something notable just happened" channel — used for the destructive
+// leaderless rebootstrap and the refuse-and-wait state.
+func (r *LittleRedReconciler) event(lr *littleredv1alpha1.LittleRed, eventType, reason, message string) {
+	if r.Recorder == nil {
+		return
+	}
+	r.Recorder.Event(lr, eventType, reason, message)
 }
 
 // +kubebuilder:rbac:groups=redis.chuck-chuck-chuck.net,resources=littlereds,verbs=get;list;watch;create;update;patch;delete
@@ -104,6 +117,7 @@ type LittleRedReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
@@ -840,9 +854,21 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		return nil
 	}
 
-	// If no master is known yet, we can't do any more healing beyond ghost pruning.
+	// If no master is known yet, attempt to break a bootstrap deadlock (all
+	// sentinels bare, no reachable master) before giving up for this pass. This is
+	// the only rule that operates while leaderless; every other rule requires a
+	// consensus master. See ADR-005 (LR-015).
 	if state.RealMasterIP == "" {
+		if err := r.recoverLeaderlessDeadlock(ctx, littleRed, state, redisMap, password); err != nil {
+			stateLog.Error(err, "leaderless deadlock recovery failed")
+		}
 		return nil
+	}
+
+	// A consensus master is known — clear any leaderless-deadlock marker left over
+	// from a prior recovery attempt. No-op (no API call) when already clear.
+	if err := r.clearLeaderlessSince(ctx, littleRed, reasonRecovered, "A consensus master is known again."); err != nil {
+		stateLog.Error(err, "failed to clear leaderless marker")
 	}
 
 	// Rule D (continued): Prune ghost replicas.
@@ -1482,58 +1508,18 @@ func (r *LittleRedReconciler) bootstrapSentinel(ctx context.Context, lr *littler
 	}
 	masterAddr := pod0.Status.PodIP
 
-	// 4. Bootstrap each Sentinel pod individually.
-	//
-	// CRITICAL: We must NOT use the headless Service VIP for MONITOR because the
-	// Service load-balances to a single pod. Only that one pod would receive the
-	// MONITOR command; the other two would start with an empty config and never
-	// reach quorum. We iterate over pod IPs and configure each sentinel directly.
-	sentinelPods := &corev1.PodList{}
-	if err := r.List(ctx, sentinelPods,
-		client.InNamespace(lr.Namespace),
-		client.MatchingLabels(sentinelSelectorLabels(lr)),
-	); err != nil {
-		return fmt.Errorf("failed to list sentinel pods: %w", err)
-	}
-
+	// 4. Point every Sentinel pod at the initial master (redis-0).
 	auditLog := r.getLogger(ctx, lr, LogCategoryAudit)
-	configuredCount := 0
-	for i := range sentinelPods.Items {
-		pod := &sentinelPods.Items[i]
-		if pod.Status.PodIP == "" || !pod.DeletionTimestamp.IsZero() {
-			continue
-		}
-		podAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.SentinelPort)
-		podSC := redisclient.NewSentinelClient([]string{podAddr}, password, lr.Spec.TLS.Enabled)
-
-		// Check if this sentinel already knows the master (idempotent guard).
-		if info, err := podSC.GetMaster(ctx); err == nil && info != nil {
-			log.Info("Bootstrap: Sentinel already has master configured", "sentinel", pod.Name, "master", info.IP)
-			configuredCount++
-			continue
-		}
-
-		auditLog.Info("Bootstrap: issuing SENTINEL MONITOR to pod", "sentinel", pod.Name, "master", masterAddr)
-		if err := podSC.Monitor(ctx, redisclient.SentinelMasterName, masterAddr, littleredv1alpha1.RedisPort, quorum); err != nil {
-			auditLog.Error(err, "Bootstrap: failed to configure sentinel", "sentinel", pod.Name)
-			continue // best-effort; don't abort the whole bootstrap
-		}
-
-		if password != "" {
-			_ = podSC.Set(ctx, redisclient.SentinelMasterName, "auth-pass", password)
-		}
-
-		// Apply settings to this sentinel.
-		applySentinelSettings(ctx, podSC, lr.Spec.Sentinel)
-		configuredCount++
+	configuredCount, totalPods, serr := r.seedSentinelsWithMaster(ctx, lr, masterAddr, password, quorum)
+	if serr != nil {
+		return serr
 	}
-
 	if configuredCount == 0 {
 		log.Info("Bootstrap: no Sentinel pods reachable yet, will retry on next reconcile")
 		return nil
 	}
-	if configuredCount < len(sentinelPods.Items) {
-		log.Info("Bootstrap: not all sentinels configured yet", "configured", configuredCount, "total", len(sentinelPods.Items))
+	if configuredCount < totalPods {
+		log.Info("Bootstrap: not all sentinels configured yet", "configured", configuredCount, "total", totalPods)
 		// Continue anyway — the sentinel gossip protocol will propagate the config to the others.
 	}
 
@@ -1556,4 +1542,249 @@ func (r *LittleRedReconciler) bootstrapSentinel(ctx context.Context, lr *littler
 
 	// Update the local object version to avoid subsequent conflicts in the same reconcile pass
 	return r.Get(ctx, types.NamespacedName{Name: lr.Name, Namespace: lr.Namespace}, lr)
+}
+
+// seedSentinelsWithMaster issues SENTINEL MONITOR (+auth + tuning) to every
+// reachable Sentinel pod, pointing each directly at masterIP.
+//
+// It never uses the headless Service VIP: that load-balances to a single backend,
+// so only one sentinel would be configured and the quorum would never form. It
+// iterates pod IPs instead. Sentinels that already monitor a master are counted
+// but left untouched (idempotent). Returns (configured, totalReachablePods).
+// Shared by initial bootstrap (bootstrapSentinel) and leaderless recovery
+// (recoverLeaderlessDeadlock).
+func (r *LittleRedReconciler) seedSentinelsWithMaster(ctx context.Context, lr *littleredv1alpha1.LittleRed, masterIP, password string, quorum int) (configured, total int, err error) {
+	sentinelPods := &corev1.PodList{}
+	if err := r.List(ctx, sentinelPods,
+		client.InNamespace(lr.Namespace),
+		client.MatchingLabels(sentinelSelectorLabels(lr)),
+	); err != nil {
+		return 0, 0, fmt.Errorf("failed to list sentinel pods: %w", err)
+	}
+
+	auditLog := r.getLogger(ctx, lr, LogCategoryAudit)
+	for i := range sentinelPods.Items {
+		pod := &sentinelPods.Items[i]
+		if pod.Status.PodIP == "" || !pod.DeletionTimestamp.IsZero() {
+			continue
+		}
+		total++
+		podAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.SentinelPort)
+		podSC := redisclient.NewSentinelClient([]string{podAddr}, password, lr.Spec.TLS.Enabled)
+
+		// Idempotent guard: leave a sentinel that already knows a master alone.
+		if info, gerr := podSC.GetMaster(ctx); gerr == nil && info != nil {
+			configured++
+			continue
+		}
+
+		auditLog.Info("Pointing Sentinel at master", "sentinel", pod.Name, "master", masterIP)
+		if merr := podSC.Monitor(ctx, redisclient.SentinelMasterName, masterIP, littleredv1alpha1.RedisPort, quorum); merr != nil {
+			auditLog.Error(merr, "Failed to configure sentinel", "sentinel", pod.Name)
+			continue // best-effort
+		}
+		if password != "" {
+			_ = podSC.Set(ctx, redisclient.SentinelMasterName, "auth-pass", password)
+		}
+		applySentinelSettings(ctx, podSC, lr.Spec.Sentinel)
+		configured++
+	}
+	return configured, total, nil
+}
+
+// leaderlessRecoveryCooldown is how long the operator waits after first observing
+// a leaderless, all-sentinels-bare state before attempting a rebootstrap. The
+// fast requeue interval (2s) re-checks well within this window, so a transient
+// startup blip clears the LeaderlessSince marker long before the cooldown expires.
+const leaderlessRecoveryCooldown = 30 * time.Second
+
+// recoverLeaderlessDeadlock breaks a Sentinel bootstrap deadlock — the state where
+// no Sentinel monitors a master, no reachable Redis node is a master, and thus no
+// other healing rule (all of which require a consensus master) can make progress.
+// See ADR-005 (LR-015).
+//
+// It is deliberately conservative:
+//   - Only fires when every reachable Sentinel is bare (excludes a recent master
+//     death, where Sentinels still monitor the dead master and can fail over).
+//   - Requires a reachable Sentinel quorum, so the seed can actually form consensus.
+//   - Requires the state to persist past leaderlessRecoveryCooldown, so a brief
+//     rollout blip never triggers a rebootstrap.
+//   - Is data-aware: if any reachable Redis pod still holds keys it refuses unless
+//     the owner opted in via sentinel.allowUnsafeRebootstrapOnDeadlock, in which
+//     case it force-elects the most-complete pod (data on the others is discarded).
+//
+// It is called only when RealMasterIP == "" (nobody knows a living master).
+func (r *LittleRedReconciler) recoverLeaderlessDeadlock(
+	ctx context.Context,
+	lr *littleredv1alpha1.LittleRed,
+	state *redisclient.SentinelClusterState,
+	redisMap map[string]string,
+	password string,
+) error {
+	log := r.getLogger(ctx, lr, LogCategoryRecon)
+	auditLog := r.getLogger(ctx, lr, LogCategoryAudit)
+
+	quorum := 2
+	if lr.Spec.Sentinel != nil && lr.Spec.Sentinel.Quorum > 0 {
+		quorum = lr.Spec.Sentinel.Quorum
+	}
+
+	// Guard: must be the bare-sentinel deadlock signature with a reachable quorum.
+	bare, reachableSentinels := state.AllSentinelsBare()
+	if !bare || reachableSentinels < quorum {
+		// Not a bootstrap deadlock (a Sentinel is monitoring something, or too few
+		// are reachable to form consensus). Clear any stale marker and wait.
+		return r.clearLeaderlessSince(ctx, lr, reasonRecovered, "No longer in a bare-Sentinel deadlock.")
+	}
+
+	// Persistence gate: record first observation, act only after the cooldown.
+	if lr.Status.LeaderlessSince == nil {
+		log.Info("Leaderless bootstrap deadlock suspected; starting cooldown before recovery",
+			"cooldown", leaderlessRecoveryCooldown.String())
+		return r.setLeaderlessSince(ctx, lr, metav1.Now())
+	}
+	if age := time.Since(lr.Status.LeaderlessSince.Time); age < leaderlessRecoveryCooldown {
+		log.Info("Leaderless bootstrap deadlock persists; waiting out cooldown",
+			"observedFor", age.Round(time.Second).String(), "cooldown", leaderlessRecoveryCooldown.String())
+		return nil
+	}
+
+	// Decide who to elect, subject to data safety.
+	holders := state.DataHolders()
+
+	if len(holders) == 0 {
+		// Safe path: no reachable pod holds data. In a pure in-memory store an
+		// unreachable / wait-looping server has no data by definition, so this is
+		// the common mass-restart case. Elect redis-0 as master.
+		masterIP := r.pickBootstrapMasterIP(lr, redisMap)
+		if masterIP == "" {
+			log.Info("Leaderless recovery: no eligible Redis pod IP yet, will retry")
+			return nil
+		}
+		msg := fmt.Sprintf("Leaderless recovery: no data present, seeded %s as master", redisMap[masterIP])
+		auditLog.Info(msg, "master", masterIP, "masterPod", redisMap[masterIP], "reachableSentinels", reachableSentinels)
+		if _, _, err := r.seedSentinelsWithMaster(ctx, lr, masterIP, password, quorum); err != nil {
+			return err
+		}
+		r.event(lr, corev1.EventTypeNormal, reasonReseeded, msg)
+		return r.clearLeaderlessSince(ctx, lr, reasonReseeded, msg)
+	}
+
+	// Data is present. This is destructive to break, so it requires explicit opt-in.
+	if lr.Spec.Sentinel == nil || !lr.Spec.Sentinel.AllowUnsafeRebootstrapOnDeadlock {
+		msg := fmt.Sprintf("Bootstrap deadlock: %d Redis pod(s) still hold data. Refusing to rebootstrap "+
+			"(would discard data on all but one pod). Set sentinel.allowUnsafeRebootstrapOnDeadlock=true "+
+			"to authorize, or intervene manually.", len(holders))
+		log.Info(msg)
+		// Surface loudly and durably; keep LeaderlessSince set so the state stays visible.
+		r.event(lr, corev1.EventTypeWarning, reasonRefusedDataPresent, msg)
+		return r.setLeaderlessCondition(ctx, lr, metav1.ConditionTrue, reasonRefusedDataPresent, msg)
+	}
+
+	best, diverged := state.BestDataHolder()
+	if best == nil { // defensive; holders is non-empty so this should not happen
+		return nil
+	}
+	msg := fmt.Sprintf("UNSAFE rebootstrap: force-elected %s (keys=%d, offset=%d) as master; data on %d other "+
+		"pod(s) will be DISCARDED via full resync", best.PodName, best.Keys, best.Offset, len(holders)-1)
+	if diverged {
+		msg += ". WARNING: data-holding pods span multiple replication lineages — offsets are not comparable " +
+			"and genuinely independent writes will be lost"
+	}
+	auditLog.Info(msg, "master", best.IP, "masterPod", best.PodName, "keys", best.Keys, "offset", best.Offset,
+		"candidates", len(holders), "divergedLineages", diverged)
+	if _, _, err := r.seedSentinelsWithMaster(ctx, lr, best.IP, password, quorum); err != nil {
+		return err
+	}
+	r.event(lr, corev1.EventTypeWarning, reasonUnsafeRebootstrap, msg)
+	return r.clearLeaderlessSince(ctx, lr, reasonUnsafeRebootstrap, msg)
+}
+
+// pickBootstrapMasterIP returns the IP to elect as master for a no-data rebootstrap.
+// It prefers redis-0 (the canonical master slot); if redis-0 has no IP yet it falls
+// back to the reachable pod with the lowest-ordinal name for determinism.
+func (r *LittleRedReconciler) pickBootstrapMasterIP(lr *littleredv1alpha1.LittleRed, redisMap map[string]string) string {
+	pod0Name := fmt.Sprintf("%s-redis-0", lr.Name)
+	fallbackIP, fallbackName := "", ""
+	for ip, name := range redisMap {
+		if name == pod0Name {
+			return ip
+		}
+		if fallbackName == "" || name < fallbackName {
+			fallbackName, fallbackIP = name, ip
+		}
+	}
+	return fallbackIP
+}
+
+// Reasons for the LeaderlessRecovery status condition.
+const (
+	reasonDeadlockDetected   = "DeadlockDetected"
+	reasonRefusedDataPresent = "RefusedDataPresent"
+	reasonReseeded           = "Reseeded"
+	reasonUnsafeRebootstrap  = "UnsafeRebootstrap"
+	reasonRecovered          = "Recovered"
+)
+
+// setLeaderlessSince stamps Status.LeaderlessSince and sets the LeaderlessRecovery
+// condition to True/DeadlockDetected (retry on conflict). No-op if already stamped.
+func (r *LittleRedReconciler) setLeaderlessSince(ctx context.Context, lr *littleredv1alpha1.LittleRed, t metav1.Time) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &littleredv1alpha1.LittleRed{}
+		if err := r.Get(ctx, types.NamespacedName{Name: lr.Name, Namespace: lr.Namespace}, latest); err != nil {
+			return err
+		}
+		if latest.Status.LeaderlessSince != nil {
+			return nil
+		}
+		latest.Status.LeaderlessSince = &t
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:    littleredv1alpha1.ConditionLeaderlessRecovery,
+			Status:  metav1.ConditionTrue,
+			Reason:  reasonDeadlockDetected,
+			Message: "All Sentinels are bare and no master is known; waiting out the recovery cooldown.",
+		})
+		lr.Status.LeaderlessSince = &t
+		return r.Status().Update(ctx, latest)
+	})
+}
+
+// setLeaderlessCondition updates the LeaderlessRecovery condition without touching
+// LeaderlessSince (used for the refuse-and-wait state). Retry on conflict.
+func (r *LittleRedReconciler) setLeaderlessCondition(ctx context.Context, lr *littleredv1alpha1.LittleRed, status metav1.ConditionStatus, reason, message string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &littleredv1alpha1.LittleRed{}
+		if err := r.Get(ctx, types.NamespacedName{Name: lr.Name, Namespace: lr.Namespace}, latest); err != nil {
+			return err
+		}
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type: littleredv1alpha1.ConditionLeaderlessRecovery, Status: status, Reason: reason, Message: message,
+		})
+		return r.Status().Update(ctx, latest)
+	})
+}
+
+// clearLeaderlessSince resets Status.LeaderlessSince once the instance is no longer
+// in the bare-sentinel deadlock, recording the outcome on the LeaderlessRecovery
+// condition (Status=False). No-op if never deadlocked (LeaderlessSince already nil),
+// so healthy instances never grow a spurious condition.
+func (r *LittleRedReconciler) clearLeaderlessSince(ctx context.Context, lr *littleredv1alpha1.LittleRed, reason, message string) error {
+	if lr.Status.LeaderlessSince == nil {
+		return nil
+	}
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &littleredv1alpha1.LittleRed{}
+		if err := r.Get(ctx, types.NamespacedName{Name: lr.Name, Namespace: lr.Namespace}, latest); err != nil {
+			return err
+		}
+		if latest.Status.LeaderlessSince == nil {
+			return nil
+		}
+		latest.Status.LeaderlessSince = nil
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type: littleredv1alpha1.ConditionLeaderlessRecovery, Status: metav1.ConditionFalse, Reason: reason, Message: message,
+		})
+		lr.Status.LeaderlessSince = nil
+		return r.Status().Update(ctx, latest)
+	})
 }

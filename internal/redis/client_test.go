@@ -187,3 +187,32 @@ func TestMasterInfo(t *testing.T) {
 		t.Errorf("Port = %q, want %q", info.Port, "6379")
 	}
 }
+
+func TestParseKeyspaceKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		info string
+		want int64
+	}{
+		{name: "empty node (no keyspace section)", info: "# Replication\r\nrole:master\r\n", want: 0},
+		{name: "single db", info: "# Keyspace\r\ndb0:keys=42,expires=0,avg_ttl=0\r\n", want: 42},
+		{
+			name: "multiple dbs summed",
+			info: "# Keyspace\r\ndb0:keys=10,expires=1,avg_ttl=0\r\ndb1:keys=5,expires=0,avg_ttl=0\r\n",
+			want: 15,
+		},
+		{
+			name: "full info payload with replication and keyspace",
+			info: "role:master\r\nmaster_repl_offset:1234\r\n# Keyspace\r\ndb0:keys=7,expires=0,avg_ttl=0\r\n",
+			want: 7,
+		},
+		{name: "malformed keys value ignored", info: "db0:keys=abc,expires=0\r\n", want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseKeyspaceKeys(tt.info); got != tt.want {
+				t.Errorf("ParseKeyspaceKeys() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}

@@ -1787,6 +1787,18 @@ spec:
                 description: Sentinel defines sentinel-specific settings (sentinel
                   mode only)
                 properties:
+                  allowUnsafeRebootstrapOnDeadlock:
+                    default: false
+                    description: |-
+                      AllowUnsafeRebootstrapOnDeadlock permits the operator to break a leaderless
+                      Sentinel bootstrap deadlock even when surviving Redis pods still hold data.
+                      When set, the operator force-elects the best-effort most-complete pod (the
+                      one with the highest replication offset) as master and points every Sentinel
+                      at it. This CAN DISCARD DATA on the other pods, which full-resync from the
+                      elected master. Only enable for instances where data loss is acceptable
+                      (e.g. caches). Default false: with data present the operator refuses to
+                      rebootstrap and waits for an operator to intervene.
+                    type: boolean
                   downAfterMilliseconds:
                     default: 30000
                     description: DownAfterMilliseconds is the time to mark master
@@ -2073,6 +2085,15 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              leaderlessSince:
+                description: |-
+                  LeaderlessSince records when the operator first observed the instance in a
+                  leaderless, all-sentinels-bare state (a bootstrap deadlock). It is cleared
+                  as soon as a master is known again. The operator only attempts leaderless
+                  recovery once this state has persisted past a cooldown, so a brief startup
+                  blip does not trigger a rebootstrap.
+                format: date-time
+                type: string
               master:
                 description: Master contains current master info (sentinel mode only)
                 properties:

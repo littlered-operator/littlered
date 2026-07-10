@@ -350,6 +350,7 @@ spec:
     downAfterMilliseconds: 30000  # Time before marking master down
     failoverTimeout: 180000     # Failover timeout
     parallelSyncs: 1            # Replicas to sync in parallel
+    allowUnsafeRebootstrapOnDeadlock: false  # Break a leaderless deadlock even with data (destructive)
 
     # Sentinel container resources (separate from Redis)
     resources:
@@ -366,6 +367,7 @@ spec:
 | `sentinel.downAfterMilliseconds` | `int` | No | `30000` | Time to mark master as down |
 | `sentinel.failoverTimeout` | `int` | No | `180000` | Failover timeout |
 | `sentinel.parallelSyncs` | `int` | No | `1` | Parallel replica syncs |
+| `sentinel.allowUnsafeRebootstrapOnDeadlock` | `bool` | No | `false` | Permit the operator to break a leaderless bootstrap deadlock (all Sentinels bare, no master) even when surviving Redis pods still hold data, by force-electing the most-complete pod as master. **Discards data** on the other pods. Enable only for caches where data loss is acceptable. With data present and this unset, the operator refuses and waits for manual intervention. |
 | `sentinel.resources` | `ResourceRequirements` | No | See above | Sentinel container resources |
 
 ### 2.12 Cluster-Specific Configuration
@@ -481,6 +483,7 @@ status:
 
   # Sentinel mode only
   bootstrapRequired: true       # True on creation, cleared after first master elected
+  leaderlessSince: "2026-07-09T13:10:37Z"  # Set when a bootstrap deadlock is observed; cleared once a master is known
   master:
     podName: store-redis-0   # Current master pod
     ip: 10.0.0.5                # Current master IP
@@ -516,6 +519,7 @@ status:
 | `phase` | `string` | `Pending`, `Initializing`, `Running`, `Failed`, `Terminating` |
 | `status` | `string` | Human-readable summary: master pod name when Running, phase otherwise. Shown in `kubectl get littlered` output. |
 | `bootstrapRequired` | `bool` | True on creation, cleared after first master is elected (sentinel mode) |
+| `leaderlessSince` | `Time` | Set when the operator first observes a leaderless, all-Sentinels-bare bootstrap deadlock; cleared once a master is known. Gates the leaderless-recovery cooldown (sentinel mode). |
 | `observedGeneration` | `int64` | Last processed `.metadata.generation` |
 | `conditions` | `[]Condition` | Detailed status conditions |
 | `redis.ready` | `int32` | Ready Redis pod count |

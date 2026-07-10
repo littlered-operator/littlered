@@ -37,7 +37,7 @@ type cliGatherer struct {
 }
 
 func (g *cliGatherer) GetRedisState(ctx context.Context, podName, ip string) (*redisclient.RedisNodeState, error) {
-	cmd := []string{redisCliBin, infoSubcommand, "replication"}
+	cmd := []string{redisCliBin, infoSubcommand}
 	stdout, _, err := k8s.Exec(ctx, g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.RedisContainer, cmd)
 	if err != nil {
 		return nil, err
@@ -70,6 +70,8 @@ func (g *cliGatherer) GetRedisState(ctx context.Context, podName, ip string) (*r
 		MasterHost: mHost,
 		LinkStatus: link,
 		Offset:     offset,
+		Keys:       redisclient.ParseKeyspaceKeys(stdout),
+		Replid:     redisclient.ParseInfoField(stdout, "master_replid"),
 		Reachable:  true,
 	}, nil
 }

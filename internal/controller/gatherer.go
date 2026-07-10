@@ -32,17 +32,19 @@ type operatorGatherer struct {
 
 func (g *operatorGatherer) GetRedisState(ctx context.Context, podName, ip string) (*redisclient.RedisNodeState, error) {
 	addr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.RedisPort)
-	role, mHost, link, offset, err := redisclient.GetReplicationInfo(ctx, addr, g.password, g.tlsEnabled)
+	snap, err := redisclient.GetReplicationInfo(ctx, addr, g.password, g.tlsEnabled)
 	if err != nil {
 		return nil, err
 	}
 	return &redisclient.RedisNodeState{
 		PodName:    podName,
 		IP:         ip,
-		Role:       role,
-		MasterHost: mHost,
-		LinkStatus: link,
-		Offset:     offset,
+		Role:       snap.Role,
+		MasterHost: snap.MasterHost,
+		LinkStatus: snap.MasterLinkStatus,
+		Offset:     snap.Offset,
+		Keys:       snap.Keys,
+		Replid:     snap.Replid,
 		Reachable:  true,
 	}, nil
 }

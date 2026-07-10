@@ -414,6 +414,18 @@ type SentinelSpec struct {
 	// +optional
 	ParallelSyncs int `json:"parallelSyncs,omitempty"`
 
+	// AllowUnsafeRebootstrapOnDeadlock permits the operator to break a leaderless
+	// Sentinel bootstrap deadlock even when surviving Redis pods still hold data.
+	// When set, the operator force-elects the best-effort most-complete pod (the
+	// one with the highest replication offset) as master and points every Sentinel
+	// at it. This CAN DISCARD DATA on the other pods, which full-resync from the
+	// elected master. Only enable for instances where data loss is acceptable
+	// (e.g. caches). Default false: with data present the operator refuses to
+	// rebootstrap and waits for an operator to intervene.
+	// +kubebuilder:default=false
+	// +optional
+	AllowUnsafeRebootstrapOnDeadlock bool `json:"allowUnsafeRebootstrapOnDeadlock,omitempty"`
+
 	// Resources defines CPU/memory for Sentinel container
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
@@ -479,6 +491,11 @@ const (
 	ConditionSentinelReady = "SentinelReady"
 	// ConditionClusterReady indicates cluster is formed and healthy
 	ConditionClusterReady = "ClusterReady"
+	// ConditionLeaderlessRecovery reflects a leaderless Sentinel bootstrap deadlock
+	// and the operator's response to it (sentinel mode). True means the instance is
+	// deadlocked and needs attention (in cooldown, or refusing because data is
+	// present); False records a completed recovery.
+	ConditionLeaderlessRecovery = "LeaderlessRecovery"
 )
 
 // LittleRedStatus defines the observed state of LittleRed
@@ -495,6 +512,14 @@ type LittleRedStatus struct {
 	// This is set to true on creation and cleared after successful bootstrap.
 	// +optional
 	BootstrapRequired bool `json:"bootstrapRequired,omitempty"`
+
+	// LeaderlessSince records when the operator first observed the instance in a
+	// leaderless, all-sentinels-bare state (a bootstrap deadlock). It is cleared
+	// as soon as a master is known again. The operator only attempts leaderless
+	// recovery once this state has persisted past a cooldown, so a brief startup
+	// blip does not trigger a rebootstrap.
+	// +optional
+	LeaderlessSince *metav1.Time `json:"leaderlessSince,omitempty"`
 
 	// ObservedGeneration is the last observed generation
 	// +optional
