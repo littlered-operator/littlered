@@ -367,7 +367,7 @@ spec:
 | `sentinel.downAfterMilliseconds` | `int` | No | `30000` | Time to mark master as down |
 | `sentinel.failoverTimeout` | `int` | No | `180000` | Failover timeout |
 | `sentinel.parallelSyncs` | `int` | No | `1` | Parallel replica syncs |
-| `sentinel.allowUnsafeRebootstrapOnDeadlock` | `bool` | No | `false` | Permit the operator to break a leaderless bootstrap deadlock (all Sentinels bare, no master) even when surviving Redis pods still hold data, by force-electing the most-complete pod as master. **Discards data** on the other pods. Enable only for caches where data loss is acceptable. With data present and this unset, the operator refuses and waits for manual intervention. |
+| `sentinel.allowUnsafeRebootstrapOnDeadlock` | `bool` | No | `false` | Permit the operator to break a leaderless bootstrap deadlock (all Sentinels bare, no master) when **two or more** Redis pods hold data, by force-electing the most-complete pod as master and **discarding** the others. Enable only for caches where data loss is acceptable. With ≥2 data holders and this unset, the operator refuses and waits for manual intervention. Deadlocks with no data, or a single data-holding pod, are always broken automatically and safely regardless of this flag. |
 | `sentinel.resources` | `ResourceRequirements` | No | See above | Sentinel container resources |
 
 ### 2.12 Cluster-Specific Configuration

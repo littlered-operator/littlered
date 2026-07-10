@@ -1649,13 +1649,17 @@ func (r *LittleRedReconciler) recoverLeaderlessDeadlock(
 		return nil
 	}
 
-	// Decide who to elect, subject to data safety.
+	// Decide who to elect, subject to data safety. The flag only guards the case
+	// where electing a master would DISCARD data on a pod we do not elect — i.e.
+	// two or more reachable pods hold data. Electing the sole data holder discards
+	// nothing, so it (and the no-data case) is always safe.
 	holders := state.DataHolders()
 
-	if len(holders) == 0 {
-		// Safe path: no reachable pod holds data. In a pure in-memory store an
-		// unreachable / wait-looping server has no data by definition, so this is
-		// the common mass-restart case. Elect redis-0 as master.
+	switch {
+	case len(holders) == 0:
+		// No reachable pod holds data. In a pure in-memory store an unreachable /
+		// wait-looping server has no data by definition, so this is the common
+		// mass-restart case. Elect redis-0 as master.
 		masterIP := r.pickBootstrapMasterIP(lr, redisMap)
 		if masterIP == "" {
 			log.Info("Leaderless recovery: no eligible Redis pod IP yet, will retry")
@@ -1663,41 +1667,77 @@ func (r *LittleRedReconciler) recoverLeaderlessDeadlock(
 		}
 		msg := fmt.Sprintf("Leaderless recovery: no data present, seeded %s as master", redisMap[masterIP])
 		auditLog.Info(msg, "master", masterIP, "masterPod", redisMap[masterIP], "reachableSentinels", reachableSentinels)
-		if _, _, err := r.seedSentinelsWithMaster(ctx, lr, masterIP, password, quorum); err != nil {
+		if err := r.electMaster(ctx, lr, state, masterIP, password, quorum); err != nil {
 			return err
 		}
 		r.event(lr, corev1.EventTypeNormal, reasonReseeded, msg)
 		return r.clearLeaderlessSince(ctx, lr, reasonReseeded, msg)
-	}
 
-	// Data is present. This is destructive to break, so it requires explicit opt-in.
-	if lr.Spec.Sentinel == nil || !lr.Spec.Sentinel.AllowUnsafeRebootstrapOnDeadlock {
-		msg := fmt.Sprintf("Bootstrap deadlock: %d Redis pod(s) still hold data. Refusing to rebootstrap "+
-			"(would discard data on all but one pod). Set sentinel.allowUnsafeRebootstrapOnDeadlock=true "+
-			"to authorize, or intervene manually.", len(holders))
-		log.Info(msg)
-		// Surface loudly and durably; keep LeaderlessSince set so the state stays visible.
-		r.event(lr, corev1.EventTypeWarning, reasonRefusedDataPresent, msg)
-		return r.setLeaderlessCondition(ctx, lr, metav1.ConditionTrue, reasonRefusedDataPresent, msg)
-	}
+	case len(holders) == 1:
+		// Exactly one reachable pod holds data (necessarily a surviving replica of a
+		// now-dead master: a reachable role:master would have set RealMasterIP and we
+		// would not be here). Electing it loses nothing — every other pod is empty or
+		// unreachable (== empty, pure in-memory). Safe, no opt-in required.
+		h := holders[0]
+		msg := fmt.Sprintf("Leaderless recovery: %s is the only pod with data (keys=%d); "+
+			"promoting it as master — no data discarded", h.PodName, h.Keys)
+		auditLog.Info(msg, "master", h.IP, "masterPod", h.PodName, "keys", h.Keys, "offset", h.Offset)
+		if err := r.electMaster(ctx, lr, state, h.IP, password, quorum); err != nil {
+			return err
+		}
+		r.event(lr, corev1.EventTypeNormal, reasonReseededFromSurvivor, msg)
+		return r.clearLeaderlessSince(ctx, lr, reasonReseededFromSurvivor, msg)
 
-	best, diverged := state.BestDataHolder()
-	if best == nil { // defensive; holders is non-empty so this should not happen
-		return nil
+	default: // >= 2 holders
+		// Multiple pods hold data. Electing any one discards the others, so this is
+		// destructive and requires explicit opt-in.
+		if lr.Spec.Sentinel == nil || !lr.Spec.Sentinel.AllowUnsafeRebootstrapOnDeadlock {
+			msg := fmt.Sprintf("Bootstrap deadlock: %d Redis pods hold data. Refusing to rebootstrap "+
+				"(would discard data on all but one). Set sentinel.allowUnsafeRebootstrapOnDeadlock=true "+
+				"to authorize, or intervene manually.", len(holders))
+			log.Info(msg)
+			// Surface loudly and durably; keep LeaderlessSince set so the state stays visible.
+			r.event(lr, corev1.EventTypeWarning, reasonRefusedDataPresent, msg)
+			return r.setLeaderlessCondition(ctx, lr, metav1.ConditionTrue, reasonRefusedDataPresent, msg)
+		}
+
+		best, diverged := state.BestDataHolder()
+		if best == nil { // defensive; holders is non-empty so this should not happen
+			return nil
+		}
+		msg := fmt.Sprintf("UNSAFE rebootstrap: force-elected %s (keys=%d, offset=%d) as master; data on %d other "+
+			"pod(s) will be DISCARDED via full resync", best.PodName, best.Keys, best.Offset, len(holders)-1)
+		if diverged {
+			msg += ". WARNING: data-holding pods span multiple replication lineages — offsets are not comparable " +
+				"and genuinely independent writes will be lost"
+		}
+		auditLog.Info(msg, "master", best.IP, "masterPod", best.PodName, "keys", best.Keys, "offset", best.Offset,
+			"candidates", len(holders), "divergedLineages", diverged)
+		if err := r.electMaster(ctx, lr, state, best.IP, password, quorum); err != nil {
+			return err
+		}
+		r.event(lr, corev1.EventTypeWarning, reasonUnsafeRebootstrap, msg)
+		return r.clearLeaderlessSince(ctx, lr, reasonUnsafeRebootstrap, msg)
 	}
-	msg := fmt.Sprintf("UNSAFE rebootstrap: force-elected %s (keys=%d, offset=%d) as master; data on %d other "+
-		"pod(s) will be DISCARDED via full resync", best.PodName, best.Keys, best.Offset, len(holders)-1)
-	if diverged {
-		msg += ". WARNING: data-holding pods span multiple replication lineages — offsets are not comparable " +
-			"and genuinely independent writes will be lost"
+}
+
+// electMaster makes masterIP the master and points every Sentinel at it. If the
+// elected pod is a reachable replica (a surviving replica of a dead master, in the
+// leaderless case) it is first promoted with REPLICAOF NO ONE — SENTINEL MONITOR
+// alone would not promote it, and Rule R skips the elected master, so nothing else
+// would. An unreachable / wait-looping elect (the no-data reseed) starts fresh as
+// master via its own startup script, so no promotion is issued.
+func (r *LittleRedReconciler) electMaster(ctx context.Context, lr *littleredv1alpha1.LittleRed, state *redisclient.SentinelClusterState, masterIP, password string, quorum int) error {
+	if rn := state.RedisNodes[masterIP]; rn != nil && rn.Reachable && rn.Role != RoleMaster {
+		auditLog := r.getLogger(ctx, lr, LogCategoryAudit)
+		auditLog.Info("Promoting elected pod to master (REPLICAOF NO ONE)", "master", masterIP, "wasRole", rn.Role)
+		addr := fmt.Sprintf("%s:%d", masterIP, littleredv1alpha1.RedisPort)
+		if err := redisclient.SlaveOf(ctx, addr, password, "", "", lr.Spec.TLS.Enabled); err != nil {
+			return fmt.Errorf("promote elected master %s: %w", masterIP, err)
+		}
 	}
-	auditLog.Info(msg, "master", best.IP, "masterPod", best.PodName, "keys", best.Keys, "offset", best.Offset,
-		"candidates", len(holders), "divergedLineages", diverged)
-	if _, _, err := r.seedSentinelsWithMaster(ctx, lr, best.IP, password, quorum); err != nil {
-		return err
-	}
-	r.event(lr, corev1.EventTypeWarning, reasonUnsafeRebootstrap, msg)
-	return r.clearLeaderlessSince(ctx, lr, reasonUnsafeRebootstrap, msg)
+	_, _, err := r.seedSentinelsWithMaster(ctx, lr, masterIP, password, quorum)
+	return err
 }
 
 // pickBootstrapMasterIP returns the IP to elect as master for a no-data rebootstrap.
@@ -1719,11 +1759,12 @@ func (r *LittleRedReconciler) pickBootstrapMasterIP(lr *littleredv1alpha1.Little
 
 // Reasons for the LeaderlessRecovery status condition.
 const (
-	reasonDeadlockDetected   = "DeadlockDetected"
-	reasonRefusedDataPresent = "RefusedDataPresent"
-	reasonReseeded           = "Reseeded"
-	reasonUnsafeRebootstrap  = "UnsafeRebootstrap"
-	reasonRecovered          = "Recovered"
+	reasonDeadlockDetected     = "DeadlockDetected"
+	reasonRefusedDataPresent   = "RefusedDataPresent"
+	reasonReseeded             = "Reseeded"
+	reasonReseededFromSurvivor = "ReseededFromSurvivor"
+	reasonUnsafeRebootstrap    = "UnsafeRebootstrap"
+	reasonRecovered            = "Recovered"
 )
 
 // setLeaderlessSince stamps Status.LeaderlessSince and sets the LeaderlessRecovery

@@ -415,13 +415,15 @@ type SentinelSpec struct {
 	ParallelSyncs int `json:"parallelSyncs,omitempty"`
 
 	// AllowUnsafeRebootstrapOnDeadlock permits the operator to break a leaderless
-	// Sentinel bootstrap deadlock even when surviving Redis pods still hold data.
-	// When set, the operator force-elects the best-effort most-complete pod (the
-	// one with the highest replication offset) as master and points every Sentinel
-	// at it. This CAN DISCARD DATA on the other pods, which full-resync from the
-	// elected master. Only enable for instances where data loss is acceptable
-	// (e.g. caches). Default false: with data present the operator refuses to
-	// rebootstrap and waits for an operator to intervene.
+	// Sentinel bootstrap deadlock when TWO OR MORE surviving Redis pods hold data.
+	// (A deadlock with no data, or with a single data-holding pod, is always broken
+	// automatically and safely — the sole holder is promoted, discarding nothing —
+	// regardless of this flag.) When two or more pods hold data, electing one as
+	// master necessarily DISCARDS the data on the others, which full-resync from the
+	// elected pod. With this flag set the operator force-elects the best-effort
+	// most-complete pod (highest replication offset); with it unset it refuses and
+	// waits for manual intervention. Only enable for instances where data loss is
+	// acceptable (e.g. caches).
 	// +kubebuilder:default=false
 	// +optional
 	AllowUnsafeRebootstrapOnDeadlock bool `json:"allowUnsafeRebootstrapOnDeadlock,omitempty"`

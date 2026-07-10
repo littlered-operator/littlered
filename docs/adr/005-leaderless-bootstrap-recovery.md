@@ -49,19 +49,29 @@ It is deliberately conservative and fires only in the deadlock signature:
    fast requeue re-checks well within that window, so a transient rollout blip clears the marker
    long before the cooldown expires.
 
-The action is **data-aware**. The gatherer now collects per-pod key count (`INFO keyspace`) and
-replication id into `RedisNodeState.Keys` / `.Replid`:
+The action is **data-aware**, keyed on the count of *reachable pods holding keys* (the gatherer
+now collects per-pod key count via `INFO keyspace` and the replication id into
+`RedisNodeState.Keys` / `.Replid`). The opt-in flag guards exactly one thing — electing a master
+that **discards** data on a pod we do not elect — which happens only with two or more holders:
 
-- **No reachable pod holds data** → safe. Seed `redis-0` as master via `seedSentinelsWithMaster`
-  (the per-pod-IP MONITOR loop shared with `bootstrapSentinel`). In a pure in-memory store an
-  unreachable or wait-looping server has no data by definition, so this is the common
-  mass-restart case.
-- **Some pod holds data** → destructive to break. **Refuse** and wait for a human, unless the
+- **0 holders** → seed `redis-0` via `seedSentinelsWithMaster` (the per-pod-IP MONITOR loop shared
+  with `bootstrapSentinel`). Pure in-memory ⇒ an unreachable or wait-looping server has no data,
+  so this is the common mass-restart case.
+- **Exactly 1 holder** → promote that pod. It is necessarily a *surviving replica of a dead
+  master* (a reachable `role:master` would have set `RealMasterIP` and we would not be here), and
+  it holds the only copy of the data — electing it discards nothing. **Safe, no opt-in.**
+- **≥2 holders** → electing one discards the others. **Refuse** and wait for a human, unless the
   owner opted in via `sentinel.allowUnsafeRebootstrapOnDeadlock`. When opted in, force-elect the
   most-complete pod (`BestDataHolder()`: highest replication offset, tie-broken by key count then
-  IP) and log — loudly — that data on the other pods will be discarded, and, when the holders
-  span multiple replication lineages (distinct `master_replid`), that genuinely independent
-  writes will be lost.
+  IP) and log — loudly — that data on the other pods will be discarded, and, when the holders span
+  multiple replication lineages (distinct `master_replid`), that genuinely independent writes will
+  be lost.
+
+Because a sole/best holder in the leaderless state is a *running* replica following a dead master,
+electing it is not just `SENTINEL MONITOR`: `electMaster` first issues `REPLICAOF NO ONE` to
+promote it (Sentinel would not promote a monitored-but-slave instance, and Rule R skips the
+elected master). A no-data elect (`redis-0`, unreachable/wait-looping) needs no promotion — it
+starts fresh as master via its own startup script once Sentinel names it.
 
 ## Rationale
 - **Why key count, not role.** Role does not answer "does this pod hold data" — a freshly

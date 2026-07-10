@@ -207,6 +207,25 @@ func TestDataHoldersAndBestDataHolder(t *testing.T) {
 		}
 	})
 
+	t.Run("single holder among empty and unreachable peers", func(t *testing.T) {
+		// The tier-2 (safe, no-flag) case: exactly one reachable pod has data, one
+		// peer is reachable-and-empty, one peer is unreachable (== empty by pure
+		// in-memory). DataHolders must be size 1 so recovery elects it without the
+		// unsafe flag.
+		s := NewSentinelClusterState()
+		s.RedisNodes["10.0.0.1"] = &RedisNodeState{IP: "10.0.0.1", Reachable: true, Keys: 42, Offset: 500, Role: flagSlave}
+		s.RedisNodes["10.0.0.2"] = &RedisNodeState{IP: "10.0.0.2", Reachable: true, Keys: 0}
+		s.RedisNodes["10.0.0.3"] = &RedisNodeState{IP: "10.0.0.3", Reachable: false, Keys: 0}
+		holders := s.DataHolders()
+		if len(holders) != 1 {
+			t.Fatalf("DataHolders() = %d, want 1 (sole reachable data holder)", len(holders))
+		}
+		best, diverged := s.BestDataHolder()
+		if best == nil || best.IP != "10.0.0.1" || diverged {
+			t.Errorf("BestDataHolder() = (%v, diverged=%v), want (10.0.0.1, false)", best, diverged)
+		}
+	})
+
 	t.Run("highest offset wins", func(t *testing.T) {
 		s := NewSentinelClusterState()
 		s.RedisNodes["10.0.0.1"] = &RedisNodeState{IP: "10.0.0.1", Reachable: true, Keys: 500, Offset: 100, Replid: "A"}
