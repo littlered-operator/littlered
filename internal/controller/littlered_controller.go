@@ -1628,57 +1628,46 @@ func (r *LittleRedReconciler) recoverLeaderlessDeadlock(
 	if lr.Spec.Sentinel != nil && lr.Spec.Sentinel.Quorum > 0 {
 		quorum = lr.Spec.Sentinel.Quorum
 	}
+	allowUnsafe := lr.Spec.Sentinel != nil && lr.Spec.Sentinel.AllowUnsafeRebootstrapOnDeadlock
 
-	// Guard: must be the bare-sentinel deadlock signature with a reachable quorum.
-	bare, reachableSentinels := state.AllSentinelsBare()
-	if !bare || reachableSentinels < quorum {
-		// Not a bootstrap deadlock (a Sentinel is monitoring something, or too few
-		// are reachable to form consensus). Clear any stale marker and wait.
-		return r.clearLeaderlessSince(ctx, lr, reasonRecovered, "No longer in a bare-Sentinel deadlock.")
+	var since *time.Time
+	if lr.Status.LeaderlessSince != nil {
+		since = &lr.Status.LeaderlessSince.Time
 	}
+	bootstrapMasterIP := r.pickBootstrapMasterIP(lr, redisMap)
 
-	// Persistence gate: record first observation, act only after the cooldown.
-	if lr.Status.LeaderlessSince == nil {
+	// The decision is a pure function (planLeaderlessRecovery) so every gate and
+	// tier is unit-tested without I/O. This method only executes the plan.
+	plan := planLeaderlessRecovery(state, quorum, allowUnsafe, bootstrapMasterIP, since, time.Now(), leaderlessRecoveryCooldown)
+
+	switch plan.action {
+	case recoveryClearMarker:
+		// Not (or no longer) a bare-sentinel deadlock. Clear any stale marker.
+		return r.clearLeaderlessSince(ctx, lr, reasonRecovered, "No longer in a bare-Sentinel deadlock.")
+
+	case recoveryStartCooldown:
 		log.Info("Leaderless bootstrap deadlock suspected; starting cooldown before recovery",
 			"cooldown", leaderlessRecoveryCooldown.String())
 		return r.setLeaderlessSince(ctx, lr, metav1.Now())
-	}
-	if age := time.Since(lr.Status.LeaderlessSince.Time); age < leaderlessRecoveryCooldown {
-		log.Info("Leaderless bootstrap deadlock persists; waiting out cooldown",
-			"observedFor", age.Round(time.Second).String(), "cooldown", leaderlessRecoveryCooldown.String())
+
+	case recoveryWait:
+		log.Info("Leaderless bootstrap deadlock persists; waiting", "holders", plan.holders,
+			"cooldown", leaderlessRecoveryCooldown.String())
 		return nil
-	}
 
-	// Decide who to elect, subject to data safety. The flag only guards the case
-	// where electing a master would DISCARD data on a pod we do not elect — i.e.
-	// two or more reachable pods hold data. Electing the sole data holder discards
-	// nothing, so it (and the no-data case) is always safe.
-	holders := state.DataHolders()
-
-	switch {
-	case len(holders) == 0:
-		// No reachable pod holds data. In a pure in-memory store an unreachable /
-		// wait-looping server has no data by definition, so this is the common
-		// mass-restart case. Elect redis-0 as master.
-		masterIP := r.pickBootstrapMasterIP(lr, redisMap)
-		if masterIP == "" {
-			log.Info("Leaderless recovery: no eligible Redis pod IP yet, will retry")
-			return nil
-		}
-		msg := fmt.Sprintf("Leaderless recovery: no data present, seeded %s as master", redisMap[masterIP])
-		auditLog.Info(msg, "master", masterIP, "masterPod", redisMap[masterIP], "reachableSentinels", reachableSentinels)
-		if err := r.electMaster(ctx, lr, state, masterIP, password, quorum); err != nil {
+	case recoverySeedNoData:
+		msg := fmt.Sprintf("Leaderless recovery: no data present, seeded %s as master", redisMap[plan.masterIP])
+		auditLog.Info(msg, "master", plan.masterIP, "masterPod", redisMap[plan.masterIP])
+		if err := r.electMaster(ctx, lr, state, plan.masterIP, password, quorum); err != nil {
 			return err
 		}
 		r.event(lr, corev1.EventTypeNormal, reasonReseeded, msg)
 		return r.clearLeaderlessSince(ctx, lr, reasonReseeded, msg)
 
-	case len(holders) == 1:
-		// Exactly one reachable pod holds data (necessarily a surviving replica of a
-		// now-dead master: a reachable role:master would have set RealMasterIP and we
-		// would not be here). Electing it loses nothing — every other pod is empty or
-		// unreachable (== empty, pure in-memory). Safe, no opt-in required.
-		h := holders[0]
+	case recoveryPromoteSurvivor:
+		// The sole data holder — a surviving replica of a dead master. Electing it
+		// loses nothing (every other pod is empty or unreachable == empty).
+		h := state.RedisNodes[plan.masterIP]
 		msg := fmt.Sprintf("Leaderless recovery: %s is the only pod with data (keys=%d); "+
 			"promoting it as master — no data discarded", h.PodName, h.Keys)
 		auditLog.Info(msg, "master", h.IP, "masterPod", h.PodName, "keys", h.Keys, "offset", h.Offset)
@@ -1688,37 +1677,32 @@ func (r *LittleRedReconciler) recoverLeaderlessDeadlock(
 		r.event(lr, corev1.EventTypeNormal, reasonReseededFromSurvivor, msg)
 		return r.clearLeaderlessSince(ctx, lr, reasonReseededFromSurvivor, msg)
 
-	default: // >= 2 holders
-		// Multiple pods hold data. Electing any one discards the others, so this is
-		// destructive and requires explicit opt-in.
-		if lr.Spec.Sentinel == nil || !lr.Spec.Sentinel.AllowUnsafeRebootstrapOnDeadlock {
-			msg := fmt.Sprintf("Bootstrap deadlock: %d Redis pods hold data. Refusing to rebootstrap "+
-				"(would discard data on all but one). Set sentinel.allowUnsafeRebootstrapOnDeadlock=true "+
-				"to authorize, or intervene manually.", len(holders))
-			log.Info(msg)
-			// Surface loudly and durably; keep LeaderlessSince set so the state stays visible.
-			r.event(lr, corev1.EventTypeWarning, reasonRefusedDataPresent, msg)
-			return r.setLeaderlessCondition(ctx, lr, metav1.ConditionTrue, reasonRefusedDataPresent, msg)
-		}
+	case recoveryRefuse:
+		msg := fmt.Sprintf("Bootstrap deadlock: %d Redis pods hold data. Refusing to rebootstrap "+
+			"(would discard data on all but one). Set sentinel.allowUnsafeRebootstrapOnDeadlock=true "+
+			"to authorize, or intervene manually.", plan.holders)
+		log.Info(msg)
+		// Surface loudly and durably; keep LeaderlessSince set so the state stays visible.
+		r.event(lr, corev1.EventTypeWarning, reasonRefusedDataPresent, msg)
+		return r.setLeaderlessCondition(ctx, lr, metav1.ConditionTrue, reasonRefusedDataPresent, msg)
 
-		best, diverged := state.BestDataHolder()
-		if best == nil { // defensive; holders is non-empty so this should not happen
-			return nil
-		}
+	case recoveryUnsafeElect:
+		best := state.RedisNodes[plan.masterIP]
 		msg := fmt.Sprintf("UNSAFE rebootstrap: force-elected %s (keys=%d, offset=%d) as master; data on %d other "+
-			"pod(s) will be DISCARDED via full resync", best.PodName, best.Keys, best.Offset, len(holders)-1)
-		if diverged {
+			"pod(s) will be DISCARDED via full resync", best.PodName, best.Keys, best.Offset, plan.holders-1)
+		if plan.diverged {
 			msg += ". WARNING: data-holding pods span multiple replication lineages — offsets are not comparable " +
 				"and genuinely independent writes will be lost"
 		}
 		auditLog.Info(msg, "master", best.IP, "masterPod", best.PodName, "keys", best.Keys, "offset", best.Offset,
-			"candidates", len(holders), "divergedLineages", diverged)
+			"candidates", plan.holders, "divergedLineages", plan.diverged)
 		if err := r.electMaster(ctx, lr, state, best.IP, password, quorum); err != nil {
 			return err
 		}
 		r.event(lr, corev1.EventTypeWarning, reasonUnsafeRebootstrap, msg)
 		return r.clearLeaderlessSince(ctx, lr, reasonUnsafeRebootstrap, msg)
 	}
+	return nil
 }
 
 // electMaster makes masterIP the master and points every Sentinel at it. If the
@@ -1728,9 +1712,9 @@ func (r *LittleRedReconciler) recoverLeaderlessDeadlock(
 // would. An unreachable / wait-looping elect (the no-data reseed) starts fresh as
 // master via its own startup script, so no promotion is issued.
 func (r *LittleRedReconciler) electMaster(ctx context.Context, lr *littleredv1alpha1.LittleRed, state *redisclient.SentinelClusterState, masterIP, password string, quorum int) error {
-	if rn := state.RedisNodes[masterIP]; rn != nil && rn.Reachable && rn.Role != RoleMaster {
+	if needsPromotion(state, masterIP) {
 		auditLog := r.getLogger(ctx, lr, LogCategoryAudit)
-		auditLog.Info("Promoting elected pod to master (REPLICAOF NO ONE)", "master", masterIP, "wasRole", rn.Role)
+		auditLog.Info("Promoting elected pod to master (REPLICAOF NO ONE)", "master", masterIP, "wasRole", state.RedisNodes[masterIP].Role)
 		addr := fmt.Sprintf("%s:%d", masterIP, littleredv1alpha1.RedisPort)
 		if err := redisclient.SlaveOf(ctx, addr, password, "", "", lr.Spec.TLS.Enabled); err != nil {
 			return fmt.Errorf("promote elected master %s: %w", masterIP, err)
