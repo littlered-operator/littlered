@@ -155,7 +155,18 @@ spec:
 			By("writing data (replicated to both replicas)")
 			_, err := redisExec(testNamespace, master, "SET", "multi-key", "multi-value")
 			Expect(err).NotTo(HaveOccurred())
-			time.Sleep(5 * time.Second) // let replication propagate
+
+			By("waiting for BOTH replicas to actually hold the data before we kill the master")
+			// Establish the tier's own precondition: the ≥2-holder gate is only meaningful if
+			// both survivors genuinely hold keys. (The single-survivor tier does the same.)
+			replicas := otherRedisPods(crName, master)
+			Expect(replicas).To(HaveLen(2))
+			for _, r := range replicas {
+				Eventually(func(g Gomega) {
+					out, _ := redisExec(testNamespace, r, "DBSIZE")
+					g.Expect(strings.TrimSpace(out)).NotTo(Equal("0"))
+				}, 30*time.Second, 2*time.Second).Should(Succeed(), "replica %s never received the replicated data", r)
+			}
 
 			By("killing the master and all sentinels — both replicas survive with data")
 			_, _ = deletePodsWithLabel(testNamespace, "app.kubernetes.io/instance="+crName+",app.kubernetes.io/component=sentinel")

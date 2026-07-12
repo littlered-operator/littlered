@@ -14,7 +14,7 @@ Specific problems observed:
 ## Decision
 Revert the reconciliation behavior to a low-interference approach:
 
-1. **Remove SLAVEOF healing** (Rule C): The operator no longer issues `SLAVEOF` commands to Redis nodes. Sentinel handles all replica reconfiguration.
+1. **Remove SLAVEOF healing** (Rule C): The operator no longer issues `SLAVEOF` commands to Redis nodes. Sentinel handles all replica reconfiguration. *(Partially superseded by LR-009: the operator does issue `SLAVEOF <RealMasterIP>` to a pod following the wrong/ghost master — "Rule R, Replica Rescue" — but only on a definitively-wrong `Role`/`MasterHost`, never on transient `link:down`, so it never races Sentinel's own reconfiguration. See LR-009/LR-010 and the 2026-02-19 amendment's supersession note.)*
 
 2. **Narrow MONITOR healing** (Rule B → Rule 0): The operator no longer re-issues `SENTINEL MONITOR` to sentinels that already have a master configured — that was the race-inducing behavior. The sole exception is a sentinel that is reachable but has **no master configured at all** (`Reachable && !Monitoring`). Such a sentinel cannot self-heal via gossip: gossip requires an existing master config to subscribe to the pubsub channel, creating a circular dependency. Issuing `SENTINEL MONITOR` to a blank sentinel is non-disruptive to the rest of the cluster and is the only way to bring it back into the quorum. This targeted form is called **Rule 0** in the code.
 
@@ -27,6 +27,16 @@ Revert the reconciliation behavior to a low-interference approach:
 6. **Simplify phase check**: `updateSentinelStatus` no longer polls Sentinel for replica count. The phase check uses only StatefulSet readiness and master pod presence.
 
 ## Amendment (2026-02-19): zombie-replica self-healing
+
+> **Superseded (2026-07-12, LR-016).** The topology-aware liveness probe described below
+> was reduced to a plain local health check. Restarting a data-holding pod to fix its
+> replication target is a blunt, EmptyDir-wiping instrument that cannot distinguish a
+> zombie (a real master exists — restart re-bootstraps onto it) from a leaderless survivor
+> (no master exists — restart destroys the last copy of the data). Both are locally
+> identical (`role:slave` + `link:down` + master unreachable). Zombie redirect is now owned
+> by **Rule R** (LR-009: `SLAVEOF <RealMasterIP>`, surgical, no restart), and the
+> leaderless case by **Rule L** (LR-015). The readiness probe (below) is retained and still
+> isolates a zombie from traffic. The historical rationale is kept below for context.
 
 ### Zombie replica problem
 
@@ -100,6 +110,6 @@ The action is a direct extension of Rule D (ghost pruning): Rule D removes ghost
 - The operator is now a "setup and observe" controller for Sentinel mode: it creates resources, bootstraps Sentinel, prunes ghosts, and updates labels/status.
 - Sentinel is the sole authority for failover decisions and replica reconfiguration.
 - Recovery from complex failure scenarios (e.g., all pods restarting simultaneously) may take longer, as the operator no longer force-heals the topology. This is acceptable because Sentinel is designed to handle these scenarios.
-- Zombie replicas are self-healing: Kubernetes restarts them without operator involvement, within `downAfterMilliseconds + failoverTimeout + buffer` seconds of the ghost master disappearing.
+- Zombie replicas are self-healing: ~~Kubernetes restarts them without operator involvement, within `downAfterMilliseconds + failoverTimeout + buffer` seconds of the ghost master disappearing.~~ *(Superseded by LR-016: the operator redirects a zombie via Rule R `SLAVEOF` without a restart, faster and without wiping data; readiness keeps it out of traffic meanwhile.)*
 - Sentinels that are permanently stuck with a ghost master after a dual-failover race are healed by a targeted RESET once the cluster settles (Rule A clears), without operator-directed master promotion.
 - The `GetHealActions()` method on `SentinelClusterState` remains for CLI diagnostic use but the operator does not act on its recommendations.

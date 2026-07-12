@@ -716,40 +716,42 @@ func TestBuildSentinelLivenessProbe(t *testing.T) {
 	}
 
 	cmd := strings.Join(probe.Exec.Command, " ")
-	if !strings.Contains(cmd, "info replication") {
-		t.Errorf("probe command should query 'info replication', got: %s", cmd)
-	}
-	if !strings.Contains(cmd, "role:master") {
-		t.Errorf("probe command should check role:master, got: %s", cmd)
-	}
-	if !strings.Contains(cmd, "master_link_status:up") {
-		t.Errorf("probe command should check master_link_status:up, got: %s", cmd)
-	}
-	if !strings.Contains(cmd, "master_host") {
-		t.Errorf("probe command should extract master_host for reachability check, got: %s", cmd)
-	}
+	// LR-016: the sentinel liveness probe is a plain local health check. It must NOT make
+	// topology decisions — restarting a masterless replica during a leaderless deadlock wipes
+	// the survivor data Rule L preserves. Zombie redirect is Rule R's job; leaderless is Rule L's.
 	if !strings.Contains(cmd, "bootstrap-in-progress") {
 		t.Errorf("probe command should skip check while bootstrap is in progress, got: %s", cmd)
 	}
+	if !strings.Contains(cmd, "ping") {
+		t.Errorf("probe command should PING locally, got: %s", cmd)
+	}
+	if strings.Contains(cmd, "info replication") {
+		t.Errorf("probe must NOT inspect replication topology (LR-016), got: %s", cmd)
+	}
+	if strings.Contains(cmd, "master_link_status") || strings.Contains(cmd, "master_host") {
+		t.Errorf("probe must NOT decide on master link/host (LR-016), got: %s", cmd)
+	}
 
-	// downAfterMs=5000 + failoverTimeout=10000 + buffer=15000 = 30000ms
-	// ceil(30000 / 10000ms-period) = 3 → hits the minimum
 	if probe.FailureThreshold != 3 {
-		t.Errorf("FailureThreshold = %d, want 3 for downAfter=5000 failoverTimeout=10000", probe.FailureThreshold)
+		t.Errorf("FailureThreshold = %d, want 3", probe.FailureThreshold)
 	}
 	if probe.InitialDelaySeconds != 15 {
 		t.Errorf("InitialDelaySeconds = %d, want 15", probe.InitialDelaySeconds)
 	}
 }
 
-func TestBuildSentinelLivenessProbeDefaultTimings(t *testing.T) {
-	// When Sentinel spec is nil, probe uses hardcoded defaults (30s + 180s + 15s buffer).
-	lr := newTestLittleRed(testLRName, testNamespace)
-	probe := buildSentinelLivenessProbe(lr)
-
-	// ceil((30000 + 180000 + 15000) / 10000) = ceil(22.5) = 23
-	if probe.FailureThreshold != 23 {
-		t.Errorf("FailureThreshold = %d, want 23 for default sentinel timings", probe.FailureThreshold)
+func TestBuildSentinelLivenessProbeThresholdIndependentOfTimings(t *testing.T) {
+	// LR-016: the failure threshold no longer derives from downAfter+failoverTimeout (the probe
+	// no longer waits out a failover window). It is a fixed local-health threshold regardless of
+	// Sentinel timings — including the nil-spec default path.
+	nilSpec := newTestLittleRed(testLRName, testNamespace)
+	if got := buildSentinelLivenessProbe(nilSpec).FailureThreshold; got != 3 {
+		t.Errorf("nil sentinel spec: FailureThreshold = %d, want 3", got)
+	}
+	bigSpec := newTestLittleRed(testLRName, testNamespace)
+	bigSpec.Spec.Sentinel = &littleredv1alpha1.SentinelSpec{DownAfterMilliseconds: 30000, FailoverTimeout: 180000}
+	if got := buildSentinelLivenessProbe(bigSpec).FailureThreshold; got != 3 {
+		t.Errorf("large sentinel timings: FailureThreshold = %d, want 3 (must not scale with timings)", got)
 	}
 }
 
