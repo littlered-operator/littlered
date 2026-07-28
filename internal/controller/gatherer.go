@@ -31,6 +31,11 @@ type operatorGatherer struct {
 }
 
 func (g *operatorGatherer) GetRedisState(ctx context.Context, podName, ip string) (*redisclient.RedisNodeState, error) {
+	// Hard per-probe deadline, same rationale as the cluster probes below: a stale/
+	// dead pod IP (INFO on a blackholing address) must fail fast instead of blocking
+	// the gather on dial retries. Sentinel mode previously lacked this. See ProbeTimeout.
+	ctx, cancel := context.WithTimeout(ctx, redisclient.ProbeTimeout)
+	defer cancel()
 	addr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.RedisPort)
 	snap, err := redisclient.GetReplicationInfo(ctx, addr, g.password, g.tlsEnabled)
 	if err != nil {
@@ -85,7 +90,7 @@ func (g *operatorGatherer) GetSentinelState(ctx context.Context, podName, ip str
 func (g *operatorGatherer) GetClusterID(ctx context.Context, podName, ip string) (string, error) {
 	// Hard per-probe deadline: a stale/dead pod IP must fail fast instead of
 	// blocking the gather (and thus the reconcile loop) on dial retries. See LR-012.
-	ctx, cancel := context.WithTimeout(ctx, redisclient.ClusterProbeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, redisclient.ProbeTimeout)
 	defer cancel()
 	cc := redisclient.NewClusterClient(g.password, g.tlsEnabled)
 	addr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.RedisPort)
@@ -93,7 +98,7 @@ func (g *operatorGatherer) GetClusterID(ctx context.Context, podName, ip string)
 }
 
 func (g *operatorGatherer) GetClusterInfo(ctx context.Context, podName, ip string) (*redisclient.ClusterInfo, error) {
-	ctx, cancel := context.WithTimeout(ctx, redisclient.ClusterProbeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, redisclient.ProbeTimeout)
 	defer cancel()
 	cc := redisclient.NewClusterClient(g.password, g.tlsEnabled)
 	addr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.RedisPort)
@@ -101,7 +106,7 @@ func (g *operatorGatherer) GetClusterInfo(ctx context.Context, podName, ip strin
 }
 
 func (g *operatorGatherer) GetClusterNodes(ctx context.Context, podName, ip string) ([]redisclient.ClusterNodeInfo, error) {
-	ctx, cancel := context.WithTimeout(ctx, redisclient.ClusterProbeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, redisclient.ProbeTimeout)
 	defer cancel()
 	cc := redisclient.NewClusterClient(g.password, g.tlsEnabled)
 	addr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.RedisPort)

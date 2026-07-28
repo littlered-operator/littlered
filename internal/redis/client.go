@@ -56,14 +56,19 @@ const (
 	SentinelMasterName = "mymaster"
 	// DefaultTimeout for redis operations
 	DefaultTimeout = 5 * time.Second
-	// ClusterProbeTimeout bounds a single ground-truth probe (CLUSTER MYID/INFO/NODES)
-	// against one pod. Ground-truth gathering dials every expected pod IP, and during
-	// pod churn the K8s pod cache can hand us a stale IP belonging to a deleted pod.
-	// Without a hard per-probe deadline, go-redis spends ~25s (5 dial attempts ×
-	// DefaultTimeout) on each dead IP, serializing the whole reconcile loop behind it.
-	// A short deadline lets a dead IP fail fast while staying far above the sub-second
-	// response time of a live in-cluster node. See LR-012.
-	ClusterProbeTimeout = 3 * time.Second
+	// ProbeTimeout bounds a single ground-truth probe against one pod address — a
+	// cluster probe (CLUSTER MYID/INFO/NODES), a sentinel probe (SENTINEL master/
+	// replicas, GET-MASTER-ADDR), or a Redis INFO. Ground-truth gathering and status
+	// resolution dial every expected pod IP, and during pod churn the K8s pod cache
+	// can hand us a stale IP belonging to a deleted pod. Without a hard per-probe
+	// deadline, go-redis spends ~25s (5 dial attempts × DefaultTimeout) on each dead
+	// IP, serializing the whole reconcile loop behind it — and on a managed cloud a
+	// killed pod's IP blackholes (i/o timeout) rather than RST-ing fast, so the stall
+	// is real, not theoretical. A short deadline lets a dead IP fail fast while staying
+	// far above the sub-second response time of a live in-cluster node. Originally
+	// added for cluster mode (LR-012); sentinel mode lacked it and hit the identical
+	// stall — see the cross-mode-parity rule in CLAUDE.md.
+	ProbeTimeout = 3 * time.Second
 )
 
 // MasterInfo contains information about the current master
@@ -96,7 +101,9 @@ func (c *SentinelClient) GetMaster(ctx context.Context) (*MasterInfo, error) {
 	var lastErr error
 
 	for _, addr := range c.addresses {
-		master, err := c.getMasterFromSentinel(ctx, addr)
+		actx, cancel := context.WithTimeout(ctx, ProbeTimeout)
+		master, err := c.getMasterFromSentinel(actx, addr)
+		cancel()
 		if err != nil {
 			lastErr = err
 			continue
@@ -115,6 +122,7 @@ func (c *SentinelClient) GetMasterState(ctx context.Context, name string) (*Mast
 	var lastErr error
 
 	for _, addr := range c.addresses {
+		actx, cancel := context.WithTimeout(ctx, ProbeTimeout)
 		client := redis.NewSentinelClient(&redis.Options{
 			Addr:        addr,
 			Password:    c.password,
@@ -122,8 +130,9 @@ func (c *SentinelClient) GetMasterState(ctx context.Context, name string) (*Mast
 			ReadTimeout: DefaultTimeout,
 			TLSConfig:   makeTLSConfig(c.tlsEnabled),
 		})
-		result, err := client.Master(ctx, name).Result()
+		result, err := client.Master(actx, name).Result()
 		_ = client.Close()
+		cancel()
 
 		if err != nil {
 			lastErr = err
@@ -149,6 +158,7 @@ func (c *SentinelClient) GetMasterState(ctx context.Context, name string) (*Mast
 func (c *SentinelClient) IsFailoverInProgress(ctx context.Context, name string) (bool, error) {
 	reachable := false
 	for _, addr := range c.addresses {
+		actx, cancel := context.WithTimeout(ctx, ProbeTimeout)
 		client := redis.NewSentinelClient(&redis.Options{
 			Addr:        addr,
 			Password:    c.password,
@@ -156,8 +166,9 @@ func (c *SentinelClient) IsFailoverInProgress(ctx context.Context, name string) 
 			ReadTimeout: DefaultTimeout,
 			TLSConfig:   makeTLSConfig(c.tlsEnabled),
 		})
-		result, err := client.Master(ctx, name).Result()
+		result, err := client.Master(actx, name).Result()
 		_ = client.Close()
+		cancel()
 
 		if err != nil {
 			continue
@@ -183,7 +194,9 @@ func (c *SentinelClient) GetMasterAcrossAll(ctx context.Context) (map[string]int
 	reachable := 0
 
 	for _, addr := range c.addresses {
-		master, err := c.getMasterFromSentinel(ctx, addr)
+		actx, cancel := context.WithTimeout(ctx, ProbeTimeout)
+		master, err := c.getMasterFromSentinel(actx, addr)
+		cancel()
 		if err != nil {
 			continue
 		}
@@ -341,7 +354,9 @@ func (c *SentinelClient) GetReplicas(ctx context.Context, masterName string) ([]
 	var lastErr error
 
 	for _, addr := range c.addresses {
-		replicas, err := c.getReplicasFromSentinel(ctx, addr, masterName)
+		actx, cancel := context.WithTimeout(ctx, ProbeTimeout)
+		replicas, err := c.getReplicasFromSentinel(actx, addr, masterName)
+		cancel()
 		if err != nil {
 			lastErr = err
 			continue

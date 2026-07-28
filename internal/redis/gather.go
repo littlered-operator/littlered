@@ -33,26 +33,70 @@ type Gatherer interface {
 	GetClusterNodes(ctx context.Context, podName, ip string) ([]ClusterNodeInfo, error)
 }
 
-// GatherClusterState uses a Gatherer to populate a SentinelClusterState
+// GatherClusterState uses a Gatherer to populate a SentinelClusterState.
+//
+// Every Redis and Sentinel pod is probed concurrently: a single unreachable IP —
+// e.g. a stale pod IP the K8s cache hands us during pod churn — must not
+// serialize-block the whole gather behind its dial timeout, or the reconcile loop
+// cannot heal fast enough. This is the sentinel-mode analogue of the cluster-mode
+// concurrent gather (see gatherNodeIdentities / LR-012); it was previously a plain
+// sequential loop, and the same blackhole-dial stall then bit sentinel mode on a
+// managed cloud. See the cross-mode-parity rule in CLAUDE.md.
 func GatherClusterState(ctx context.Context, g Gatherer, redisPods, sentinelPods map[string]string) *SentinelClusterState {
 	state := NewSentinelClusterState()
 
+	type redisResult struct {
+		ip string
+		rs *RedisNodeState
+	}
+	type sentinelResult struct {
+		ip string
+		ss *SentinelNodeState
+	}
+
+	redisResults := make([]redisResult, 0, len(redisPods))
+	sentinelResults := make([]sentinelResult, 0, len(sentinelPods))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
 	for ip, name := range redisPods {
 		state.ValidIPs[ip] = true
-		if rs, err := g.GetRedisState(ctx, name, ip); err == nil {
-			state.RedisNodes[ip] = rs
-		} else {
-			state.RedisNodes[ip] = &RedisNodeState{PodName: name, IP: ip, Reachable: false}
-		}
+		wg.Add(1)
+		go func(ip, name string) {
+			defer wg.Done()
+			rs, err := g.GetRedisState(ctx, name, ip)
+			if err != nil {
+				rs = &RedisNodeState{PodName: name, IP: ip, Reachable: false}
+			}
+			mu.Lock()
+			redisResults = append(redisResults, redisResult{ip: ip, rs: rs})
+			mu.Unlock()
+		}(ip, name)
 	}
 
 	for ip, name := range sentinelPods {
 		state.ValidIPs[ip] = true
-		if ss, err := g.GetSentinelState(ctx, name, ip); err == nil {
-			state.SentinelNodes[ip] = ss
-		} else {
-			state.SentinelNodes[ip] = &SentinelNodeState{PodName: name, IP: ip, Reachable: false}
-		}
+		wg.Add(1)
+		go func(ip, name string) {
+			defer wg.Done()
+			ss, err := g.GetSentinelState(ctx, name, ip)
+			if err != nil {
+				ss = &SentinelNodeState{PodName: name, IP: ip, Reachable: false}
+			}
+			mu.Lock()
+			sentinelResults = append(sentinelResults, sentinelResult{ip: ip, ss: ss})
+			mu.Unlock()
+		}(ip, name)
+	}
+
+	wg.Wait()
+
+	// Assemble the maps single-threaded after the barrier (maps are not concurrency-safe).
+	for _, r := range redisResults {
+		state.RedisNodes[r.ip] = r.rs
+	}
+	for _, r := range sentinelResults {
+		state.SentinelNodes[r.ip] = r.ss
 	}
 
 	state.DetermineRealMaster()

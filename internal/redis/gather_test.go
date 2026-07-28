@@ -42,30 +42,50 @@ type fakeGatherer struct {
 	maxFlight int
 }
 
-func (f *fakeGatherer) GetRedisState(_ context.Context, podName, ip string) (*RedisNodeState, error) {
-	if f.dead[ip] {
-		return nil, errors.New("dial timeout")
-	}
-	return &RedisNodeState{PodName: podName, IP: ip, Reachable: true, LinkStatus: "up"}, nil
-}
-
-func (f *fakeGatherer) GetSentinelState(_ context.Context, _, _ string) (*SentinelNodeState, error) {
-	return nil, errors.New("not used")
-}
-
-func (f *fakeGatherer) GetClusterID(_ context.Context, _, ip string) (string, error) {
+// enter/leave track the max number of concurrently in-flight probes, so tests can
+// assert that a gather fans out instead of dialing pods one at a time.
+func (f *fakeGatherer) enter() {
 	f.mu.Lock()
 	f.inFlight++
 	if f.inFlight > f.maxFlight {
 		f.maxFlight = f.inFlight
 	}
 	f.mu.Unlock()
-	defer func() {
-		f.mu.Lock()
-		f.inFlight--
-		f.mu.Unlock()
-	}()
+}
 
+func (f *fakeGatherer) leave() {
+	f.mu.Lock()
+	f.inFlight--
+	f.mu.Unlock()
+}
+
+func (f *fakeGatherer) GetRedisState(_ context.Context, podName, ip string) (*RedisNodeState, error) {
+	f.enter()
+	defer f.leave()
+	if f.probeDelay > 0 {
+		time.Sleep(f.probeDelay)
+	}
+	if f.dead[ip] {
+		return nil, errors.New("dial timeout")
+	}
+	return &RedisNodeState{PodName: podName, IP: ip, Reachable: true, LinkStatus: "up"}, nil
+}
+
+func (f *fakeGatherer) GetSentinelState(_ context.Context, podName, ip string) (*SentinelNodeState, error) {
+	f.enter()
+	defer f.leave()
+	if f.probeDelay > 0 {
+		time.Sleep(f.probeDelay)
+	}
+	if f.dead[ip] {
+		return nil, errors.New("dial timeout")
+	}
+	return &SentinelNodeState{PodName: podName, IP: ip, Reachable: true, Monitoring: false}, nil
+}
+
+func (f *fakeGatherer) GetClusterID(_ context.Context, _, ip string) (string, error) {
+	f.enter()
+	defer f.leave()
 	if f.probeDelay > 0 {
 		time.Sleep(f.probeDelay)
 	}
@@ -200,6 +220,54 @@ func TestGatherClusterGroundTruth_ProbesRunConcurrently(t *testing.T) {
 	// single delay. Allow generous headroom to stay non-flaky on loaded CI.
 	if elapsed >= n*delay {
 		t.Fatalf("gather appears serial: elapsed %v >= serial bound %v", elapsed, n*delay)
+	}
+	if g.maxFlight < 2 {
+		t.Fatalf("expected concurrent probes, max in-flight was %d", g.maxFlight)
+	}
+}
+
+// TestGatherClusterState_ProbesRunConcurrently is the sentinel-mode analogue of the
+// cluster-mode concurrency guard above. It is a red-first regression test for the
+// leaderless-recovery stall observed on a managed cloud (op-logs: a single reconcile
+// blocked ~146s dialing freshly-killed Sentinel/Redis pod IPs that blackholed —
+// i/o timeout / no route to host — one after another). The stall froze status at
+// stale bootstrap values, so Rule L never ran inside the test window.
+//
+// The defect is that GatherClusterState probes every Redis pod and then every
+// Sentinel pod sequentially, so N unreachable endpoints cost N × (dial timeout ×
+// retries) instead of ~one. A blocking fakeGatherer makes that serial cost
+// observable: against the current sequential implementation this test is RED
+// (elapsed ≈ total-pods × delay, max in-flight = 1); a concurrent gather turns it
+// green. Locally/on kubeadm the real bug hides because dead IPs RST fast (~0 delay);
+// the delay here stands in for the cloud's blackhole timeout.
+func TestGatherClusterState_ProbesRunConcurrently(t *testing.T) {
+	const delay = 120 * time.Millisecond
+
+	redisPods := map[string]string{
+		"10.0.0.1": "redis-0",
+		"10.0.0.2": "redis-1",
+		"10.0.0.3": "redis-2",
+	}
+	sentinelPods := map[string]string{
+		"10.0.1.1": "sentinel-0",
+		"10.0.1.2": "sentinel-1",
+		"10.0.1.3": "sentinel-2",
+	}
+	totalPods := len(redisPods) + len(sentinelPods)
+
+	// Every probe is slow (stands in for a blackholing dead IP); none is marked dead
+	// so the timing, not an early error, is what the assertion turns on.
+	g := &fakeGatherer{nodeID: map[string]string{}, dead: map[string]bool{}, probeDelay: delay}
+
+	start := time.Now()
+	GatherClusterState(context.Background(), g, redisPods, sentinelPods)
+	elapsed := time.Since(start)
+
+	// Serial would be >= totalPods*delay (720ms). Concurrent should be a small
+	// multiple of a single delay. Generous headroom keeps this non-flaky on loaded CI.
+	if elapsed >= time.Duration(totalPods)*delay {
+		t.Fatalf("sentinel gather appears serial: elapsed %v >= serial bound %v",
+			elapsed, time.Duration(totalPods)*delay)
 	}
 	if g.maxFlight < 2 {
 		t.Fatalf("expected concurrent probes, max in-flight was %d", g.maxFlight)
