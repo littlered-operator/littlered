@@ -160,6 +160,45 @@ test/e2e/                   # End-to-end tests (requires Kind)
 8. **Lint before pushing**: Always run `make lint` (and `make test`) before pushing. Do not push a branch that has unresolved lint issues — CI enforces the same `golangci-lint` config, so a dirty branch will fail there anyway. Fix lint locally first.
 9. **Licensing**: The project is Apache-2.0 (`LICENSE`). Every Go source file carries the standard header `Copyright <year> The littlered Authors.` from `hack/boilerplate.go.txt` — do not attribute copyright to any individual or company. Third-party attributions live in `NOTICE`; the full dependency-license inventory is generated (`make licenses`) into `THIRD_PARTY_LICENSES`. Regenerate it whenever dependencies change. See `AUTHORS` for maintainers.
 
+10. **Cross-mode parity — fix the sibling, don't wait to be bitten**: The modes (standalone, sentinel, cluster) share the same underlying concerns — gather/probe fan-out, dial timeouts and retries, ghost/stale-IP handling, status computation — implemented in *parallel* code paths. A bug in one of these is almost always latent in the others. When you identify and fix such a bug in one mode, **immediately audit the other modes for the same pattern and fix them in the same change**. Do not ship a fix for cluster (or sentinel) alone and leave the twin defect waiting. Example: LR-012 made the *cluster* gather (`gatherNodeIdentities`) concurrent but left the *sentinel* gather (`GatherClusterState`) sequential — the identical blackhole-dial stall then resurfaced in sentinel mode on a managed cloud.
+
+### Test Discipline (test-first, red-first)
+
+Test-first, red-first. The prior habit — authoring tests in the same pass as the
+implementation — produces tests that only mirror the code's assumptions (bugs included):
+they pass, but were never shown to catch anything.
+
+**The rule:** every test must be observed to FAIL, for the right reason, at least once
+before it counts as coverage. A test that never went red is a mirror, not a check. Author
+the check *before* the implementation and show the failing run first; then make it pass.
+This matters most under agentic coding — an agent testing its own just-written code tends to
+codify its own mistakes and report green, so the red is the only thing that proves the test
+has teeth.
+
+Applied per tier:
+
+1. **Bugs → failing repro first.** Write the reproduction as a committed test, watch it go
+   red *for the defect's actual reason*, then fix to green. For a latency/liveness bug (e.g.
+   a reconcile that stalls on dead-IP dials) the red is an observed stall or a broken
+   invariant — not a downstream symptom that could go green again by timing luck.
+2. **New pure/unit-testable logic → assertion first.** Write the assertion straight from the
+   ADR/spec, see it fail, implement to green. Fast red-green lives here. Most sentinel/cluster
+   healing decisions already have a pure seam for exactly this — `planLeaderlessRecovery`,
+   `DetermineRealMaster`, `BestDataHolder`, and the injectable `Gatherer` interface behind
+   `GatherClusterState` / `GatherClusterGroundTruth`.
+3. **e2e-only behavior (reconcile/replication) → target assertion first.** Adjust the e2e to
+   the intended behavior, confirm it is red against current code, then implement (slow loop
+   accepted). Design corollary: push the *decision* into a thin pure function (as above) so it
+   is unit-TDD-able fast, leaving e2e a thin integration shell. When the red is only reachable
+   on a specific environment (e.g. a cloud whose dead pod IPs blackhole rather than RST),
+   observing it there once satisfies the tier — but make the *repeatable* guard a tier-2 unit
+   test, since the e2e will not go red in CI.
+
+**Not dogmatic:** behavior-preserving refactors under already-green tests need no new red —
+the existing tests are the guard. Red-first applies to new behavior and bug fixes. If a test
+will not go red for the intended reason, treat it as a broken test and say so — do not paper
+over it.
+
 ---
 
 ## 8. Useful Commands
