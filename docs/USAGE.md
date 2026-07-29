@@ -76,6 +76,11 @@ topologySpreadConstraints:
         control-plane: controller-manager
 ```
 
+> Leader election (chart default `true`) ensures only one operator pod reconciles at a
+> time; the standby takes over on leader loss. `replicas > 1` gives you HA against pod or
+> process failure; add `topologySpreadConstraints` (or `affinity`) to also survive a node
+> or zone loss.
+
 Install with custom values:
 
 ```bash
