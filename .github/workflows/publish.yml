@@ -146,7 +146,7 @@ jobs:
           ```
           EOF
           echo "----- generated release notes -----"
-          stop_marker="stop-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$$-$(date +%s)"
+          stop_marker="stop-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$$-${RANDOM}-$(date +%s%N)"
           echo "::stop-commands::$stop_marker"
           cat release-notes.md
           echo "::$stop_marker::"
