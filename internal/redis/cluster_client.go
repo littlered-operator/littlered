@@ -280,9 +280,16 @@ func ParseClusterNodes(output string) []ClusterNodeInfo {
 		// Parse link state
 		node.LinkState = parts[7]
 
-		// Parse slots (remaining parts)
-		if len(parts) > 8 {
-			node.Slots = parts[8:]
+		// Parse slots (remaining parts). Skip per-slot migrating "[slot->-id]" and
+		// importing "[slot-<-id]" notations: those are NOT owned slots, and including
+		// them breaks ParseSlotRange and makes an importing-but-slotless node look like
+		// a slot-owning master (LR-018 — the reshard dance is the first path that puts
+		// slots into migrating/importing state, exposing this).
+		for _, s := range parts[8:] {
+			if strings.HasPrefix(s, "[") {
+				continue
+			}
+			node.Slots = append(node.Slots, s)
 		}
 
 		nodes = append(nodes, node)
