@@ -96,6 +96,25 @@ make test-e2e FOCUS="Kill-9"
 make test-e2e FOCUS="Security"
 ```
 
+### Labels and running everything
+
+Tiers are also tagged with Ginkgo **labels** (e.g. `reshard`, `pdb`, `security`). Heavy or
+opt-in tiers carry the shared label **`extended`**; everything else runs by default. This keeps a
+default run fast while making "run absolutely everything" a single switch — so opt-in tiers are
+covered by one knob instead of rotting behind scattered per-test flags.
+
+```bash
+make test-e2e                          # every tier EXCEPT 'extended' (the default)
+make test-e2e-all                      # every tier, INCLUDING 'extended'
+make test-e2e E2E_ALL=true             # same as test-e2e-all
+make test-e2e LABEL_FILTER='reshard'   # only the labelled tier(s)
+make test-e2e LABEL_FILTER='!extended && !security'  # any Ginkgo label expression
+```
+
+Convention: when adding a tier that is slow, needs a non-default image, or is otherwise
+opt-in, tag it `Label("extended")` — it then runs under `make test-e2e-all`/CI-all and is
+skipped by the fast default, with no new flag to remember.
+
 ### Additional Flags
 
 Pass extra arguments to `go test` via `ARGS`:

@@ -149,6 +149,26 @@ ifneq ($(FOCUS),)
 E2E_FOCUS = -ginkgo.focus='$(FOCUS)'
 endif
 
+# Ginkgo label selection (https://onsi.github.io/ginkgo/#spec-labels).
+# Convention: heavy / opt-in tiers carry Label("extended"); everything else runs by
+# default. This keeps a default run fast AND makes "run absolutely everything" a single
+# switch — so opt-in tiers are covered by ONE knob instead of rotting behind scattered
+# per-test flags.
+#   make test-e2e                        # every tier except 'extended'
+#   make test-e2e-all                    # every tier, including 'extended'
+#   make test-e2e E2E_ALL=true           # same as test-e2e-all
+#   make test-e2e LABEL_FILTER='reshard' # only the labelled tier(s)
+E2E_LABEL_FILTER = !extended
+ifeq ($(E2E_ALL),true)
+E2E_LABEL_FILTER =
+endif
+ifneq ($(LABEL_FILTER),)
+E2E_LABEL_FILTER = $(LABEL_FILTER)
+endif
+ifneq ($(E2E_LABEL_FILTER),)
+E2E_LABELS = --ginkgo.label-filter='$(E2E_LABEL_FILTER)'
+endif
+
 # DEBUG_ON_FAILURE=true ginkgo --fail-fast ./test/e2e/...
 ifeq ($(DEBUG_ON_FAILURE),true)
 FAIL_FAST = --ginkgo.fail-fast
@@ -183,11 +203,15 @@ E2E_VARS += CLUSTER_REPLICAS_PER_SHARD=$(CLUSTER_REPLICAS_PER_SHARD)
 endif
 
 .PHONY: test-e2e
-test-e2e: $(E2E_SETUP_DEP) run-test-e2e $(E2E_CLEANUP_DEP) ## Run the e2e tests.
+test-e2e: $(E2E_SETUP_DEP) run-test-e2e $(E2E_CLEANUP_DEP) ## Run the e2e tests (all tiers except 'extended').
+
+.PHONY: test-e2e-all
+test-e2e-all: ## Run ALL e2e tests, including 'extended'/opt-in tiers.
+	$(MAKE) test-e2e E2E_ALL=true
 
 .PHONY: run-test-e2e
 run-test-e2e: manifests generate fmt vet
-	$(E2E_VARS) OPERATOR_IMAGE=$(OPERATOR_IMAGE) CHAOS_CLIENT_IMAGE=$(CHAOS_CLIENT_IMAGE) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 120m $(FAIL_FAST) $(E2E_FOCUS) $(ARGS)
+	$(E2E_VARS) OPERATOR_IMAGE=$(OPERATOR_IMAGE) CHAOS_CLIENT_IMAGE=$(CHAOS_CLIENT_IMAGE) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 120m $(FAIL_FAST) $(E2E_FOCUS) $(E2E_LABELS) $(ARGS)
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
