@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // This file holds the key-preserving slot-migration primitives used by the LR-018
@@ -128,6 +130,79 @@ func (c *ClusterClient) MigrateKeys(ctx context.Context, addr, destHost string, 
 		return fmt.Errorf("MIGRATE %d key(s) to %s:%d: %w", len(keys), destHost, destPort, err)
 	}
 	return nil
+}
+
+// setSlotsPipelined issues one CLUSTER SETSLOT per slot in a single pipeline, so
+// marking/flipping a whole shard range costs one round-trip instead of thousands.
+// extra are the SETSLOT arguments after the slot (e.g. "IMPORTING", nodeID).
+func (c *ClusterClient) setSlotsPipelined(ctx context.Context, addr string, slots []int, extra ...any) error {
+	if len(slots) == 0 {
+		return nil
+	}
+	client := c.getClient(addr)
+	defer func() { _ = client.Close() }()
+	_, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for _, s := range slots {
+			args := append([]any{"CLUSTER", "SETSLOT", s}, extra...)
+			pipe.Do(ctx, args...)
+		}
+		return nil
+	})
+	return err
+}
+
+// ClusterSetSlotsImporting marks every slot as importing from sourceID on the
+// destination node (pipelined). Idempotent — safe to re-issue each reconcile.
+func (c *ClusterClient) ClusterSetSlotsImporting(ctx context.Context, addr string, slots []int, sourceID string) error {
+	if err := c.setSlotsPipelined(ctx, addr, slots, "IMPORTING", sourceID); err != nil {
+		return fmt.Errorf("SETSLOT IMPORTING (%d slots): %w", len(slots), err)
+	}
+	return nil
+}
+
+// ClusterSetSlotsMigrating marks every slot as migrating to destID on the source
+// node (pipelined). Idempotent.
+func (c *ClusterClient) ClusterSetSlotsMigrating(ctx context.Context, addr string, slots []int, destID string) error {
+	if err := c.setSlotsPipelined(ctx, addr, slots, "MIGRATING", destID); err != nil {
+		return fmt.Errorf("SETSLOT MIGRATING (%d slots): %w", len(slots), err)
+	}
+	return nil
+}
+
+// ClusterSetSlotsNode assigns definitive ownership of every slot to ownerID (pipelined).
+// Issued on source, destination, and other masters to converge ownership; also clears
+// the importing/migrating markers. This is the final "flip" of the reshard dance.
+func (c *ClusterClient) ClusterSetSlotsNode(ctx context.Context, addr string, slots []int, ownerID string) error {
+	if err := c.setSlotsPipelined(ctx, addr, slots, "NODE", ownerID); err != nil {
+		return fmt.Errorf("SETSLOT NODE (%d slots): %w", len(slots), err)
+	}
+	return nil
+}
+
+// ClusterCountKeysInSlots returns the per-slot key count on the node for the given
+// slots, in one pipeline. Used to decide which slots still need draining and whether
+// the range is fully drained (ready to flip).
+func (c *ClusterClient) ClusterCountKeysInSlots(ctx context.Context, addr string, slots []int) (map[int]int, error) {
+	out := make(map[int]int, len(slots))
+	if len(slots) == 0 {
+		return out, nil
+	}
+	client := c.getClient(addr)
+	defer func() { _ = client.Close() }()
+	cmds := make([]*redis.IntCmd, len(slots))
+	_, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for i, s := range slots {
+			cmds[i] = pipe.ClusterCountKeysInSlot(ctx, s)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("COUNTKEYSINSLOT (%d slots): %w", len(slots), err)
+	}
+	for i, s := range slots {
+		out[s] = int(cmds[i].Val())
+	}
+	return out, nil
 }
 
 // -----------------------------------------------------------------------------

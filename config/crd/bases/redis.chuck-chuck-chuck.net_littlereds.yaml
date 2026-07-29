@@ -95,6 +95,32 @@ spec:
                       (0 = no replicas)
                     minimum: 0
                     type: integer
+                  reshardKeyBatchSize:
+                    default: 128
+                    description: |-
+                      ReshardKeyBatchSize is the number of keys moved per MIGRATE call during a
+                      key-preserving reshard on engines WITHOUT native atomic slot migration
+                      (pre-Redis-8.4). Larger amortizes round-trips but blocks the source longer
+                      per call. Advanced; the default suits most workloads. Ignored on Redis 8.4+
+                      (native atomic slot migration is used instead). See LR-018.
+                    minimum: 1
+                    type: integer
+                  reshardMaxKeysPerReconcile:
+                    default: 2000
+                    description: |-
+                      ReshardMaxKeysPerReconcile bounds how many keys one reconcile migrates during
+                      a pre-8.4 key-preserving reshard, so a large migration is spread across
+                      reconciles rather than blocking the single reconcile worker. Advanced.
+                    minimum: 1
+                    type: integer
+                  reshardMigrateTimeoutMillis:
+                    default: 5000
+                    description: |-
+                      ReshardMigrateTimeoutMillis bounds a single MIGRATE call during a pre-8.4
+                      key-preserving reshard (anti-hang, so a batch can never wedge the reconcile).
+                      Advanced. See LR-018.
+                    minimum: 1
+                    type: integer
                   shards:
                     default: 3
                     description: Shards is the number of master shards (minimum 3)

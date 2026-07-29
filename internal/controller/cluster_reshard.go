@@ -69,16 +69,8 @@ func (r *LittleRedReconciler) reshardConsolidated(
 		"atomicSlotMigration", gt.AtomicSlotMigration)
 
 	if !gt.AtomicSlotMigration {
-		// Pre-8.4 / non-ASM engine: the key-preserving MIGRATE-dance executor is a
-		// scoped follow-up (LR-018 §7.2). Detection and prevention (Step 3 hardening)
-		// are already in effect; we defer rather than block. Logged explicitly so this
-		// is never a silent no-op in the field.
-		stateLog.Info("Consolidated-shard detected but native atomic slot migration is unavailable "+
-			"(pre-8.4 engine); key-preserving reshard-dance not yet implemented — deferring. "+
-			"Upgrade to Redis 8.4+ for automatic recovery, or reshard manually.",
-			"range", fmt.Sprintf("%d-%d", move.Start, move.End),
-			"source", move.Source.PodName, "dest", move.Dest.PodName)
-		return ctrl.Result{}, false
+		// Pre-8.4 / non-ASM engine: key-preserving incremental MIGRATE dance.
+		return r.reshardViaDance(ctx, littleRed, gt, clusterClient, move)
 	}
 
 	// Native atomic slot migration (Redis 8.4+). Re-entrant: if a task is already in
@@ -104,4 +96,120 @@ func (r *LittleRedReconciler) reshardConsolidated(
 	auditLog.Info("Started atomic slot migration", "taskID", taskID,
 		"dest", move.Dest.PodName, "range", fmt.Sprintf("%d-%d", move.Start, move.End))
 	return ctrl.Result{RequeueAfter: fast}, true
+}
+
+// reshardViaDance is the pre-8.4 key-preserving executor: the classic
+// IMPORTING/MIGRATING → MIGRATE key batches → SETSLOT NODE dance, made incremental
+// across reconciles. Slot ownership flips only once the whole range is drained, so
+// the source keeps owning the range in gossip throughout — PlanReshard keeps emitting
+// the same move and this method resumes it (state lives in the cluster's slot markers,
+// not in the operator). Bounded to ReshardMaxKeysPerReconcile keys per pass so it never
+// hogs the single reconcile worker. See LR-018 §7.2.
+func (r *LittleRedReconciler) reshardViaDance(
+	ctx context.Context,
+	littleRed *littleredv1alpha1.LittleRed,
+	gt *redisclient.ClusterGroundTruth,
+	clusterClient *redisclient.ClusterClient,
+	move redisclient.ReshardMove,
+) (ctrl.Result, bool) {
+	fast, _ := littleRed.GetRequeueIntervals()
+	stateLog := r.getLogger(ctx, littleRed, LogCategoryState)
+	auditLog := r.getLogger(ctx, littleRed, LogCategoryAudit)
+
+	batch := littleRed.Spec.Cluster.ReshardKeyBatchSize
+	if batch <= 0 {
+		batch = 128
+	}
+	maxKeys := littleRed.Spec.Cluster.ReshardMaxKeysPerReconcile
+	if maxKeys <= 0 {
+		maxKeys = 2000
+	}
+	migTimeout := littleRed.Spec.Cluster.ReshardMigrateTimeoutMillis
+	if migTimeout <= 0 {
+		migTimeout = 5000
+	}
+
+	srcAddr := fmt.Sprintf("%s:%d", move.Source.PodIP, littleredv1alpha1.RedisPort)
+	destAddr := fmt.Sprintf("%s:%d", move.Dest.PodIP, littleredv1alpha1.RedisPort)
+
+	slots := make([]int, 0, move.End-move.Start+1)
+	for s := move.Start; s <= move.End; s++ {
+		slots = append(slots, s)
+	}
+
+	// 1. Mark importing (dest) + migrating (source), idempotent. Enables ASK
+	//    redirection and lets the destination accept MIGRATE'd keys.
+	if err := clusterClient.ClusterSetSlotsImporting(ctx, destAddr, slots, move.Source.NodeID); err != nil {
+		auditLog.Error(err, "reshard dance: mark importing failed; will retry", "dest", move.Dest.PodName)
+		return ctrl.Result{RequeueAfter: fast}, true
+	}
+	if err := clusterClient.ClusterSetSlotsMigrating(ctx, srcAddr, slots, move.Dest.NodeID); err != nil {
+		auditLog.Error(err, "reshard dance: mark migrating failed; will retry", "source", move.Source.PodName)
+		return ctrl.Result{RequeueAfter: fast}, true
+	}
+
+	// 2. Which slots still hold keys on the source?
+	counts, err := clusterClient.ClusterCountKeysInSlots(ctx, srcAddr, slots)
+	if err != nil {
+		auditLog.Error(err, "reshard dance: count keys failed; will retry", "source", move.Source.PodName)
+		return ctrl.Result{RequeueAfter: fast}, true
+	}
+	toDrain := redisclient.SlotsNeedingDrain(counts)
+
+	// 3. Fully drained → flip ownership on every reachable master (converges gossip and
+	//    clears the importing/migrating markers). Only now does the range change hands.
+	if len(toDrain) == 0 {
+		for _, addr := range reachableMasterAddrs(gt) {
+			if err := clusterClient.ClusterSetSlotsNode(ctx, addr, slots, move.Dest.NodeID); err != nil {
+				auditLog.Error(err, "reshard dance: flip ownership failed; will retry", "addr", addr)
+				return ctrl.Result{RequeueAfter: fast}, true
+			}
+		}
+		auditLog.Info("reshard dance: drain complete, ownership flipped to dest",
+			"range", fmt.Sprintf("%d-%d", move.Start, move.End), "dest", move.Dest.PodName)
+		return ctrl.Result{RequeueAfter: fast}, true
+	}
+
+	// 4. Drain up to maxKeys keys this reconcile, then yield (resume next pass).
+	moved := 0
+	for _, slot := range toDrain {
+		for moved < maxKeys {
+			keys, err := clusterClient.ClusterGetKeysInSlot(ctx, srcAddr, slot, batch)
+			if err != nil {
+				auditLog.Error(err, "reshard dance: GETKEYSINSLOT failed; will retry", "slot", slot)
+				return ctrl.Result{RequeueAfter: fast}, true
+			}
+			if len(keys) == 0 {
+				break
+			}
+			if err := clusterClient.MigrateKeys(ctx, srcAddr, move.Dest.PodIP, littleredv1alpha1.RedisPort, migTimeout, keys...); err != nil {
+				// A single un-migratable key (e.g. a value too large to move within the
+				// MIGRATE timeout) stalls the reshard here. Never silent: log loudly with
+				// the slot so the field can see it, and retry next reconcile.
+				auditLog.Error(err, "reshard dance: MIGRATE failed (possible oversized key); will retry",
+					"slot", slot, "batch", len(keys), "migrateTimeoutMs", migTimeout)
+				return ctrl.Result{RequeueAfter: fast}, true
+			}
+			moved += len(keys)
+		}
+		if moved >= maxKeys {
+			break
+		}
+	}
+	stateLog.Info("reshard dance: migrated key batch this pass (incremental)",
+		"range", fmt.Sprintf("%d-%d", move.Start, move.End),
+		"movedThisPass", moved, "slotsRemaining", len(toDrain))
+	return ctrl.Result{RequeueAfter: fast}, true
+}
+
+// reachableMasterAddrs returns host:port for every reachable master in the ground
+// truth — the set to broadcast the final SETSLOT NODE flip to for prompt convergence.
+func reachableMasterAddrs(gt *redisclient.ClusterGroundTruth) []string {
+	var addrs []string
+	for _, n := range gt.Nodes {
+		if n.Reachable && n.Role == RoleMaster {
+			addrs = append(addrs, fmt.Sprintf("%s:%d", n.PodIP, littleredv1alpha1.RedisPort))
+		}
+	}
+	return addrs
 }

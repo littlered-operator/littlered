@@ -53,6 +53,21 @@ func SafeMissingShardTarget(node *ClusterNodeState) bool {
 	return node != nil && node.Reachable && node.Role == roleMaster && len(node.Slots) == 0
 }
 
+// SlotsNeedingDrain returns, in ascending order, the slots that still hold keys on the
+// migration source (count > 0). An empty result means the range is fully drained and
+// ownership can be flipped to the destination. Pure helper for the pre-8.4 key-preserving
+// reshard dance (LR-018 §7.2).
+func SlotsNeedingDrain(counts map[int]int) []int {
+	var slots []int
+	for slot, n := range counts {
+		if n > 0 {
+			slots = append(slots, slot)
+		}
+	}
+	sort.Ints(slots)
+	return slots
+}
+
 // PlanReshard is the pure decision seam for LR-018. It detects the consolidated-shard
 // deadlock — a reachable master owning more than one expected shard range while other
 // reachable masters sit slotless (empty) — and emits the key-preserving moves that

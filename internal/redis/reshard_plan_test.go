@@ -34,6 +34,22 @@ func rReplica(pod, id, masterID string) *ClusterNodeState {
 	return &ClusterNodeState{PodName: pod, NodeID: id, Role: roleReplica, MasterNodeID: masterID, Reachable: true}
 }
 
+// TestSlotsNeedingDrain guards the pre-8.4 dance's drain/flip decision: only slots with
+// keys remaining are returned (ascending), and an empty range yields none (ready to flip).
+func TestSlotsNeedingDrain(t *testing.T) {
+	got := SlotsNeedingDrain(map[int]int{10923: 5, 10924: 0, 10925: 3, 10926: 0})
+	want := []int{10923, 10925}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("SlotsNeedingDrain = %v, want %v", got, want)
+	}
+	if got := SlotsNeedingDrain(map[int]int{1: 0, 2: 0}); len(got) != 0 {
+		t.Errorf("fully-drained range should need no drain, got %v", got)
+	}
+	if got := SlotsNeedingDrain(map[int]int{}); len(got) != 0 {
+		t.Errorf("empty counts should need no drain, got %v", got)
+	}
+}
+
 // TestSafeMissingShardTarget guards the Step 3 hardening: a missing shard may be
 // assigned only to a reachable empty master. Assigning to a master that already owns
 // a range is the consolidation bug that creates the LR-018 deadlock.

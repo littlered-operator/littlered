@@ -459,6 +459,32 @@ type ClusterSpec struct {
 	// +kubebuilder:default=15
 	// +optional
 	FailoverGracePeriod int `json:"failoverGracePeriod,omitempty"`
+
+	// ReshardKeyBatchSize is the number of keys moved per MIGRATE call during a
+	// key-preserving reshard on engines WITHOUT native atomic slot migration
+	// (pre-Redis-8.4). Larger amortizes round-trips but blocks the source longer
+	// per call. Advanced; the default suits most workloads. Ignored on Redis 8.4+
+	// (native atomic slot migration is used instead). See LR-018.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=128
+	// +optional
+	ReshardKeyBatchSize int `json:"reshardKeyBatchSize,omitempty"`
+
+	// ReshardMaxKeysPerReconcile bounds how many keys one reconcile migrates during
+	// a pre-8.4 key-preserving reshard, so a large migration is spread across
+	// reconciles rather than blocking the single reconcile worker. Advanced.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=2000
+	// +optional
+	ReshardMaxKeysPerReconcile int `json:"reshardMaxKeysPerReconcile,omitempty"`
+
+	// ReshardMigrateTimeoutMillis bounds a single MIGRATE call during a pre-8.4
+	// key-preserving reshard (anti-hang, so a batch can never wedge the reconcile).
+	// Advanced. See LR-018.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=5000
+	// +optional
+	ReshardMigrateTimeoutMillis int `json:"reshardMigrateTimeoutMillis,omitempty"`
 }
 
 // LittleRedPhase represents the current phase of the LittleRed resource
