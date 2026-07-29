@@ -172,11 +172,14 @@ spec:
 			// killed master's pod leaves the API immediately. A graceful delete leaves it
 			// Terminating (still listed with its IP) for ~30s, during which the operator
 			// re-registers the returning bare sentinels onto that still-reachable master
-			// and Sentinel performs an ordinary failover to a surviving replica — the
-			// cluster never goes leaderless and the >=2-holder REFUSE gate is never
-			// reached. Observed on a managed cloud during LR-017 verification. Force
-			// deletion clears the master IP at once, making the leaderless path
-			// deterministic. See the changelog (LR-017).
+			// and Sentinel performs an ordinary failover — the cluster never even reaches
+			// leaderless *detection*. Force deletion reliably drives leaderless detection
+			// (Rule L starts its cooldown), a real improvement — but note it does NOT
+			// guarantee the REFUSE decision: the operator's own re-registration (Rule 0 /
+			// the LR-008 ghost-master correction) can still find a master and recover the
+			// cluster during the 30s cooldown, before Rule L counts holders (observed on a
+			// managed cloud during LR-017 verification — a data-safe recovery, not a
+			// refuse). Hence the dual-outcome handling below. See the changelog (LR-017).
 			By("force-killing the master and all sentinels — both replicas survive with data")
 			_, _ = deletePodsWithLabelMode(testNamespace, "app.kubernetes.io/instance="+crName+",app.kubernetes.io/component=sentinel", false)
 			_, err = deletePodMode(testNamespace, master, false)
