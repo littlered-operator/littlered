@@ -23,6 +23,17 @@ tolerations: []
 
 affinity: {}
 
+# topologySpreadConstraints for the OPERATOR pods (only meaningful with replicas > 1).
+# Passed through verbatim. To spread operator replicas across nodes, e.g.:
+#   topologySpreadConstraints:
+#     - maxSkew: 1
+#       topologyKey: kubernetes.io/hostname
+#       whenUnsatisfiable: DoNotSchedule
+#       labelSelector:
+#         matchLabels:
+#           control-plane: controller-manager
+topologySpreadConstraints: []
+
 metrics:
   # Enable the operator metrics endpoint (HTTP on the specified port).
   # When enabled, a Service is created and --metrics-bind-address is set on the manager.

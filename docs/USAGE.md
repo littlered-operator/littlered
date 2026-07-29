@@ -64,6 +64,18 @@ replicas: 2
 > replicas is safe: only the pod holding the lease reconciles, regardless of
 > how the deployment is scaled (via Helm or directly with `kubectl`/`k9s`).
 
+# Optional: spread the operator replicas across nodes (only meaningful with replicas > 1).
+
+```yaml
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        control-plane: controller-manager
+```
+
 Install with custom values:
 
 ```bash
@@ -513,6 +525,68 @@ spec:
 > PDBs only make sense for instances with more than one pod. Do not enable one
 > for a standalone instance or a cluster with `replicasPerShard: 0` — a
 > single-pod PDB would block node drains entirely.
+
+### Spreading pods across nodes and failure domains
+
+`spec.podTemplate` passes the full set of Kubernetes pod-scheduling controls
+through to the managed pods **verbatim** — `nodeSelector`, `tolerations`,
+`affinity`, `priorityClassName`, and `topologySpreadConstraints`. There is no
+LittleRed-specific placement DSL: you express placement with the native
+Kubernetes primitives, which cover the full range of requirements (one pod per
+node, spread across zones, dedicated node pools, and so on). The operator does
+**not** inject a default anti-affinity or spread, and it does **not** augment
+your `labelSelector` — what you write is what the pods get.
+
+Select the instance's pods with `app.kubernetes.io/instance: <metadata.name>`.
+Note that `app.kubernetes.io/name` is always the constant `littlered` (it is the
+*application* name, not the instance name), so a selector keyed on it will match
+every LittleRed pod in the cluster — use `app.kubernetes.io/instance`.
+
+**One pod per node** (hard requirement):
+
+```yaml
+spec:
+  podTemplate:
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule      # refuse to schedule rather than co-locate
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/instance: store
+```
+
+**Spread across availability zones** — swap the topology key:
+
+```yaml
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/instance: store
+```
+
+Use `whenUnsatisfiable: ScheduleAnyway` for a soft preference (best-effort spread
+that still schedules when domains run short), or a `requiredDuringScheduling`
+`podAntiAffinity` on `kubernetes.io/hostname` for a strict one-per-node rule.
+
+**Sentinel mode — master/replica domain diversity is fully covered.** The three
+Redis data pods form a single StatefulSet; spreading all three across nodes or
+zones guarantees the master and its two replicas land in different domains — and
+that holds across failover, because a failover only changes *which* pod is master,
+it never moves a pod. Apply the spread above to a `mode: sentinel` instance and
+you are done.
+
+**Cluster mode — a caveat.** The constraints above spread *all* of an instance's
+cluster pods evenly across the chosen domains. They cannot currently express
+"keep a *shard's* master and its replica in different domains": all cluster pods
+of an instance carry identical labels (a single StatefulSet, no per-shard or
+per-role label), and shard roles are assigned at runtime and change on failover,
+which pod-scheduling constraints cannot track. Even spread is a strong baseline —
+with enough nodes/zones it makes same-domain co-location of a shard pair unlikely
+— but it is not a guarantee. Guaranteed per-shard domain isolation is planned as
+topology-aware replica assignment in the operator; track it in the project issues.
 
 ### With authentication
 

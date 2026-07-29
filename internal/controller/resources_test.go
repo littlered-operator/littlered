@@ -17,9 +17,11 @@ limitations under the License.
 package controller
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -994,6 +996,92 @@ func TestBuildSentinelStatefulSetWithoutMetrics(t *testing.T) {
 	}
 	if svc.Annotations["prometheus.io/scrape"] != "" {
 		t.Error("Sentinel service should not have scrape annotation when metrics disabled")
+	}
+}
+
+// ============================================================================
+// Cross-mode parity: pod scheduling passthrough (CLAUDE.md §7)
+// ============================================================================
+
+// TestStatefulSetBuildersPropagatePodTemplateScheduling asserts that every
+// StatefulSet builder copies ALL of spec.podTemplate's scheduling fields onto
+// the pod spec. The sentinel monitor STS once silently dropped
+// TopologySpreadConstraints and PriorityClassName while the other three
+// builders set them (a cross-mode-parity defect); this guards every builder
+// against regressing that passthrough.
+func TestStatefulSetBuildersPropagatePodTemplateScheduling(t *testing.T) {
+	nodeSelector := map[string]string{"disktype": "ssd"}
+	tolerations := []corev1.Toleration{{
+		Key:      "dedicated",
+		Operator: corev1.TolerationOpEqual,
+		Value:    "redis",
+		Effect:   corev1.TaintEffectNoSchedule,
+	}}
+	affinity := &corev1.Affinity{
+		NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+				NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+					MatchExpressions: []corev1.NodeSelectorRequirement{{
+						Key:      "kubernetes.io/os",
+						Operator: corev1.NodeSelectorOpIn,
+						Values:   []string{"linux"},
+					}},
+				}},
+			},
+		},
+	}
+	priorityClass := "high-priority"
+	tsc := []corev1.TopologySpreadConstraint{{
+		MaxSkew:           1,
+		TopologyKey:       "kubernetes.io/hostname",
+		WhenUnsatisfiable: corev1.DoNotSchedule,
+		LabelSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{labelAppInstance: testLRName},
+		},
+	}}
+
+	applyPodTemplate := func(lr *littleredv1alpha1.LittleRed) {
+		lr.Spec.PodTemplate.NodeSelector = nodeSelector
+		lr.Spec.PodTemplate.Tolerations = tolerations
+		lr.Spec.PodTemplate.Affinity = affinity
+		lr.Spec.PodTemplate.PriorityClassName = priorityClass
+		lr.Spec.PodTemplate.TopologySpreadConstraints = tsc
+	}
+
+	builders := []struct {
+		name  string
+		mode  string
+		build func(*littleredv1alpha1.LittleRed) *appsv1.StatefulSet
+	}{
+		{"standalone", ModeStandalone, buildStatefulSet},
+		{"sentinel-redis", ModeSentinel, buildRedisStatefulSetSentinel},
+		{"sentinel-monitor", ModeSentinel, buildSentinelStatefulSet},
+		{"cluster", ModeCluster, buildClusterStatefulSet},
+	}
+
+	for _, b := range builders {
+		t.Run(b.name, func(t *testing.T) {
+			lr := newTestLittleRed(testLRName, testNamespace)
+			lr.Spec.Mode = b.mode
+			applyPodTemplate(lr)
+			spec := b.build(lr).Spec.Template.Spec
+
+			if !reflect.DeepEqual(spec.NodeSelector, nodeSelector) {
+				t.Errorf("NodeSelector = %v, want %v", spec.NodeSelector, nodeSelector)
+			}
+			if !reflect.DeepEqual(spec.Tolerations, tolerations) {
+				t.Errorf("Tolerations = %v, want %v", spec.Tolerations, tolerations)
+			}
+			if !reflect.DeepEqual(spec.Affinity, affinity) {
+				t.Errorf("Affinity = %v, want %v", spec.Affinity, affinity)
+			}
+			if spec.PriorityClassName != priorityClass {
+				t.Errorf("PriorityClassName = %q, want %q", spec.PriorityClassName, priorityClass)
+			}
+			if !reflect.DeepEqual(spec.TopologySpreadConstraints, tsc) {
+				t.Errorf("TopologySpreadConstraints = %v, want %v", spec.TopologySpreadConstraints, tsc)
+			}
+		})
 	}
 }
 

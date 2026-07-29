@@ -316,7 +316,7 @@ spec:
       runAsNonRoot: true
       runAsUser: 999
       fsGroup: 999
-    topologySpreadConstraints: [] # Topology spread (sentinel mode)
+    topologySpreadConstraints: [] # Topology spread (all modes)
 ```
 
 | Field | Type | Required | Default | Description |
