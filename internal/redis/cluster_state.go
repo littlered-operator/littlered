@@ -52,6 +52,13 @@ type ClusterGroundTruth struct {
 	// avoid issuing CLUSTER REPLICATE before gossip has propagated the target
 	// master's NodeID to the executing node (which returns ERR Unknown node).
 	KnownNodes map[string][]string
+	// AtomicSlotMigration is true iff EVERY reachable node reported support for
+	// Redis 8.4+ native atomic slot migration in its CLUSTER INFO. It is a
+	// transient, gather-time capability verdict (never persisted): the reshard
+	// executor uses it to pick native ASM over the pre-8.4 migrate dance, and a
+	// mixed-version cluster mid rolling-upgrade falls back to the dance. Unknown
+	// or any node lacking support ⇒ false ⇒ baseline dance. See LR-018 §7.3.
+	AtomicSlotMigration bool
 }
 
 // NewClusterGroundTruth initializes a new cluster ground truth

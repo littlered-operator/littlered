@@ -383,10 +383,18 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		// Find the intended master for each missing shard (strict: pod N owns shard N).
 		// Never assign a shard to a different master — that causes split-ownership
 		// and "Slot already busy" errors. If the intended master isn't available, wait.
+		//
+		// LR-018 hardening: the intended master must be a reachable EMPTY master.
+		// Assigning a missing shard's range to a pod that already owns a *different*
+		// range consolidates two shards onto one node and creates the consolidated-
+		// shard deadlock (one master owning >1 range while others sit empty). When
+		// roles have drifted so that pod N already owns some other shard, we defer
+		// rather than pile a second range on it; PlanReshard (Step 3b) untangles an
+		// already-consolidated cluster.
 		intendedMasters := make(map[int]*redisclient.ClusterNodeState) // shardIdx -> Node
 		for i := range shards {
 			podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
-			if node, ok := gt.Nodes[podName]; ok && node.Role == RoleMaster {
+			if node, ok := gt.Nodes[podName]; ok && redisclient.SafeMissingShardTarget(node) {
 				intendedMasters[i] = node
 			}
 		}
@@ -420,6 +428,17 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		if ops > 0 {
 			return ctrl.Result{RequeueAfter: fast}, nil
 		}
+	}
+
+	// 3b. Consolidated-Shard Reshard (LR-018).
+	// When all slots are assigned but a single master owns more than one shard range
+	// (leaving other masters empty), no other step heals it: Step 3 sees no *missing*
+	// range, and Step 4 has no under-replicated slot-master to attach the empties to.
+	// PlanReshard detects this and relocates the surplus range onto an empty master,
+	// preserving keys. Runs before Step 4 so the freshly-created third master exists
+	// for the remaining empty master(s) to be reattached as its replica.
+	if res, acted := r.reshardConsolidated(ctx, littleRed, gt, clusterClient); acted {
+		return res, nil
 	}
 
 	// 4. Replication Repair (Non-Zero Replica Mode)

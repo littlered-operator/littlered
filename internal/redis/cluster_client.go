@@ -64,6 +64,11 @@ type ClusterInfo struct {
 	StatsMessagesSent        int64
 	StatsMessagesReceived    int64
 	TotalLinksBufferLimitExc int64
+	// AtomicSlotMigration is true when this node's CLUSTER INFO exposes the
+	// cluster_slot_migration_* machinery — i.e. it supports Redis 8.4+ native
+	// atomic slot migration (the CLUSTER MIGRATION command). Used as a free,
+	// gather-time capability probe for LR-018; see reshard executor.
+	AtomicSlotMigration bool
 }
 
 // ClusterClient wraps Redis cluster operations
@@ -300,6 +305,12 @@ func ParseClusterInfo(output string) *ClusterInfo {
 
 		key := parts[0]
 		value := strings.TrimSpace(parts[1])
+
+		// Presence of any cluster_slot_migration_* field signals Redis 8.4+ native
+		// atomic slot migration support (LR-018 §7.3, gather-time capability probe).
+		if strings.HasPrefix(key, "cluster_slot_migration") {
+			info.AtomicSlotMigration = true
+		}
 
 		switch key {
 		case "cluster_state":

@@ -186,6 +186,7 @@ type topoView struct {
 	seenIDs       []string // every NodeID seen in CLUSTER NODES (for ghost detection)
 	known         []string // non-failed neighbor IDs
 	hasNodes      bool     // CLUSTER NODES succeeded → record adjacency
+	asm           bool     // node's CLUSTER INFO reported cluster_slot_migration_* (ASM support)
 }
 
 // gatherTopology queries CLUSTER INFO + NODES from all reachable nodes concurrently,
@@ -210,10 +211,20 @@ func gatherTopology(ctx context.Context, g Gatherer, gt *ClusterGroundTruth) map
 	}
 	wg.Wait()
 
+	// ASM capability is the AND over all reachable nodes: use native atomic slot
+	// migration only if every reachable node reported support (a mixed-version
+	// cluster mid rolling-upgrade falls back to the baseline dance). An empty mesh
+	// or any node lacking support ⇒ false ⇒ dance. See LR-018 §7.3.
+	asmAll := len(reachable) > 0
+
 	adj := make(map[string][]string)
 	for i, v := range views {
 		if v == nil {
+			asmAll = false
 			continue
+		}
+		if !v.haveState || !v.asm {
+			asmAll = false
 		}
 		if v.haveState {
 			if v.state == "ok" {
@@ -232,6 +243,7 @@ func gatherTopology(ctx context.Context, g Gatherer, gt *ClusterGroundTruth) map
 			adj[reachable[i].NodeID] = v.known
 		}
 	}
+	gt.AtomicSlotMigration = asmAll
 	return adj
 }
 
@@ -245,6 +257,7 @@ func probeNodeTopology(ctx context.Context, g Gatherer, n *ClusterNodeState) *to
 		v.haveState = true
 		v.state = info.State
 		v.slotsAssigned = info.SlotsAssigned
+		v.asm = info.AtomicSlotMigration
 	}
 
 	nodes, err := g.GetClusterNodes(ctx, n.PodName, n.PodIP)
