@@ -429,11 +429,21 @@ func killPodProcess(namespace, podName string) {
 	fmt.Printf("[Utility] killPodProcess: %s\n", strings.TrimSpace(output))
 }
 
-// deletePodsWithLabel deletes all pods matching the label selector in the given namespace.
+// deletePodsWithLabel deletes all pods matching the label selector in the given
+// namespace. If NON_GRACEFUL_RESTART=true it force-deletes; otherwise graceful.
 func deletePodsWithLabel(namespace, labelSelector string) (string, error) {
+	graceful := os.Getenv("NON_GRACEFUL_RESTART") != "true"
+	return deletePodsWithLabelMode(namespace, labelSelector, graceful)
+}
+
+// deletePodsWithLabelMode deletes all pods matching the label selector with explicit
+// control over graceful vs force (--grace-period=0 --force). Force deletion drops the
+// pod objects from the API immediately, so a caller that needs a killed pod's IP to
+// leave the pod list at once (rather than lingering ~30s in Terminating) can request it.
+func deletePodsWithLabelMode(namespace, labelSelector string, graceful bool) (string, error) {
 	args := []string{"delete", "pods", "-n", namespace, "-l", labelSelector}
 
-	if os.Getenv("NON_GRACEFUL_RESTART") == "true" {
+	if !graceful {
 		fmt.Printf("[Utility] Performing NON-GRACEFUL deletion of pods with label %s in %s\n", labelSelector, namespace)
 		args = append(args, "--grace-period=0", "--force")
 	} else {
