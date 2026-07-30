@@ -296,15 +296,26 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 			By("waiting 10 seconds for baseline traffic")
 			time.Sleep(10 * time.Second)
 
-			By("triggering rolling restart via kubectl rollout restart (one StatefulSet per shard)")
-			for k := 0; k < clusterShards; k++ {
-				cmd = exec.Command("kubectl", "rollout", "restart", "statefulset",
-					fmt.Sprintf("%s-shard-%d", crName, k), "-n", testNamespace)
-				_, err = utils.Run(cmd)
-				Expect(err).NotTo(HaveOccurred())
-			}
+			By("triggering an operator-mediated rolling update (pod-template change via the CR)")
+			// A manual `kubectl rollout restart` of the shard StatefulSets would roll all
+			// shards in parallel and bypass the operator. Instead we change the CR's pod
+			// template so the OPERATOR drives the rollout, which serializes it one shard at
+			// a time (LR-021) — only one shard's master is ever down at a time, so
+			// availability stays high.
+			updated := clusterCR(crName, clusterReplicasPerShard, "", `  resources:
+    requests:
+      cpu: "100m"
+      memory: "160Mi"
+    limits:
+      cpu: "100m"
+      memory: "160Mi"
+`)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(updated)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
 
-			By("waiting for rollout to start")
+			By("waiting for the rolling update to begin")
 			time.Sleep(5 * time.Second)
 
 			err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
@@ -314,8 +325,19 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(metrics.DataCorruptions).To(Equal(int64(0)))
-			// Rolling restart with replicas should maintain availability (data accessible).
+			// The operator-serialized rolling update keeps only one shard's master down at
+			// a time, so availability must stay high (LR-021). A parallel roll would take
+			// all masters down in one wave and drop this well below 0.95.
 			Expect(metrics.ReadAvailability()).To(BeNumerically(">=", 0.95))
+
+			By("waiting for the serialized rolling update to fully complete")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "littlered", crName,
+					"-n", testNamespace, "-o", "jsonpath={.status.phase}")
+				out, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(Equal("Running"))
+			}, 8*time.Minute, 10*time.Second).Should(Succeed())
 
 			By("verifying final cluster topology (no lost shards)")
 			cmd = exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),

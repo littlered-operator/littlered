@@ -234,10 +234,16 @@ silently undid it. **That** is the false sense of safety — and note it is Goal
 3. **Under-provisioning UX.** With `DoNotSchedule`, too few domains ⇒ `Pending` pods. The
    operator must surface this as a status condition ("wanted 3 domains for shard-1, saw 2"),
    not sit silently Pending. Required for A regardless of B.
-4. **Rolling updates under a hard constraint.** `DoNotSchedule` + exactly
-   `1+replicasPerShard` domains can wedge a rolling update (a recreated pod has nowhere legal to
-   land while the old one drains). Need `maxUnavailable`/partition semantics that respect the
-   spread, or accept that hard isolation requires strictly more domains than shard members.
+4. **Rolling updates across shards** — *partially resolved (LR-021).* The split dropped the
+   single StatefulSet's global one-pod-at-a-time serialization, so an operator-driven template
+   change rolled all shards in parallel and restarted every master at once (an availability dip,
+   observed in the first e2e run). Resolved by operator-serialized rollouts: apply template
+   updates one shard at a time, gating the next shard on the current one settling (ADR-007,
+   changelog LR-021). *Still open:* under a **hard** `DoNotSchedule` spread with exactly
+   `1+replicasPerShard` domains, a recreated pod has nowhere legal to land while the old one
+   drains — needs `maxUnavailable`/partition semantics that respect the spread, or the
+   documented requirement that hard isolation needs strictly more domains than shard members.
+   (Revisit with Milestone 2's placement knob.)
 5. **Whether to ship B at all.** Only if Goal 2 (master blast-radius distribution) is an actual
    requirement. Revisit after A lands and is dogfooded.
 

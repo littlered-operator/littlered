@@ -118,6 +118,16 @@ scrambled cluster, since Redis itself was healthy), and additionally reports a `
 "consistent" while a shard runs at reduced redundancy. The e2e `verifyClusterTopologySync`
 asserts the same invariant, so a future regression goes red in CI.
 
+### 7. Serialize rollouts across shards (LR-021)
+Splitting one StatefulSet into N dropped the global one-pod-at-a-time restart serialization the
+single StatefulSet gave for free. So `reconcileClusterStatefulSet` applies template **updates**
+one shard at a time — create-missing stays parallel (bootstrap), but an operator-driven template
+change rolls a single shard and defers the rest until it settles (`clusterShardRolloutSettled`;
+change detected cache-safely via an `AnnotationPodSpecHash` on the pod template). Without it a
+config change restarts every shard's master in one wave — a cluster-wide availability dip (not
+data loss) measured in the first e2e run. Governs operator-triggered rollouts only; a manual
+`kubectl rollout restart` bypasses it.
+
 ## Consequences
 - Single-domain-loss survivability for a shard becomes expressible via a per-shard-scoped
   `topologySpreadConstraint` over the shard's StatefulSet. It survives failover **because the

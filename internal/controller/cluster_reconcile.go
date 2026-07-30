@@ -833,11 +833,68 @@ func (r *LittleRedReconciler) reconcileClusterHeadlessService(ctx context.Contex
 	return r.apply(ctx, littleRed, buildClusterHeadlessService(littleRed))
 }
 
-// reconcileClusterStatefulSet ensures one StatefulSet per shard exists ({name}-shard-K).
+// reconcileClusterStatefulSet ensures one StatefulSet per shard exists ({name}-shard-K),
+// and serializes template *updates* across shards so an operator-driven change never
+// restarts more than one shard at a time (LR-021).
+//
+// Missing shard StatefulSets are created immediately and in parallel — a fresh bootstrap has
+// no data to protect and no reason to stage pod creation. For an existing shard whose applied
+// pod-template hash differs from desired, the operator rolls that one shard and returns,
+// deferring every later shard until this one has fully settled (clusterShardRolloutSettled).
+// This restores the global one-pod-at-a-time serialization that the single pre-0.3.0
+// StatefulSet gave for free; without it, applying a new template to all N shards at once rolls
+// them in parallel and takes every shard's master down in one wave (the availability dip
+// observed in the first e2e run — see changelog LR-021).
+//
+// Note: this governs only rollouts the operator triggers (a spec/config change that rewrites
+// the pod template). A manual `kubectl rollout restart` of the shard StatefulSets bypasses the
+// operator and is not serialized — roll shards one at a time by hand instead.
 func (r *LittleRedReconciler) reconcileClusterStatefulSet(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
 	shards := clusterShardCount(littleRed)
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 	for k := range shards {
-		if err := r.apply(ctx, littleRed, buildClusterShardStatefulSet(littleRed, k)); err != nil {
+		desired := buildClusterShardStatefulSet(littleRed, k)
+		existing := &appsv1.StatefulSet{}
+		err := r.Get(ctx, types.NamespacedName{
+			Name:      clusterShardStatefulSetName(littleRed, k),
+			Namespace: littleRed.Namespace,
+		}, existing)
+		if apierrors.IsNotFound(err) {
+			// Create-missing: immediate and parallel (bootstrap).
+			if err := r.apply(ctx, littleRed, desired); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+
+		// Serialize updates. If the applied template differs from desired, roll only this
+		// shard and stop until it settles. The hash lives on the pod template (so changing
+		// it is itself part of the roll) and is compared cache-safely as a stored value.
+		desiredHash := desired.Spec.Template.Annotations[AnnotationPodSpecHash]
+		appliedHash := existing.Spec.Template.Annotations[AnnotationPodSpecHash]
+		if appliedHash != desiredHash {
+			if err := r.apply(ctx, littleRed, desired); err != nil {
+				return err
+			}
+			log.Info("Serialized cluster rollout: rolling shard, deferring later shards until it settles",
+				"shard", k, "sts", desired.Name)
+			return nil
+		}
+
+		// Template already desired. If it is still converging (including the window right
+		// after our own apply, where ObservedGeneration lags Generation), wait before the
+		// next shard so at most one shard rolls at a time.
+		if !clusterShardRolloutSettled(existing) {
+			log.Info("Serialized cluster rollout: waiting for shard to settle before rolling the next",
+				"shard", k, "sts", existing.Name)
+			return nil
+		}
+
+		// Settled at desired: keep non-template fields in sync (idempotent) and advance.
+		if err := r.apply(ctx, littleRed, desired); err != nil {
 			return err
 		}
 	}

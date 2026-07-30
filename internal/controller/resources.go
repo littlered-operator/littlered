@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"sort"
@@ -39,6 +40,7 @@ import (
 // Annotation keys for config hash
 const (
 	AnnotationConfigHash              = "redis.chuck-chuck-chuck.net/config-hash"
+	AnnotationPodSpecHash             = "redis.chuck-chuck-chuck.net/pod-spec-hash"
 	AnnotationDisablePolling          = "redis.chuck-chuck-chuck.net/disable-polling"
 	AnnotationDisableEventMonitoring  = "redis.chuck-chuck-chuck.net/disable-event-monitoring"
 	AnnotationDebugSkipSlotAssignment = "redis.chuck-chuck-chuck.net/debug-skip-slot-assignment"
@@ -160,6 +162,21 @@ func computeConfigHash(data map[string]string) string {
 		h.Write([]byte(data[k]))
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16] // Use first 16 chars for brevity
+}
+
+// computePodTemplateHash returns a stable 16-char hash of the operator-authored pod
+// template. Stamped as AnnotationPodSpecHash, it lets the serialized cluster rollout
+// (LR-021, reconcileClusterStatefulSet) detect — cache-safely and without diffing
+// server-defaulted fields — whether a shard's desired template differs from what is already
+// applied. It is computed before the hash annotation itself is added, so it never depends
+// on its own value.
+func computePodTemplateHash(tmpl *corev1.PodTemplateSpec) string {
+	raw, err := json.Marshal(tmpl)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 // commonLabels returns the standard labels applied to all resources
@@ -1952,6 +1969,11 @@ func buildClusterShardStatefulSet(lr *littleredv1alpha1.LittleRed, shardIdx int)
 			PodManagementPolicy: appsv1.ParallelPodManagement,
 		},
 	}
+
+	// Stamp a hash of the operator-authored pod template so the serialized rollout can
+	// detect a template change cache-safely (LR-021). Computed last, over the template as
+	// built above (which already carries the config hash), so it reflects any change.
+	sts.Spec.Template.Annotations[AnnotationPodSpecHash] = computePodTemplateHash(&sts.Spec.Template)
 
 	return sts
 }
