@@ -125,33 +125,40 @@ Cluster State: ok
 Total Slots Assigned: 16384 / 16384
 
 Node Status:
-  - Pod store-cluster-cluster-0: role:master, id:db7c8c37cc2badde942fc5cb37b8f11c05d6996f, slots:0-5461
-  - Pod store-cluster-cluster-1: role:master, id:f8c8f5c33c309771dfca901442d7ace22f006dcd, slots:5462-10922
-  - Pod store-cluster-cluster-2: role:master, id:f450773574d834f4ab549a76f5804fc66bcdf1cb, slots:10923-16383
-  - Pod store-cluster-cluster-3: role:replica, id:4ef162bdbdfba00dfeebaa6c078ed358e0c1a555, following:f8c8f5c33c309771dfca901442d7ace22f006dcd, link:up
-  - Pod store-cluster-cluster-4: role:replica, id:34139e215f431b9582b17fb4fd4d8cf210ba73ce, following:f450773574d834f4ab549a76f5804fc66bcdf1cb, link:up
-  - Pod store-cluster-cluster-5: role:replica, id:b7645a823e77866a607b9557507eed42ba6bac77, following:db7c8c37cc2badde942fc5cb37b8f11c05d6996f, link:up
+  - Pod store-cluster-shard-0-0: role:master, id:db7c8c37cc2badde942fc5cb37b8f11c05d6996f, slots:0-5461
+  - Pod store-cluster-shard-0-1: role:replica, id:b7645a823e77866a607b9557507eed42ba6bac77, following:db7c8c37cc2badde942fc5cb37b8f11c05d6996f, link:up
+  - Pod store-cluster-shard-1-0: role:master, id:f8c8f5c33c309771dfca901442d7ace22f006dcd, slots:5462-10922
+  - Pod store-cluster-shard-1-1: role:replica, id:4ef162bdbdfba00dfeebaa6c078ed358e0c1a555, following:f8c8f5c33c309771dfca901442d7ace22f006dcd, link:up
+  - Pod store-cluster-shard-2-0: role:master, id:f450773574d834f4ab549a76f5804fc66bcdf1cb, slots:10923-16383
+  - Pod store-cluster-shard-2-1: role:replica, id:34139e215f431b9582b17fb4fd4d8cf210ba73ce, following:f450773574d834f4ab549a76f5804fc66bcdf1cb, link:up
 
 Cluster Topology:
-  Master: store-cluster-cluster-0 (db7c8c37cc2badde942fc5cb37b8f11c05d6996f)
+  Master: store-cluster-shard-0-0 (db7c8c37cc2badde942fc5cb37b8f11c05d6996f)
     Slots: 0-5461
-    └── Replica: store-cluster-cluster-5 (b7645a823e77866a607b9557507eed42ba6bac77, link:up)
-  Master: store-cluster-cluster-1 (f8c8f5c33c309771dfca901442d7ace22f006dcd)
+    └── Replica: store-cluster-shard-0-1 (b7645a823e77866a607b9557507eed42ba6bac77, link:up)
+  Master: store-cluster-shard-1-0 (f8c8f5c33c309771dfca901442d7ace22f006dcd)
     Slots: 5462-10922
-    └── Replica: store-cluster-cluster-3 (4ef162bdbdfba00dfeebaa6c078ed358e0c1a555, link:up)
-  Master: store-cluster-cluster-2 (f450773574d834f4ab549a76f5804fc66bcdf1cb)
+    └── Replica: store-cluster-shard-1-1 (4ef162bdbdfba00dfeebaa6c078ed358e0c1a555, link:up)
+  Master: store-cluster-shard-2-0 (f450773574d834f4ab549a76f5804fc66bcdf1cb)
     Slots: 10923-16383
-    └── Replica: store-cluster-cluster-4 (34139e215f431b9582b17fb4fd4d8cf210ba73ce, link:up)
+    └── Replica: store-cluster-shard-2-1 (34139e215f431b9582b17fb4fd4d8cf210ba73ce, link:up)
 
 Summary:
   [OK] Cluster is healthy and consistent.
 ```
+
+The cluster summary has three verdicts: `[OK]` (healthy and shards colocated), `[DEGRADED]` (functional but a
+replica's replication link is down — reduced redundancy; often a transient resync, exit 0), and `[FAIL]` (a
+health/topology problem — missing slots, empty masters, or a **shard-colocation violation**: a replica whose master is
+in a different shard StatefulSet, which breaks per-shard failure-domain placement; see ADR-007).
 
 **Advanced Checks:**
 - **Consensus**: Do all Sentinels agree on the master?
 - **Ghost Detection**: Is the master reported by Redis/Sentinel actually a living Kubernetes pod?
 - **Role Alignment**: Do the `redis.chuck-chuck-chuck.net/role` labels match the actual process role?
 - **Topology (Cluster Mode)**: Visualizes the tree of Master -> Replica relationships and slot coverage.
+- **Shard colocation (Cluster Mode)**: Each Redis shard's master and replica(s) must live in one shard StatefulSet
+  (`{name}-shard-K-*`); a cross-StatefulSet pairing fails verification (LR-020).
 - **Partition Detection**: Identifies if nodes see different versions of the cluster topology.
 
 ---

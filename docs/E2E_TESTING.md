@@ -233,7 +233,7 @@ kubectl logs manual-chaos-chaos-client -f
 
 # Window 3: Redis pod logs (one per pod or loop)
 while true; do kubectl logs manual-chaos-redis-0 -f; sleep 1; done         # sentinel
-while true; do kubectl logs manual-chaos-cluster-0 -f; sleep 1; done       # cluster
+while true; do kubectl logs manual-chaos-shard-0-0 -f; sleep 1; done       # cluster (shard 0 master)
 
 # Window 4: Sentinel logs (sentinel mode only)
 while true; do kubectl logs manual-chaos-sentinel-0 -f; sleep 1; done
