@@ -75,18 +75,19 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 		})
 
 		It("should have correct topology and state", func() {
-			totalNodes := clusterTotalNodes(clusterReplicasPerShard)
-
-			By("checking StatefulSet replicas")
-			cmd := exec.Command("kubectl", "get", "statefulset", crName+"-cluster",
-				"-n", testNamespace, "-o", "jsonpath={.status.readyReplicas}")
-			output, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal(fmt.Sprintf("%d", totalNodes)))
+			By("checking each shard StatefulSet has all replicas ready")
+			for k := 0; k < clusterShards; k++ {
+				cmd := exec.Command("kubectl", "get", "statefulset",
+					fmt.Sprintf("%s-shard-%d", crName, k),
+					"-n", testNamespace, "-o", "jsonpath={.status.readyReplicas}")
+				output, err := utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(output).To(Equal(fmt.Sprintf("%d", 1+clusterReplicasPerShard)))
+			}
 
 			By("checking cluster state is ok")
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
+				cmd := exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 					"-n", testNamespace, "-c", "redis", "--",
 					"redis-cli", "CLUSTER", "INFO")
 				output, err := utils.Run(cmd)
@@ -104,7 +105,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 			// cluster_state Eventually above.
 			By(fmt.Sprintf("verifying %d masters and %d replicas", clusterShards, clusterShards*clusterReplicasPerShard))
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
+				cmd := exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 					"-n", testNamespace, "-c", "redis", "--",
 					"redis-cli", "CLUSTER", "NODES")
 				output, err := utils.Run(cmd)
@@ -129,7 +130,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 			By("setting keys")
 			keys := []string{"key1", "key2", "key3"}
 			for _, key := range keys {
-				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
+				cmd := exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 					"-n", testNamespace, "-c", "redis", "--",
 					"redis-cli", "-c", "SET", key, "value-"+key)
 				_, err := utils.Run(cmd)
@@ -138,7 +139,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 
 			By("getting keys")
 			for _, key := range keys {
-				cmd := exec.Command("kubectl", "exec", crName+"-cluster-2",
+				cmd := exec.Command("kubectl", "exec", clusterMasterPod(crName, 2),
 					"-n", testNamespace, "-c", "redis", "--",
 					"redis-cli", "-c", "GET", key)
 				output, err := utils.Run(cmd)
@@ -206,7 +207,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 
 			// In 0-replica mode, deleting a pod means losing data and slots.
 			// The operator should re-assign slots to the new node.
-			victimPod := crName + "-cluster-1"
+			victimPod := clusterMasterPod(crName, 1)
 
 			By(fmt.Sprintf("recording initial NodeID of victim pod %s", victimPod))
 			oldNodeID, err := getPodNodeID(testNamespace, victimPod)
@@ -216,12 +217,13 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 			_, err = deletePod(testNamespace, victimPod)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Wait for shard master to change (slot 8000 is in the middle of shard 1)
-			waitForShardMasterChange(testNamespace, crName+"-cluster-0", 8000, oldNodeID)
+			// Wait for shard master to change (slot 8000 is in the middle of shard 1),
+			// querying via shard 0's master.
+			waitForShardMasterChange(testNamespace, clusterMasterPod(crName, 0), 8000, oldNodeID)
 
 			By("waiting for cluster to stabilize")
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
+				cmd := exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 					"-n", testNamespace, "-c", "redis", "--",
 					"redis-cli", "CLUSTER", "INFO")
 				output, err := utils.Run(cmd)
@@ -273,7 +275,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 			totalNodes := clusterTotalNodes(clusterReplicasPerShard)
 
 			By("identifying initial master for shard 0")
-			victimPod := crName + "-cluster-0"
+			victimPod := clusterMasterPod(crName, 0)
 			oldNodeID, err := getPodNodeID(testNamespace, victimPod)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -281,12 +283,12 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 			_, err = deletePod(testNamespace, victimPod)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Wait for shard master to change (slot 0 is in shard 0)
-			waitForShardMasterChange(testNamespace, crName+"-cluster-1", 0, oldNodeID)
+			// Wait for shard master to change (slot 0 is in shard 0), querying via shard 1's master
+			waitForShardMasterChange(testNamespace, clusterMasterPod(crName, 1), 0, oldNodeID)
 
 			By("waiting for cluster to become ok again")
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "exec", crName+"-cluster-1",
+				cmd := exec.Command("kubectl", "exec", clusterMasterPod(crName, 1),
 					"-n", testNamespace, "-c", "redis", "--",
 					"redis-cli", "CLUSTER", "INFO")
 				output, err := utils.Run(cmd)
@@ -296,7 +298,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 
 			By(fmt.Sprintf("verifying topology is recovered (%d nodes, %d masters)", totalNodes, clusterShards))
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "exec", crName+"-cluster-1",
+				cmd := exec.Command("kubectl", "exec", clusterMasterPod(crName, 1),
 					"-n", testNamespace, "-c", "redis", "--",
 					"redis-cli", "CLUSTER", "NODES")
 				out, err := utils.Run(cmd)
@@ -323,8 +325,8 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 		It("should reassign replica when replica pod is deleted", func() {
 			totalNodes := clusterTotalNodes(clusterReplicasPerShard)
 
-			// First replica pod is at index clusterShards (masters are 0..shards-1)
-			victimPod := fmt.Sprintf("%s-cluster-%d", crName, clusterShards)
+			// Target shard 0's first replica
+			victimPod := clusterReplicaPod(crName, 0, 1)
 			By(fmt.Sprintf("recording initial NodeID of replica pod %s", victimPod))
 			oldNodeID, err := getPodNodeID(testNamespace, victimPod)
 			Expect(err).NotTo(HaveOccurred())
@@ -342,7 +344,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 
 			By("waiting for cluster to stabilize")
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
+				cmd := exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 					"-n", testNamespace, "-c", "redis", "--",
 					"redis-cli", "CLUSTER", "INFO")
 				output, err := utils.Run(cmd)
@@ -383,7 +385,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 
 			By("verifying resources are gone")
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "statefulset", crName+"-cluster", "-n", testNamespace)
+				cmd := exec.Command("kubectl", "get", "statefulset", crName+"-shard-0", "-n", testNamespace)
 				_, err := utils.Run(cmd)
 				g.Expect(err).To(HaveOccurred())
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
@@ -428,9 +430,7 @@ var _ = Describe("Cluster Mode Functional Testing", Ordered, func() {
 		})
 
 		It("should apply custom redis configuration to all nodes", func() {
-			totalNodes := clusterTotalNodes(clusterReplicasPerShard)
-			for i := 0; i < totalNodes; i++ {
-				podName := fmt.Sprintf("%s-cluster-%d", crName, i)
+			for _, podName := range clusterPodNames(crName, clusterShards, clusterReplicasPerShard) {
 				cmd := exec.Command("kubectl", "exec", podName,
 					"-n", testNamespace, "-c", "redis", "--",
 					"redis-cli", "CONFIG", "GET", "maxmemory-policy")
@@ -486,7 +486,7 @@ spec:
 
 		It("should stay in 'fail' state without slots assigned", func() {
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
+				cmd := exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 					"-n", testNamespace, "-c", "redis", "--",
 					"redis-cli", "CLUSTER", "INFO")
 				output, err := utils.Run(cmd)

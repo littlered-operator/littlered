@@ -391,7 +391,7 @@ spec:
 | `cluster.failoverGracePeriod` | `int` | No | `15` | Extra seconds (on top of `clusterNodeTimeout`) to wait for natural gossip-based failover before the operator force-promotes an orphaned replica. Total wait = `clusterNodeTimeout + failoverGracePeriod`. |
 
 **Cluster mode creates**:
-- Total pods: `shards × (1 + replicasPerShard)`
+- Total pods: `shards × (1 + replicasPerShard)`, spread across one StatefulSet per shard (`{name}-shard-K`, each `1 + replicasPerShard` pods; pod `-K-0` is the shard master)
 - Example: 3 shards with 1 replica = 6 pods (3 masters + 3 replicas)
 - 16384 hash slots distributed across masters
 
@@ -445,7 +445,7 @@ spec:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `podDisruptionBudget.create` | `*bool` | No | `true` | Whether to create a PDB for the managed StatefulSet(s). Ignored (no PDB created) for single-pod deployments — `standalone` mode and `cluster` mode with `replicasPerShard: 0`. In Sentinel mode, separate PDBs are created for the Redis and Sentinel StatefulSets. |
+| `podDisruptionBudget.create` | `*bool` | No | `true` | Whether to create a PDB for the managed StatefulSet(s). Ignored (no PDB created) for single-pod deployments — `standalone` mode and `cluster` mode with `replicasPerShard: 0`. In Sentinel mode, separate PDBs are created for the Redis and Sentinel StatefulSets. In Cluster mode, one PDB per shard is created (`{name}-shard-K-pdb`), only when `replicasPerShard > 0`. |
 | `podDisruptionBudget.maxUnavailable` | `IntOrString` | No | `1` | Max pods unavailable during a disruption. Mutually exclusive with `minAvailable`. |
 | `podDisruptionBudget.minAvailable` | `IntOrString` | No | — | Min pods that must stay available. Mutually exclusive with `maxUnavailable`. |
 
@@ -499,16 +499,16 @@ status:
     state: ok                   # ok, fail, or initializing
     lastBootstrap: "2026-02-03T12:00:00Z"
     nodes:
-      - podName: store-cluster-0
+      - podName: store-shard-0-0
         nodeId: abc123def456...
         role: master
         slotRanges: "0-5460"
-      - podName: store-cluster-1
+      - podName: store-shard-0-1
         nodeId: ghi789jkl012...
         role: replica
         masterNodeId: abc123def456...
     orphanedReplicas:           # Replicas awaiting force-promotion (transient)
-      - podName: store-cluster-3
+      - podName: store-shard-1-1
         nodeId: mno345pqr678...
         masterNodeId: abc123def456...
         detectedAt: "2026-02-03T12:01:00Z"
@@ -533,7 +533,7 @@ status:
 | `cluster.state` | `string` | Cluster state: `ok`, `fail`, `initializing` (cluster mode) |
 | `cluster.lastBootstrap` | `Time` | Timestamp of last full cluster bootstrap (cluster mode) |
 | `cluster.nodes` | `[]ClusterNodeState` | Per-node topology for operator-managed recovery (cluster mode) |
-| `cluster.nodes[].podName` | `string` | Stable pod name (e.g., `store-cluster-0`) |
+| `cluster.nodes[].podName` | `string` | Stable pod name (e.g., `store-shard-0-0`) |
 | `cluster.nodes[].nodeId` | `string` | Redis cluster node ID (40-char hex) |
 | `cluster.nodes[].role` | `string` | `master` or `replica` |
 | `cluster.nodes[].masterNodeId` | `string` | Master's node ID (replicas only) |

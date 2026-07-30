@@ -642,7 +642,7 @@ type OrphanedReplicaInfo struct {
 
 // ClusterNodeState tracks a cluster node's identity (replaces nodes.conf)
 type ClusterNodeState struct {
-	// PodName is the stable pod name (e.g., my-cache-cluster-0)
+	// PodName is the stable pod name (e.g., my-cache-shard-0-0)
 	PodName string `json:"podName"`
 
 	// NodeID is the Redis cluster node ID (40-char hex)

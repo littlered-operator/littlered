@@ -113,6 +113,16 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 		}
 	}
 
+	// clusterPDBNames returns the per-shard PDB names for a cluster CR. Since 0.3.0 the
+	// operator creates one PDB per shard ({name}-shard-K-pdb), not a single cluster PDB.
+	clusterPDBNames := func(name string) []string {
+		names := make([]string, 0, clusterShards)
+		for k := 0; k < clusterShards; k++ {
+			names = append(names, fmt.Sprintf("%s-shard-%d-pdb", name, k))
+		}
+		return names
+	}
+
 	// ============================================================================
 	// Single-pod workloads never get a PDB (PR #92)
 	// ============================================================================
@@ -145,7 +155,6 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 
 		It("should never create a PDB in cluster mode with replicasPerShard=0", func() {
 			crName := "pdb-cluster-zero"
-			pdbName := crName + "-cluster-pdb"
 
 			zero := 0
 			cr := &littleredv1alpha1.LittleRed{
@@ -164,11 +173,13 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			By("waiting for CR to be Running")
 			waitForRunning(crName, 5*time.Minute)
 
-			By("verifying no PDB is created when shards have no replicas")
+			By("verifying no per-shard PDB is created when shards have no replicas")
 			Consistently(func(g Gomega) {
-				_, found, err := getPDB(pdbName)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(found).To(BeFalse(), "a cluster with no replicas has no redundancy and must not get a PDB")
+				for _, pdbName := range clusterPDBNames(crName) {
+					_, found, err := getPDB(pdbName)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(found).To(BeFalse(), "a cluster with no replicas has no redundancy and must not get a PDB")
+				}
 			}, 15*time.Second, 5*time.Second).Should(Succeed())
 		})
 	})
@@ -191,7 +202,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			},
 			{
 				mode:     "cluster",
-				pdbNames: []string{"pdb-off-cluster-cluster-pdb"},
+				pdbNames: clusterPDBNames("pdb-off-cluster"),
 				timeout:  5 * time.Minute,
 			},
 		}
@@ -247,7 +258,7 @@ var _ = Describe("LittleRed PodDisruptionBudget", Label("pdb"), func() {
 			},
 			{
 				mode:     "cluster",
-				pdbNames: []string{"pdb-on-cluster-cluster-pdb"},
+				pdbNames: clusterPDBNames("pdb-on-cluster"),
 				timeout:  5 * time.Minute,
 			},
 		}

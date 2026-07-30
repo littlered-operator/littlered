@@ -9,9 +9,9 @@ For the high-level view that includes standalone and sentinel modes, see [RECONC
 ## Overview
 
 Cluster mode manages:
-- **Redis pods** (StatefulSet `<name>-cluster`): `shards * (1 + replicasPerShard)` nodes total
-- **Slot ownership**: 16384 slots divided evenly across shards. Pod N owns shard N (strict positional mapping).
-- **Replication**: each shard master has `replicasPerShard` replicas (default 1)
+- **Redis pods** (one StatefulSet per shard, `<name>-shard-K`, each `1 + replicasPerShard` pods): `shards * (1 + replicasPerShard)` nodes total. See ADR-007 / pillar 3.12. (Pre-0.3.0 this was a single `<name>-cluster` StatefulSet.)
+- **Slot ownership**: 16384 slots divided evenly across shards. Shard K's intended master is pod `<name>-shard-K-0` (positional-within-shard); slot ownership itself is the runtime source of truth.
+- **Replication**: each shard master (`<name>-shard-K-0`) has `replicasPerShard` replicas (`<name>-shard-K-1..R`, default 1)
 
 Unlike Sentinel mode, there is no external arbiter. Redis Cluster's built-in gossip protocol handles failure detection and failover via `cluster-node-timeout`. The operator's role is to:
 1. Bootstrap new clusters
@@ -316,7 +316,7 @@ The cluster pre-stop hook handles graceful shutdown:
 ## Status Determination
 
 The operator reports `Phase: Running` when:
-- All pods ready (StatefulSet `ReadyReplicas == Replicas`)
+- All pods ready (summed `ReadyReplicas` across the per-shard StatefulSets == `shards * (1 + replicasPerShard)`)
 - `ClusterState == "ok"` (at least one node reports it)
 - `TotalSlots == 16384`
 - Master count == expected shard count

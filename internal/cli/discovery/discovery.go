@@ -80,8 +80,10 @@ func discoverUnmanaged(ctx context.Context, k8sClient client.Client, namespace, 
 	cpRegex := regexp.MustCompile(fmt.Sprintf("^%s-redis-[0-9]+$", regexp.QuoteMeta(name)))
 	// 2. Bitnami: <name>-redis-node-<digit>, <name>-redis-cluster-<digit>, or <name>-master-<digit> (standalone)
 	bitnamiRegex := regexp.MustCompile(fmt.Sprintf("^%s-(redis-(node|cluster)|master)-[0-9]+$", regexp.QuoteMeta(name)))
-	// 3. Generic Cluster: <name>-cluster-[0-9]+
+	// 3. Generic Cluster: <name>-cluster-[0-9]+ (pre-0.3.0 LittleRed and other operators)
 	clusterRegex := regexp.MustCompile(fmt.Sprintf("^%s-cluster-[0-9]+$", regexp.QuoteMeta(name)))
+	// 3b. LittleRed per-shard Cluster (0.3.0+): <name>-shard-<shard>-<ordinal>
+	shardRegex := regexp.MustCompile(fmt.Sprintf("^%s-shard-[0-9]+-[0-9]+$", regexp.QuoteMeta(name)))
 	// 4. Spotahome Redis: rfr-<name>-<digit>
 	shRedisRegex := regexp.MustCompile(fmt.Sprintf("^rfr-%s-[0-9]+$", regexp.QuoteMeta(name)))
 	// 5. Spotahome Sentinel: rfs-<name>-...
@@ -92,7 +94,8 @@ func discoverUnmanaged(ctx context.Context, k8sClient client.Client, namespace, 
 
 	for _, pod := range podList.Items {
 		isRedis := cpRegex.MatchString(pod.Name) || bitnamiRegex.MatchString(pod.Name) ||
-			clusterRegex.MatchString(pod.Name) || shRedisRegex.MatchString(pod.Name)
+			clusterRegex.MatchString(pod.Name) || shardRegex.MatchString(pod.Name) ||
+			shRedisRegex.MatchString(pod.Name)
 
 		isSentinel := shSentinelRegex.MatchString(pod.Name)
 

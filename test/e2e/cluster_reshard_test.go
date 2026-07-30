@@ -65,9 +65,9 @@ var _ = Describe("Cluster Mode Consolidated-Shard Reshard Recovery (LR-018)", La
 // "" uses the operator default (ASM-capable); a value overrides spec.image.tag. When
 // maxKeysPerReconcile > 0 it is set on the CR (advanced field) to bound the dance.
 func consolidatedShardReshardSpecs(crName, imageTag string, numKeys, maxKeysPerReconcile int, wantASM bool) {
-	sourcePod := crName + "-cluster-2" // shard-2 master on a fresh bootstrap (pod-index model)
-	destPod := crName + "-cluster-0"   // shard-0 master; consolidation target during injection
-	neutralPod := crName + "-cluster-1"
+	sourcePod := clusterMasterPod(crName, 2) // shard-2's master ({crName}-shard-2-0) on a fresh bootstrap
+	destPod := clusterMasterPod(crName, 0)   // shard-0's master; consolidation target during injection
+	neutralPod := clusterMasterPod(crName, 1)
 
 	BeforeAll(func() {
 		AddReportEntry("cr:" + crName)
@@ -145,7 +145,7 @@ func consolidatedShardReshardSpecs(crName, imageTag string, numKeys, maxKeysPerR
 		By("pausing the operator to inject the consolidated state deterministically")
 		scaleOperator(0)
 
-		By("consolidating shard-2's slots (with data) onto cluster-0 via redis-cli --cluster reshard")
+		By("consolidating shard-2's slots (with data) onto shard-0's master via redis-cli --cluster reshard")
 		// Connect via a neutral node's real IP (never 127.0.0.1, which makes the tool
 		// address the destination as loopback and MIGRATE to the source itself).
 		reshard := exec.Command("kubectl", "exec", destPod, "-n", testNamespace, "-c", "redis", "--",
@@ -155,7 +155,7 @@ func consolidatedShardReshardSpecs(crName, imageTag string, numKeys, maxKeysPerR
 		out, err := utils.Run(reshard)
 		Expect(err).NotTo(HaveOccurred(), "reshard failed: %s", out)
 
-		By("turning cluster-2 into a fresh empty master (RESET SOFT + MEET)")
+		By("turning shard-2's master into a fresh empty master (RESET SOFT + MEET)")
 		_, err = redisExec(testNamespace, sourcePod, "CLUSTER", "RESET", "SOFT")
 		Expect(err).NotTo(HaveOccurred())
 		_, _ = redisExec(testNamespace, sourcePod, "FLUSHALL")
@@ -181,7 +181,7 @@ func consolidatedShardReshardSpecs(crName, imageTag string, numKeys, maxKeysPerR
 		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("verifying the surplus range and all its keys landed on the resharded master (no data loss)")
-		// The only empty master was cluster-2, so PlanReshard relocates shard-2 back to it.
+		// The only empty master was shard-2's, so PlanReshard relocates shard-2 back to it.
 		Eventually(func(g Gomega) {
 			g.Expect(countKeysInSlot(sourcePod, keySlot(sourcePod, tag))).To(Equal(numKeys))
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())

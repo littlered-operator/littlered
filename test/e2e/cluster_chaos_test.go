@@ -61,7 +61,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Running"))
 
-				cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
+				cmd = exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 					"-n", testNamespace, "-c", "redis", "--",
 					"redis-cli", "CLUSTER", "INFO")
 				output, err = utils.Run(cmd)
@@ -152,7 +152,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 					g.Expect(err).NotTo(HaveOccurred())
 					g.Expect(output).To(Equal("Running"))
 
-					cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
+					cmd = exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 						"-n", testNamespace, "-c", "redis", "--",
 						"redis-cli", "CLUSTER", "INFO")
 					output, err = utils.Run(cmd)
@@ -163,15 +163,15 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 				By("waiting 10 seconds for baseline traffic")
 				time.Sleep(10 * time.Second)
 
-				victimPod := crName + "-cluster-0"
+				victimPod := clusterMasterPod(crName, 0)
 				victimNodeID, _ := getPodNodeID(testNamespace, victimPod)
 
 				By(fmt.Sprintf("deleting master pod %s (%s)", victimPod, mode.Name))
 				_, err = deletePodMode(testNamespace, victimPod, mode.Graceful)
 				Expect(err).NotTo(HaveOccurred())
 
-				// Wait for cluster to detect failure via pod-1 (expecting ID gone or fail flag)
-				waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-1", totalNodes, []string{victimNodeID})
+				// Wait for cluster to detect failure via shard-1's master (a surviving node in another shard)
+				waitForClusterFailureDetected(testNamespace, crName, clusterMasterPod(crName, 1), totalNodes, []string{victimNodeID})
 
 				err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
 				Expect(err).NotTo(HaveOccurred())
@@ -218,7 +218,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 					g.Expect(err).NotTo(HaveOccurred())
 					g.Expect(output).To(Equal("Running"))
 
-					cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
+					cmd = exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 						"-n", testNamespace, "-c", "redis", "--",
 						"redis-cli", "CLUSTER", "INFO")
 					output, err = utils.Run(cmd)
@@ -229,16 +229,16 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 				By("waiting 10 seconds for baseline traffic")
 				time.Sleep(10 * time.Second)
 
-				// First replica pod is at index clusterShards
-				victimPod := fmt.Sprintf("%s-cluster-%d", crName, clusterShards)
+				// Target shard 0's first replica
+				victimPod := clusterReplicaPod(crName, 0, 1)
 				victimNodeID, _ := getPodNodeID(testNamespace, victimPod)
 
 				By(fmt.Sprintf("deleting replica pod %s (%s)", victimPod, mode.Name))
 				_, err = deletePodMode(testNamespace, victimPod, mode.Graceful)
 				Expect(err).NotTo(HaveOccurred())
 
-				// Wait for cluster to detect failure via pod-0
-				waitForClusterFailureDetected(testNamespace, crName, crName+"-cluster-0", totalNodes, []string{victimNodeID})
+				// Wait for cluster to detect failure via shard-0's master
+				waitForClusterFailureDetected(testNamespace, crName, clusterMasterPod(crName, 0), totalNodes, []string{victimNodeID})
 
 				err = waitForChaosClientComplete(testNamespace, chaosPodName, testDuration+2*time.Minute)
 				Expect(err).NotTo(HaveOccurred())
@@ -285,7 +285,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Running"))
 
-				cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
+				cmd = exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 					"-n", testNamespace, "-c", "redis", "--",
 					"redis-cli", "CLUSTER", "INFO")
 				output, err = utils.Run(cmd)
@@ -296,12 +296,13 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 			By("waiting 10 seconds for baseline traffic")
 			time.Sleep(10 * time.Second)
 
-			By("triggering rolling restart via kubectl rollout restart")
-			stsName := crName + "-cluster"
-			cmd = exec.Command("kubectl", "rollout", "restart", "statefulset", stsName,
-				"-n", testNamespace)
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
+			By("triggering rolling restart via kubectl rollout restart (one StatefulSet per shard)")
+			for k := 0; k < clusterShards; k++ {
+				cmd = exec.Command("kubectl", "rollout", "restart", "statefulset",
+					fmt.Sprintf("%s-shard-%d", crName, k), "-n", testNamespace)
+				_, err = utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred())
+			}
 
 			By("waiting for rollout to start")
 			time.Sleep(5 * time.Second)
@@ -317,7 +318,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 			Expect(metrics.ReadAvailability()).To(BeNumerically(">=", 0.95))
 
 			By("verifying final cluster topology (no lost shards)")
-			cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
+			cmd = exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 				"-n", testNamespace, "-c", "redis", "--",
 				"redis-cli", "CLUSTER", "INFO")
 			output, err := utils.Run(cmd)
@@ -359,7 +360,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Running"))
 
-				cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
+				cmd = exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 					"-n", testNamespace, "-c", "redis", "--",
 					"redis-cli", "CLUSTER", "INFO")
 				output, err = utils.Run(cmd)
@@ -428,8 +429,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 				for _, v := range victims {
 					victimMap[v] = true
 				}
-				for j := 0; j < totalNodes; j++ {
-					p := fmt.Sprintf("%s-cluster-%d", crName, j)
+				for _, p := range clusterPodNames(crName, clusterShards, clusterReplicasPerShard) {
 					if !victimMap[p] {
 						survivor = p
 						break
@@ -448,8 +448,7 @@ var _ = Describe("Cluster Mode Chaos Testing", Ordered, func() {
 					g.Expect(output).To(Equal("Running"))
 
 					var info string
-					for j := 0; j < totalNodes; j++ {
-						podName := fmt.Sprintf("%s-cluster-%d", crName, j)
+					for _, podName := range clusterPodNames(crName, clusterShards, clusterReplicasPerShard) {
 						cmd = exec.Command("kubectl", "exec", podName,
 							"-n", testNamespace, "-c", "redis", "--",
 							"redis-cli", "CLUSTER", "INFO")

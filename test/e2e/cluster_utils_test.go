@@ -33,6 +33,37 @@ import (
 	"github.com/littlered-operator/littlered-operator/test/utils"
 )
 
+// clusterMasterPod returns shard K's master pod name ({crName}-shard-K-0).
+// In the per-shard-StatefulSet model (0.3.0) each shard is its own StatefulSet
+// {crName}-shard-K with pod ordinal 0 the master and 1..R the replicas.
+func clusterMasterPod(crName string, shard int) string {
+	return fmt.Sprintf("%s-shard-%d-0", crName, shard)
+}
+
+// clusterReplicaPod returns shard K's replica pod name for replica ordinal 1..R.
+func clusterReplicaPod(crName string, shard, replicaOrdinal int) string {
+	return fmt.Sprintf("%s-shard-%d-%d", crName, shard, replicaOrdinal)
+}
+
+// clusterPodNames enumerates every cluster pod name in shard/ordinal order:
+// shard 0's pods (0..R), then shard 1's, and so on.
+func clusterPodNames(crName string, shards, replicasPerShard int) []string {
+	names := make([]string, 0, shards*(1+replicasPerShard))
+	for k := 0; k < shards; k++ {
+		for o := 0; o <= replicasPerShard; o++ {
+			names = append(names, fmt.Sprintf("%s-shard-%d-%d", crName, k, o))
+		}
+	}
+	return names
+}
+
+// clusterPodNamesForTotal enumerates cluster pod names given a total node count,
+// deriving replicasPerShard from the suite-wide clusterShards.
+func clusterPodNamesForTotal(crName string, totalNodes int) []string {
+	replicasPerShard := totalNodes/clusterShards - 1
+	return clusterPodNames(crName, clusterShards, replicasPerShard)
+}
+
 // verifyClusterTopologySync cross-validates the Operator's reported Status
 // against the actual ground truth from Redis 'CLUSTER NODES'.
 func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
@@ -42,8 +73,7 @@ func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 		// 1. Get ground truth from any available pod
 		var clusterNodesOutput string
 		var success bool
-		for i := 0; i < expectedNodes; i++ {
-			podName := fmt.Sprintf("%s-cluster-%d", crName, i)
+		for _, podName := range clusterPodNamesForTotal(crName, expectedNodes) {
 			cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "redis-cli", "CLUSTER", "NODES")
 			output, err := utils.Run(cmd)
 			if err == nil {
@@ -116,6 +146,7 @@ func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 
 	By("Topology sync validation passed")
 }
+
 // verifySentinelTopologySync cross-validates the Operator's reported Sentinel Status
 // against the ground truth from the Sentinel nodes.
 func verifySentinelTopologySync(namespace, crName string, expectedSentinels, expectedReplicas int) {
@@ -165,7 +196,7 @@ func verifySentinelTopologySync(namespace, crName string, expectedSentinels, exp
 			if content == "" {
 				continue
 			}
-			
+
 			// A replica is UP if it doesn't have s_down or o_down flags
 			if !strings.Contains(content, "s_down") && !strings.Contains(content, "o_down") {
 				actualNumUpReplicas++
@@ -359,8 +390,8 @@ func waitForClusterFailureDetected(namespace, crName string, queryPod string, ex
 func getShardGroups(namespace, crName string, totalNodes int) ([][]string, error) {
 	nodeIDToPodName := make(map[string]string)
 
-	for i := 0; i < totalNodes; i++ {
-		podName := fmt.Sprintf("%s-cluster-%d", crName, i)
+	podNames := clusterPodNamesForTotal(crName, totalNodes)
+	for _, podName := range podNames {
 		cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "redis-cli", "CLUSTER", "MYID")
 		output, err := utils.Run(cmd)
 		if err != nil {
@@ -370,8 +401,7 @@ func getShardGroups(namespace, crName string, totalNodes int) ([][]string, error
 	}
 
 	var clusterNodesOutput string
-	for i := 0; i < totalNodes; i++ {
-		podName := fmt.Sprintf("%s-cluster-%d", crName, i)
+	for _, podName := range podNames {
 		cmd := exec.Command("kubectl", "exec", podName, "-n", namespace, "-c", "redis", "--", "redis-cli", "CLUSTER", "NODES")
 		var err error
 		clusterNodesOutput, err = utils.Run(cmd)

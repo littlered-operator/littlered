@@ -84,7 +84,7 @@ var _ = Describe("Cluster Mode Rolling Update", Ordered, func() {
 			{"roll-e", "val-e"},
 		}
 		for _, kv := range testKeys {
-			cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
+			cmd := exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 				"-n", testNamespace, "-c", "redis", "--",
 				"redis-cli", "-c", "SET", kv.key, kv.value)
 			output, err := utils.Run(cmd)
@@ -95,12 +95,12 @@ var _ = Describe("Cluster Mode Rolling Update", Ordered, func() {
 
 	It("should perform rolling update when resources are changed", func() {
 		totalNodes := clusterTotalNodes(clusterReplicasPerShard)
+		podNames := clusterPodNames(crName, clusterShards, clusterReplicasPerShard)
 
 		By("recording current pod UIDs before the update")
 		oldUIDs := make([]string, totalNodes)
-		for i := 0; i < totalNodes; i++ {
-			cmd := exec.Command("kubectl", "get", "pod",
-				fmt.Sprintf("%s-cluster-%d", crName, i),
+		for i, pod := range podNames {
+			cmd := exec.Command("kubectl", "get", "pod", pod,
 				"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
 			uid, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
@@ -124,9 +124,8 @@ var _ = Describe("Cluster Mode Rolling Update", Ordered, func() {
 		By("waiting for rolling update to begin (at least one pod replaced)")
 		Eventually(func(g Gomega) {
 			replacedCount := 0
-			for i := 0; i < totalNodes; i++ {
-				cmd := exec.Command("kubectl", "get", "pod",
-					fmt.Sprintf("%s-cluster-%d", crName, i),
+			for i, pod := range podNames {
+				cmd := exec.Command("kubectl", "get", "pod", pod,
 					"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
 				uid, _ := utils.Run(cmd)
 				if strings.TrimSpace(uid) != oldUIDs[i] {
@@ -139,9 +138,8 @@ var _ = Describe("Cluster Mode Rolling Update", Ordered, func() {
 		By(fmt.Sprintf("waiting for all %d cluster pods to be replaced", totalNodes))
 		Eventually(func(g Gomega) {
 			replacedCount := 0
-			for i := 0; i < totalNodes; i++ {
-				cmd := exec.Command("kubectl", "get", "pod",
-					fmt.Sprintf("%s-cluster-%d", crName, i),
+			for i, pod := range podNames {
+				cmd := exec.Command("kubectl", "get", "pod", pod,
 					"-n", testNamespace, "-o", "jsonpath={.metadata.uid}")
 				uid, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -155,7 +153,7 @@ var _ = Describe("Cluster Mode Rolling Update", Ordered, func() {
 
 		By("verifying cluster is healthy after rolling update")
 		Eventually(func(g Gomega) {
-			cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
+			cmd := exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 				"-n", testNamespace, "-c", "redis", "--",
 				"redis-cli", "CLUSTER", "INFO")
 			output, err := utils.Run(cmd)
@@ -179,7 +177,7 @@ var _ = Describe("Cluster Mode Rolling Update", Ordered, func() {
 			{"roll-e", "val-e"},
 		}
 		for _, kv := range testKeys {
-			cmd := exec.Command("kubectl", "exec", crName+"-cluster-0",
+			cmd := exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 				"-n", testNamespace, "-c", "redis", "--",
 				"redis-cli", "-c", "GET", kv.key)
 			output, err := utils.Run(cmd)

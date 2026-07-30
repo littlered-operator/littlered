@@ -103,6 +103,7 @@ const (
 	ComponentSentinel     = "sentinel"
 	ComponentCluster      = "cluster"
 	LabelRole             = "redis.chuck-chuck-chuck.net/role"
+	LabelShard            = "redis.chuck-chuck-chuck.net/shard"
 	ModeStandalone        = "standalone"
 	ModeSentinel          = "sentinel"
 	ModeCluster           = "cluster"
@@ -208,13 +209,25 @@ func masterSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	}
 }
 
-// clusterSelectorLabels returns labels for selecting cluster pods
+// clusterSelectorLabels returns labels for selecting cluster pods. It is shard-agnostic
+// and is used by the shared headless/client Services and cross-shard concerns, which must
+// front every shard's pods.
 func clusterSelectorLabels(lr *littleredv1alpha1.LittleRed) map[string]string {
 	return map[string]string{
 		labelAppName:      appName,
 		labelAppInstance:  lr.Name,
 		labelAppComponent: ComponentCluster,
 	}
+}
+
+// clusterShardSelectorLabels returns labels for selecting the pods of a single shard:
+// clusterSelectorLabels plus the stable per-shard identity label. Each shard StatefulSet
+// selects on exactly these, so it owns only its own pods and a per-shard
+// topologySpreadConstraint can be scoped to same-shard pods. See ADR per-shard StatefulSets.
+func clusterShardSelectorLabels(lr *littleredv1alpha1.LittleRed, shardIdx int) map[string]string {
+	labels := clusterSelectorLabels(lr)
+	labels[LabelShard] = clusterShardLabelValue(shardIdx)
+	return labels
 }
 
 // buildConfigMap creates the ConfigMap for redis.conf
@@ -1838,13 +1851,19 @@ func buildClusterRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 	return sb.String()
 }
 
-// buildClusterStatefulSet creates the StatefulSet for cluster mode
-func buildClusterStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSet {
+// buildClusterShardStatefulSet creates the StatefulSet for a single cluster shard.
+// In the per-shard model (0.3.0) cluster mode is N StatefulSets — one per shard,
+// {name}-shard-K — each sized 1+replicasPerShard, carrying the stable per-shard identity
+// label. Pod {name}-shard-K-0 is the shard's intended master; -1..R are its replicas.
+// All shard StatefulSets share the one headless Service ({name}-cluster) as their
+// governing service, so peer discovery and pod DNS keep resolving across every shard.
+func buildClusterShardStatefulSet(lr *littleredv1alpha1.LittleRed, shardIdx int) *appsv1.StatefulSet {
 	labels := commonLabels(lr)
 	labels[labelAppComponent] = ComponentCluster
+	labels[LabelShard] = clusterShardLabelValue(shardIdx)
 
 	podLabels := make(map[string]string)
-	maps.Copy(podLabels, clusterSelectorLabels(lr))
+	maps.Copy(podLabels, clusterShardSelectorLabels(lr, shardIdx))
 	maps.Copy(podLabels, lr.Spec.PodTemplate.Labels)
 
 	// Compute config hash for pod annotations to trigger rolling update on config change
@@ -1861,7 +1880,12 @@ func buildClusterStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSe
 		cluster.SetDefaults()
 	}
 
-	replicas := int32(cluster.GetTotalNodes())
+	// One StatefulSet per shard: master (ordinal 0) plus replicasPerShard replicas.
+	replicasPerShard := 0
+	if cluster.ReplicasPerShard != nil {
+		replicasPerShard = *cluster.ReplicasPerShard
+	}
+	replicas := int32(1 + replicasPerShard)
 
 	containers := []corev1.Container{buildClusterRedisContainer(lr)}
 
@@ -1888,7 +1912,7 @@ func buildClusterStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSe
 
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      clusterStatefulSetName(lr),
+			Name:      clusterShardStatefulSetName(lr, shardIdx),
 			Namespace: lr.Namespace,
 			Labels:    labels,
 		},
@@ -1897,7 +1921,7 @@ func buildClusterStatefulSet(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSe
 			ServiceName:     clusterHeadlessServiceName(lr),
 			MinReadySeconds: minReadySeconds,
 			Selector: &metav1.LabelSelector{
-				MatchLabels: clusterSelectorLabels(lr),
+				MatchLabels: clusterShardSelectorLabels(lr, shardIdx),
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
@@ -2479,19 +2503,26 @@ func buildSentinelPDB(lr *littleredv1alpha1.LittleRed) *policyv1.PodDisruptionBu
 	}
 }
 
-func buildClusterPDB(lr *littleredv1alpha1.LittleRed) *policyv1.PodDisruptionBudget {
+// buildClusterShardPDB creates the PodDisruptionBudget for a single cluster shard.
+// One PDB per shard scopes the disruption budget to the shard's failure domain — a
+// voluntary drain can take at most maxUnavailable (default 1) pod of any one shard, so
+// it can never evict a whole shard at once. Only created when the shard is redundant
+// (replicasPerShard > 0); see reconcileClusterPDB.
+func buildClusterShardPDB(lr *littleredv1alpha1.LittleRed, shardIdx int) *policyv1.PodDisruptionBudget {
 	maxUnavailable, minAvailable := pdbSpec(lr)
+	labels := commonLabels(lr)
+	labels[LabelShard] = clusterShardLabelValue(shardIdx)
 	return &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      clusterPodDisruptionBudgetName(lr),
+			Name:      clusterShardPDBName(lr, shardIdx),
 			Namespace: lr.Namespace,
-			Labels:    commonLabels(lr),
+			Labels:    labels,
 		},
 		Spec: policyv1.PodDisruptionBudgetSpec{
 			MaxUnavailable: maxUnavailable,
 			MinAvailable:   minAvailable,
 			Selector: &metav1.LabelSelector{
-				MatchLabels: clusterSelectorLabels(lr),
+				MatchLabels: clusterShardSelectorLabels(lr, shardIdx),
 			},
 		},
 	}

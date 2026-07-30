@@ -301,41 +301,46 @@ status:
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Namespace: user-ns                            │
 │                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │  StatefulSet: {name}-cluster                                    │ │
-│  │  (replicas: shards × (1 + replicasPerShard))                    │ │
-│  │                                                                  │ │
-│  │  Example: 3 shards, 1 replica/shard = 6 pods                    │ │
-│  │  Pod 0-2: shard masters (slots evenly divided)                  │ │
-│  │  Pod 3-5: shard replicas (one per master)                       │ │
-│  │                                                                  │ │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │ │
-│  │  │ Pod: -0      │  │ Pod: -1      │  │ Pod: -2      │          │ │
-│  │  │ shard-0      │  │ shard-1      │  │ shard-2      │          │ │
-│  │  │ master       │  │ master       │  │ master       │          │ │
-│  │  │ 0-5461       │  │ 5462-10922   │  │ 10923-16383  │          │ │
-│  │  │ 6379/16379   │  │ 6379/16379   │  │ 6379/16379   │          │ │
-│  │  └──────────────┘  └──────────────┘  └──────────────┘          │ │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │ │
-│  │  │ Pod: -3      │  │ Pod: -4      │  │ Pod: -5      │          │ │
-│  │  │ replica of 0 │  │ replica of 1 │  │ replica of 2 │          │ │
-│  │  └──────────────┘  └──────────────┘  └──────────────┘          │ │
-│  └────────────────────────────────────────────────────────────────┘ │
+│  One StatefulSet per shard: {name}-shard-0 … {name}-shard-(S-1)      │
+│  (each replicas: 1 + replicasPerShard)                               │
+│  Example: 3 shards, 1 replica/shard = 3 StatefulSets × 2 pods        │
+│                                                                      │
+│  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐         │
+│  │ STS:           │  │ STS:           │  │ STS:           │         │
+│  │ {name}-shard-0 │  │ {name}-shard-1 │  │ {name}-shard-2 │         │
+│  │ ┌────────────┐ │  │ ┌────────────┐ │  │ ┌────────────┐ │         │
+│  │ │ Pod: -0    │ │  │ │ Pod: -0    │ │  │ │ Pod: -0    │ │         │
+│  │ │ master     │ │  │ │ master     │ │  │ │ master     │ │         │
+│  │ │ 0-5461     │ │  │ │ 5462-10922 │ │  │ │ 10923-16383│ │         │
+│  │ │ 6379/16379 │ │  │ │ 6379/16379 │ │  │ │ 6379/16379 │ │         │
+│  │ └────────────┘ │  │ └────────────┘ │  │ └────────────┘ │         │
+│  │ ┌────────────┐ │  │ ┌────────────┐ │  │ ┌────────────┐ │         │
+│  │ │ Pod: -1    │ │  │ │ Pod: -1    │ │  │ │ Pod: -1    │ │         │
+│  │ │ replica    │ │  │ │ replica    │ │  │ │ replica    │ │         │
+│  │ └────────────┘ │  │ └────────────┘ │  │ └────────────┘ │         │
+│  └────────────────┘  └────────────────┘  └────────────────┘         │
 │                                                                      │
 │  ┌─────────────────────┐  ┌─────────────────────────────────────┐   │
 │  │ Service:            │  │ Service: {name}-cluster             │   │
-│  │ {name}              │  │ (headless for gossip + bus)         │   │
-│  │ (ClusterIP, client) │  │ Ports: 6379, 16379                  │   │
+│  │ {name}              │  │ (shared headless, all shard pods,   │   │
+│  │ (ClusterIP, client) │  │  for gossip + bus) Ports: 6379,16379│   │
 │  └─────────────────────┘  └─────────────────────────────────────┘   │
 │                                                                      │
 │  ┌─────────────────────────────────────────────────────────────┐   │
-│  │ ConfigMap: {name}-cluster-config                            │   │
+│  │ ConfigMap: {name}-cluster-config (shared by all shards)     │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+Each shard StatefulSet carries a stable `redis.chuck-chuck-chuck.net/shard`
+label, and its pod `{name}-shard-K-0` is that shard's master (pods `-K-1…-K-R`
+are its replicas).
+
 **Key design decisions**:
-- Strict positional shard mapping: Pod N owns shard N
+- One StatefulSet per shard (`{name}-shard-K`) for failure-domain isolation; pod
+  `-K-0` is the shard master, `-K-1…-K-R` its replicas
+- All shards share one headless Service (`{name}-cluster`) and ConfigMap
+  (`{name}-cluster-config`)
 - No PersistentVolumes: `nodes.conf` is deleted on every start for fresh identity
 - Data durability through replication, not disk
 - Port 16379 used for cluster bus communication

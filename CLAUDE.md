@@ -95,6 +95,13 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 - **Mechanism by free capability probe**: Redis 8.4+ ⇒ native atomic slot migration (`CLUSTER MIGRATION IMPORT`); pre-8.4 ⇒ the incremental `reshardViaDance` (mark IMPORTING/MIGRATING → drain bounded key batches per reconcile → flip `SETSLOT NODE` only when fully drained, resuming from on-node markers, no persisted state). Support is detected from the `cluster_slot_migration_*` fields in the `CLUSTER INFO` already gathered (AND over reachable nodes) — **nothing is persisted**; a status field is a monitoring surface and an internal capability does not belong there. Tunables `spec.cluster.reshard{KeyBatchSize,MaxKeysPerReconcile,MigrateTimeoutMillis}`.
 - **Corollary** (LR-018): the dance is the first path that marks slots IMPORTING/MIGRATING; it exposed a latent `ParseClusterNodes` bug (the `[slot->-id]`/`[slot-<-id]` notations were parsed as owned slots) — now excluded.
 
+### 3.12 Per-Shard StatefulSets & Stable Shard Identity (Cluster Mode)
+- **Decision** (0.3.0, breaking): cluster mode is **one StatefulSet per shard** — `{name}-shard-K` (K in `0..shards-1`), each sized `1+replicasPerShard`, stamping a static `redis.chuck-chuck-chuck.net/shard: "<K>"` identity label. Shard K's master is `{name}-shard-K-0`; `-1..R` are its replicas. This replaces the pre-0.3.0 single `{name}-cluster` STS and its striped pod-index→shard model (pod N = shard N; replicas via `(i-shards)%shards`). The pure `ClusterPodRefs(name, shards, replicasPerShard)` is the single source of truth for pod enumeration + master identity. (See ADR-007, changelog LR-020.)
+- **Why mandatory, not cosmetic**: the must-have is single-domain-loss survivability (a shard's master + replica never share a node/zone — durability *is* domain diversity under EmptyDir, pillar 3.1). A `topologySpreadConstraint` needs a *stable, schedule-time, per-shard* selector. A single STS cannot provide one: one `spec.template` ⇒ pods stamped identically; the only per-pod labels K8s injects are ordinal/revision identity (`pod-index`, `pod-name`, `controller-revision-hash`), never shard-semantic; operator-patched labels land after scheduling (`IgnoredDuringExecution`). **One template ⇒ no schedule-time shard key ⇒ only a bespoke mutating webhook could fake it.** Per-shard STSs express it declaratively — and additionally make the shard the *workload unit* (per-shard rolling updates, per-shard PDB) and delete the fragile pod-index→shard decode that caused LR-018.
+- **Shared Services stay shard-agnostic**: the one headless Service `{name}-cluster` (selector `component=cluster`) governs every shard STS (`serviceName`), so peer discovery + pod DNS `{pod}.{name}-cluster.ns.svc` resolve across all shards; only shard STS *selectors* carry the shard label. One PDB per shard (`{name}-shard-K-pdb`, redundant shards only).
+- **Never delete data** (pillar continuity): the split renames workloads (EmptyDir clean slate), so the operator refuses rather than auto-deletes — a lingering legacy `{name}-cluster` STS ⇒ `LegacyClusterTopology` condition + wait; a `shards` decrease ⇒ `ShardScaleDownRefused`. In-place upgrade from pre-0.3.0 is unsupported (documented clean-slate migration).
+- **Scope**: Direction A **Milestone 1** (structural split). Milestone 2 (first-class `spec.placement.shardAntiAffinity` knob + under-provisioning status) and Direction B (topology-aware master balancing) are future work — see `docs/PER_SHARD_STATEFULSET_DESIGN.md`. Sentinel/standalone need neither (sentinel's single STS already spreads its three data pods).
+
 ---
 
 ## 4. Deployment Modes
@@ -103,11 +110,11 @@ Welcome! This document provides a high-level, condensed overview of the LittleRe
 | :--- | :--- | :--- |
 | **Standalone** | 1 Redis Pod | Dev / Simple caching |
 | **Sentinel** | 3 Redis (1M+2R) + 3 Sentinels | High Availability (HA) |
-| **Cluster** | `shards × (1 + replicasPerShard)` Pods | Horizontal Scaling / Large Data |
+| **Cluster** | `shards × (1 + replicasPerShard)` Pods, as **one StatefulSet per shard** (`{name}-shard-K`) | Horizontal Scaling / Large Data |
 
 ### Key Logic:
 - **Sentinel Mode**: The operator manages a `redis.chuck-chuck-chuck.net/role: master` label on Pods. The `{name}` Service uses this label as a selector to always route traffic to the current master.
-- **Cluster Mode**: Sophisticated repair loop handles:
+- **Cluster Mode**: N per-shard StatefulSets (`{name}-shard-K`, pod `-K-0` = shard K master; stable `redis.chuck-chuck-chuck.net/shard` label — pillar 3.12), fronted by one shared headless Service `{name}-cluster`. Sophisticated repair loop handles:
     1. Quorum loss (via `CLUSTER FAILOVER TAKEOVER`).
     2. Partition healing (via `CLUSTER MEET`).
     3. Ghost node removal (via `CLUSTER FORGET`).

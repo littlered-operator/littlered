@@ -1056,7 +1056,9 @@ func TestStatefulSetBuildersPropagatePodTemplateScheduling(t *testing.T) {
 		{"standalone", ModeStandalone, buildStatefulSet},
 		{"sentinel-redis", ModeSentinel, buildRedisStatefulSetSentinel},
 		{"sentinel-monitor", ModeSentinel, buildSentinelStatefulSet},
-		{"cluster", ModeCluster, buildClusterStatefulSet},
+		{"cluster", ModeCluster, func(lr *littleredv1alpha1.LittleRed) *appsv1.StatefulSet {
+			return buildClusterShardStatefulSet(lr, 0)
+		}},
 	}
 
 	for _, b := range builders {
@@ -1533,13 +1535,48 @@ func TestBuildSentinelPDB(t *testing.T) {
 	}
 }
 
-func TestBuildClusterPDB(t *testing.T) {
+func TestBuildClusterShardStatefulSet(t *testing.T) {
 	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.Mode = ModeCluster
-	pdb := buildClusterPDB(lr)
+	replicas := 1
+	lr.Spec.Cluster = &littleredv1alpha1.ClusterSpec{Shards: 3, ReplicasPerShard: &replicas}
 
-	if pdb.Name != "my-cache-cluster-pdb" {
-		t.Errorf("PDB name = %q, want %q", pdb.Name, "my-cache-cluster-pdb")
+	sts := buildClusterShardStatefulSet(lr, 2)
+
+	// One StatefulSet per shard, named {name}-shard-K.
+	if sts.Name != "my-cache-shard-2" {
+		t.Errorf("STS name = %q, want %q", sts.Name, "my-cache-shard-2")
+	}
+	// Sized 1 + replicasPerShard (not the whole cluster).
+	if sts.Spec.Replicas == nil || *sts.Spec.Replicas != 2 {
+		t.Errorf("STS replicas = %v, want 2", sts.Spec.Replicas)
+	}
+	// All shard StatefulSets share the one headless Service so peer discovery/DNS resolve.
+	if sts.Spec.ServiceName != "my-cache-cluster" {
+		t.Errorf("STS serviceName = %q, want %q (shared headless service)", sts.Spec.ServiceName, "my-cache-cluster")
+	}
+	// Stable per-shard identity label on selector, pod template, and STS metadata.
+	if sts.Spec.Selector.MatchLabels[LabelShard] != "2" {
+		t.Errorf("STS selector shard = %q, want %q", sts.Spec.Selector.MatchLabels[LabelShard], "2")
+	}
+	if sts.Spec.Template.Labels[LabelShard] != "2" {
+		t.Errorf("pod template shard label = %q, want %q", sts.Spec.Template.Labels[LabelShard], "2")
+	}
+	if sts.Labels[LabelShard] != "2" {
+		t.Errorf("STS metadata shard label = %q, want %q", sts.Labels[LabelShard], "2")
+	}
+	if sts.Spec.Template.Labels["app.kubernetes.io/component"] != ComponentCluster {
+		t.Error("pod template should keep component=cluster so the shared Services select it")
+	}
+}
+
+func TestBuildClusterShardPDB(t *testing.T) {
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ModeCluster
+	pdb := buildClusterShardPDB(lr, 1)
+
+	if pdb.Name != "my-cache-shard-1-pdb" {
+		t.Errorf("PDB name = %q, want %q", pdb.Name, "my-cache-shard-1-pdb")
 	}
 	if pdb.Namespace != testNamespace {
 		t.Errorf("PDB namespace = %q, want %q", pdb.Namespace, testNamespace)
@@ -1561,5 +1598,9 @@ func TestBuildClusterPDB(t *testing.T) {
 	}
 	if pdb.Spec.Selector.MatchLabels["app.kubernetes.io/instance"] != testLRName {
 		t.Errorf("PDB selector instance = %q, want %q", pdb.Spec.Selector.MatchLabels["app.kubernetes.io/instance"], testLRName)
+	}
+	// Per-shard PDB must be scoped to its shard so a drain can't take out a whole shard.
+	if pdb.Spec.Selector.MatchLabels[LabelShard] != "1" {
+		t.Errorf("PDB selector shard = %q, want %q", pdb.Spec.Selector.MatchLabels[LabelShard], "1")
 	}
 }

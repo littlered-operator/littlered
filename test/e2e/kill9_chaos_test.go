@@ -165,8 +165,8 @@ spec:
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				// redis-cli returns empty string (not "(nil)") for missing keys when
-			// not attached to a TTY (kubectl exec without -t).
-			g.Expect(strings.TrimSpace(output)).To(BeEmpty())
+				// not attached to a TTY (kubectl exec without -t).
+				g.Expect(strings.TrimSpace(output)).To(BeEmpty())
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 	})
@@ -380,7 +380,7 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Running"))
 
-				cmd = exec.Command("kubectl", "exec", crName+"-cluster-0",
+				cmd = exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
 					"-n", testNamespace, "-c", "redis", "--",
 					"redis-cli", "CLUSTER", "INFO")
 				output, err = utils.Run(cmd)
@@ -391,8 +391,8 @@ spec:
 			By("waiting 10 seconds for baseline traffic")
 			time.Sleep(10 * time.Second)
 
-			// pod-0 is always shard-0's master (first shard, assigned slots 0–5460).
-			const victimPod = crName + "-cluster-0"
+			// shard-0's master (pod {crName}-shard-0-0, assigned slots 0–5460).
+			victimPod := clusterMasterPod(crName, 0)
 
 			By(fmt.Sprintf("recording node ID and pod UID of %s before kill-9", victimPod))
 			oldNodeID, err := getPodNodeID(testNamespace, victimPod)
@@ -433,8 +433,8 @@ spec:
 			// After clusterNodeTimeout (5 s) the replica is promoted to master.
 
 			By("waiting for shard-0 failover: slot 0 must transfer to the former replica")
-			// Query via pod-1 (a surviving node in a different shard).
-			waitForShardMasterChange(testNamespace, crName+"-cluster-1", 0, oldNodeID)
+			// Query via shard-1's master (a surviving node in a different shard).
+			waitForShardMasterChange(testNamespace, clusterMasterPod(crName, 1), 0, oldNodeID)
 
 			By("verifying the restarted pod has a new node ID (nodes.conf was deleted)")
 			Eventually(func(g Gomega) {
@@ -452,8 +452,8 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Running"))
 
-				// Query via pod-1 (pod-0 may still be joining).
-				cmd = exec.Command("kubectl", "exec", crName+"-cluster-1",
+				// Query via shard-1's master (shard-0's master may still be joining).
+				cmd = exec.Command("kubectl", "exec", clusterMasterPod(crName, 1),
 					"-n", testNamespace, "-c", "redis", "--",
 					"redis-cli", "CLUSTER", "INFO")
 				output, err = utils.Run(cmd)

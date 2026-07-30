@@ -454,16 +454,17 @@ kubectl get littlered store
 # NAME       MODE      PHASE     READY   AGE
 # store   cluster   Running   6       2m
 
-# Check all pods (3 masters + 3 replicas = 6 pods)
+# Check all pods (3 masters + 3 replicas = 6 pods, spread across one
+# StatefulSet per shard: store-shard-0, store-shard-1, store-shard-2)
 kubectl get pods -l app.kubernetes.io/instance=store
 
-# Expected:
-# store-cluster-0   2/2     Running   (shard-0 master)
-# store-cluster-1   2/2     Running   (shard-0 replica)
-# store-cluster-2   2/2     Running   (shard-1 master)
-# store-cluster-3   2/2     Running   (shard-1 replica)
-# store-cluster-4   2/2     Running   (shard-2 master)
-# store-cluster-5   2/2     Running   (shard-2 replica)
+# Expected (pod -K-0 is shard K's master, -K-1 its replica):
+# store-shard-0-0   2/2     Running   (shard-0 master)
+# store-shard-0-1   2/2     Running   (shard-0 replica)
+# store-shard-1-0   2/2     Running   (shard-1 master)
+# store-shard-1-1   2/2     Running   (shard-1 replica)
+# store-shard-2-0   2/2     Running   (shard-2 master)
+# store-shard-2-1   2/2     Running   (shard-2 replica)
 
 # Check services
 kubectl get svc -l app.kubernetes.io/instance=store
@@ -477,7 +478,7 @@ kubectl get svc -l app.kubernetes.io/instance=store
 
 ```bash
 # Cluster info
-kubectl exec -it store-cluster-0 -c redis -- redis-cli CLUSTER INFO
+kubectl exec -it store-shard-0-0 -c redis -- redis-cli CLUSTER INFO
 
 # Expected output includes:
 # cluster_state:ok
@@ -487,10 +488,10 @@ kubectl exec -it store-cluster-0 -c redis -- redis-cli CLUSTER INFO
 # cluster_size:3
 
 # Cluster nodes (shows all nodes with their roles and slots)
-kubectl exec -it store-cluster-0 -c redis -- redis-cli CLUSTER NODES
+kubectl exec -it store-shard-0-0 -c redis -- redis-cli CLUSTER NODES
 
 # Check slot distribution
-kubectl exec -it store-cluster-0 -c redis -- redis-cli CLUSTER SLOTS
+kubectl exec -it store-shard-0-0 -c redis -- redis-cli CLUSTER SLOTS
 ```
 
 ### Check cluster state in CR status
@@ -504,8 +505,8 @@ kubectl get littlered store -o jsonpath='{.status.cluster}' | jq
 #   "state": "ok",
 #   "lastBootstrap": "2026-02-03T...",
 #   "nodes": [
-#     {"podName": "store-cluster-0", "nodeId": "abc123...", "role": "master", "slotRanges": "0-5460"},
-#     {"podName": "store-cluster-1", "nodeId": "def456...", "role": "replica", "masterNodeId": "abc123..."},
+#     {"podName": "store-shard-0-0", "nodeId": "abc123...", "role": "master", "slotRanges": "0-5460"},
+#     {"podName": "store-shard-0-1", "nodeId": "def456...", "role": "replica", "masterNodeId": "abc123..."},
 #     ...
 #   ]
 # }
@@ -514,14 +515,14 @@ kubectl get littlered store -o jsonpath='{.status.cluster}' | jq
 ### Test recovery
 
 ```bash
-# Delete a master pod
-kubectl delete pod store-cluster-0
+# Delete a master pod (shard-0's master)
+kubectl delete pod store-shard-0-0
 
 # Watch the operator recover (new pod gets new node ID, operator re-adds slots)
 kubectl logs -n littlered-system deployment/littlered-operator -f
 
-# Verify cluster health after recovery
-kubectl exec -it store-cluster-2 -c redis -- redis-cli CLUSTER INFO
+# Verify cluster health from a surviving pod (shard-1's master)
+kubectl exec -it store-shard-1-0 -c redis -- redis-cli CLUSTER INFO
 ```
 
 ### Connect from your application
@@ -536,16 +537,16 @@ Example with redis-cli:
 
 ```bash
 # -c flag enables cluster mode (follows redirects)
-kubectl exec -it store-cluster-0 -c redis -- redis-cli -c SET mykey myvalue
-kubectl exec -it store-cluster-0 -c redis -- redis-cli -c GET mykey
+kubectl exec -it store-shard-0-0 -c redis -- redis-cli -c SET mykey myvalue
+kubectl exec -it store-shard-0-0 -c redis -- redis-cli -c GET mykey
 ```
 
 ### Slot distribution
 
 With 3 shards, slots are distributed as:
-- Shard 0 (pod-0): slots 0-5460
-- Shard 1 (pod-2): slots 5461-10922
-- Shard 2 (pod-4): slots 10923-16383
+- Shard 0 (`store-shard-0-0`): slots 0-5460
+- Shard 1 (`store-shard-1-0`): slots 5461-10922
+- Shard 2 (`store-shard-2-0`): slots 10923-16383
 
 ### Important notes
 
@@ -554,6 +555,24 @@ With 3 shards, slots are distributed as:
 - **No PVCs**: Cluster state stored in CR status, not nodes.conf.
 - **Minimum 3 shards**: Redis Cluster requires at least 3 masters.
 - **Scaling not yet supported**: Adding/removing shards requires manual intervention.
+
+### Upgrading to 0.3.0 (cluster mode)
+
+0.3.0 restructures cluster mode from a single StatefulSet (`{name}-cluster`, pods
+`{name}-cluster-N`) into **one StatefulSet per shard** (`{name}-shard-K`, pods
+`{name}-shard-K-O` where `-K-0` is the shard master and `-K-1…-K-R` its replicas).
+This renames the workloads and every pod. Because cluster storage is in-memory
+(EmptyDir), there is nothing to carry over: this is a **clean-slate migration —
+cluster data is lost on upgrade**.
+
+- The operator will **not** auto-delete the legacy `{name}-cluster` StatefulSet — it
+  never deletes data by default. Instead it surfaces a `LegacyClusterTopology`
+  status condition and waits until you remove the old workload manually
+  (`kubectl delete statefulset {name}-cluster`).
+- Once the legacy StatefulSet is gone, the operator creates the per-shard
+  StatefulSets and bootstraps a fresh cluster.
+- Reducing `spec.cluster.shards` is refused (`ShardScaleDownRefused`); shard count
+  can only be held or increased.
 
 ---
 
@@ -676,15 +695,16 @@ that holds across failover, because a failover only changes *which* pod is maste
 it never moves a pod. Apply the spread above to a `mode: sentinel` instance and
 you are done.
 
-**Cluster mode — a caveat.** The constraints above spread *all* of an instance's
-cluster pods evenly across the chosen domains. They cannot currently express
-"keep a *shard's* master and its replica in different domains": all cluster pods
-of an instance carry identical labels (a single StatefulSet, no per-shard or
-per-role label), and shard roles are assigned at runtime and change on failover,
-which pod-scheduling constraints cannot track. Even spread is a strong baseline —
-with enough nodes/zones it makes same-domain co-location of a shard pair unlikely
-— but it is not a guarantee. Guaranteed per-shard domain isolation is planned as
-topology-aware replica assignment in the operator; track it in the project issues.
+**Cluster mode.** The instance-wide constraint above spreads *all* of an
+instance's cluster pods evenly across the chosen domains. As of 0.3.0 each shard is
+its own StatefulSet (`{name}-shard-K`) whose pods carry a stable
+`redis.chuck-chuck-chuck.net/shard` label, so you can now also express "keep a
+*shard's* pods in different domains" by adding a per-shard spread constraint that
+selects on that label. What still cannot be pinned by scheduling is *role*
+placement (master vs. replica) within a shard: pod `-K-0` starts as the shard
+master, but roles are assigned at runtime and change on failover, which
+pod-scheduling constraints cannot track. Even spread across domains remains a
+strong baseline.
 
 ### With authentication
 
@@ -1110,13 +1130,13 @@ kubectl logs store-sentinel-0
 
 ```bash
 # Check cluster state
-kubectl exec -it store-cluster-0 -c redis -- redis-cli CLUSTER INFO
+kubectl exec -it store-shard-0-0 -c redis -- redis-cli CLUSTER INFO
 
 # Check for failed slots
-kubectl exec -it store-cluster-0 -c redis -- redis-cli CLUSTER SLOTS
+kubectl exec -it store-shard-0-0 -c redis -- redis-cli CLUSTER SLOTS
 
 # View cluster topology
-kubectl exec -it store-cluster-0 -c redis -- redis-cli CLUSTER NODES
+kubectl exec -it store-shard-0-0 -c redis -- redis-cli CLUSTER NODES
 
 # Check stored cluster state in CR
 kubectl get littlered store -o jsonpath='{.status.cluster.state}'

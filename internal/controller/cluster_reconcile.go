@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 	redisclient "github.com/littlered-operator/littlered-operator/internal/redis"
@@ -46,23 +48,29 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 		littleRed.Status.Phase = littleredv1alpha1.PhasePending
 	}
 
-	// 1. Ensure resources (ConfigMap, Services, StatefulSet)
-	if err := r.ensureClusterResources(ctx, littleRed); err != nil {
-		log.Error(err, "Failed to ensure cluster resources")
+	// Legacy single-STS guard (0.3.0 migration). We never silently rebuild data: if a
+	// pre-0.3.0 single {name}-cluster StatefulSet is still present, refuse to stand up
+	// the per-shard StatefulSets beside it (that would fork the cluster and can wipe
+	// data) until an operator migrates/removes it. See ADR per-shard StatefulSets.
+	if legacy, err := r.detectLegacyClusterStatefulSet(ctx, littleRed); err != nil {
 		return ctrl.Result{}, err
+	} else if legacy {
+		return r.reportLegacyClusterTopology(ctx, littleRed)
 	}
 
-	// 2. Get StatefulSet and check if all pods are ready
-	sts := &appsv1.StatefulSet{}
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      clusterStatefulSetName(littleRed),
-		Namespace: littleRed.Namespace,
-	}, sts); err != nil {
-		if apierrors.IsNotFound(err) {
-			log.Info("StatefulSet not yet created, requeueing")
-			fast, _ := littleRed.GetRequeueIntervals()
-			return ctrl.Result{RequeueAfter: fast}, nil
-		}
+	// Shard scale-down guard. Reducing spec.cluster.shards would orphan the high-index
+	// shard StatefulSets and drop their slots; with EmptyDir storage that is data loss,
+	// and there is no reshard-away path. We never delete data by default, so we refuse
+	// and wait rather than remove the orphaned shards. See ADR per-shard StatefulSets.
+	if orphans, err := r.detectOrphanedShardStatefulSets(ctx, littleRed); err != nil {
+		return ctrl.Result{}, err
+	} else if len(orphans) > 0 {
+		return r.reportShardScaleDown(ctx, littleRed, orphans)
+	}
+
+	// 1. Ensure resources (ConfigMap, Services, per-shard StatefulSets)
+	if err := r.ensureClusterResources(ctx, littleRed); err != nil {
+		log.Error(err, "Failed to ensure cluster resources")
 		return ctrl.Result{}, err
 	}
 
@@ -72,18 +80,29 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 		cluster.SetDefaults()
 	}
 
+	// 2. Aggregate readiness across all per-shard StatefulSets.
+	_, allShardsExist, readyReplicas, totalSpecReplicas, err := r.clusterShardStatefulSets(ctx, littleRed)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !allShardsExist {
+		log.Info("Shard StatefulSet(s) not yet created, requeueing")
+		fast, _ := littleRed.GetRequeueIntervals()
+		return ctrl.Result{RequeueAfter: fast}, nil
+	}
+
 	expectedReplicas := int32(cluster.GetTotalNodes())
-	allPodsReady := sts.Status.ReadyReplicas == expectedReplicas
+	allPodsReady := readyReplicas == expectedReplicas
 
 	// 3. If not all pods ready, wait (update status to Initializing)
 	if !allPodsReady {
 		log.Info("Waiting for all pods to be ready",
-			"ready", sts.Status.ReadyReplicas,
+			"ready", readyReplicas,
 			"expected", expectedReplicas)
 
 		littleRed.Status.Phase = littleredv1alpha1.PhaseInitializing
-		littleRed.Status.Redis.Ready = sts.Status.ReadyReplicas
-		littleRed.Status.Redis.Total = *sts.Spec.Replicas
+		littleRed.Status.Redis.Ready = readyReplicas
+		littleRed.Status.Redis.Total = totalSpecReplicas
 
 		if err := r.Status().Update(ctx, littleRed); err != nil {
 			return ctrl.Result{}, err
@@ -393,7 +412,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 		// already-consolidated cluster.
 		intendedMasters := make(map[int]*redisclient.ClusterNodeState) // shardIdx -> Node
 		for i := range shards {
-			podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
+			podName := shardMasterPodName(littleRed.Name, i)
 			if node, ok := gt.Nodes[podName]; ok && redisclient.SafeMissingShardTarget(node) {
 				intendedMasters[i] = node
 			}
@@ -405,7 +424,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 			if targetNode == nil {
 				log.Info("Intended master for shard not available, waiting",
 					"shardIdx", shardIdx,
-					"expectedPod", fmt.Sprintf("%s-cluster-%d", littleRed.Name, shardIdx))
+					"expectedPod", shardMasterPodName(littleRed.Name, shardIdx))
 				continue
 			}
 
@@ -516,15 +535,13 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 // gatherGroundTruth queries all pods to build a view of the cluster
 func (r *LittleRedReconciler) gatherGroundTruth(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) *redisclient.ClusterGroundTruth {
 	cluster := littleRed.Spec.Cluster
-	totalNodes := cluster.GetTotalNodes()
 	password := r.getRedisPassword(ctx, littleRed)
 
 	clusterPods := make(map[string]string)
-	for i := range totalNodes {
-		podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
+	for _, ref := range ClusterPodRefs(littleRed.Name, cluster.Shards, clusterReplicasPerShard(cluster)) {
 		pod := &corev1.Pod{}
-		if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: littleRed.Namespace}, pod); err == nil && pod.Status.PodIP != "" {
-			clusterPods[pod.Status.PodIP] = podName
+		if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: littleRed.Namespace}, pod); err == nil && pod.Status.PodIP != "" {
+			clusterPods[pod.Status.PodIP] = ref.Name
 		}
 	}
 
@@ -546,102 +563,113 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 
 	password := r.getRedisPassword(ctx, littleRed)
 	clusterClient := redisclient.NewClusterClient(password, littleRed.Spec.TLS.Enabled)
-	totalNodes := cluster.GetTotalNodes()
+	refs := ClusterPodRefs(littleRed.Name, cluster.Shards, clusterReplicasPerShard(cluster))
 
-	// Verify pods belong to the current StatefulSet revision before using their IPs.
-	// After a delete-and-recreate, terminating pods from the old deployment may still
-	// exist with stale IPs and the same names. Using those IPs would poison the cluster.
-	sts := &appsv1.StatefulSet{}
-	if err := r.Get(ctx, types.NamespacedName{
-		Name: clusterStatefulSetName(littleRed), Namespace: littleRed.Namespace,
-	}, sts); err != nil {
+	// Verify pods belong to the current revision of their shard StatefulSet before using
+	// their IPs. After a delete-and-recreate, terminating pods from the old deployment may
+	// still exist with stale IPs and the same names; using those IPs would poison the
+	// cluster. With per-shard StatefulSets each shard carries its own revision, so gate
+	// each pod against its own shard's CurrentRevision.
+	shardSTSs, allShardsExist, _, _, err := r.clusterShardStatefulSets(ctx, littleRed)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
-	currentRevision := sts.Status.CurrentRevision
+	if !allShardsExist {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
 
-	// Gather all Pod IPs and Node IDs
-	podIPs := make([]string, totalNodes)
-	nodeIDs := make([]string, totalNodes)
+	// Gather all Pod IPs and Node IDs, keyed by pod name.
+	podIPs := make(map[string]string, len(refs))
+	nodeIDs := make(map[string]string, len(refs))
 
-	for i := range totalNodes {
-		podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
+	for _, ref := range refs {
 		pod := &corev1.Pod{}
-		if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: littleRed.Namespace}, pod); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: littleRed.Namespace}, pod); err != nil {
 			return ctrl.Result{}, err
 		}
+		currentRevision := shardSTSs[ref.ShardIdx].Status.CurrentRevision
 		podRevision := pod.Labels["controller-revision-hash"]
 		if pod.Status.PodIP == "" || currentRevision == "" || podRevision != currentRevision {
 			log.Info("Bootstrap: pod not ready (no IP or stale revision)",
-				"pod", podName, "podRevision", podRevision, "stsRevision", currentRevision)
+				"pod", ref.Name, "podRevision", podRevision, "stsRevision", currentRevision)
 			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
-		podIPs[i] = pod.Status.PodIP
+		podIPs[ref.Name] = pod.Status.PodIP
 
 		addr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.RedisPort)
 		id, err := clusterClient.GetMyID(ctx, addr)
 		if err != nil {
-			auditLog.Error(err, "Failed to get Node ID", "pod", podName)
+			auditLog.Error(err, "Failed to get Node ID", "pod", ref.Name)
 			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
-		nodeIDs[i] = id
+		nodeIDs[ref.Name] = id
 	}
 
-	// 1. CLUSTER MEET: Everyone meets Node 0
-	seedAddr := fmt.Sprintf("%s:%d", podIPs[0], littleredv1alpha1.RedisPort)
-	for i := 1; i < totalNodes; i++ {
-		auditLog.Info("Meeting node", "node", i, "target", 0)
-		if err := clusterClient.ClusterMeet(ctx, seedAddr, podIPs[i], littleredv1alpha1.RedisPort); err != nil {
-			auditLog.Error(err, "Failed to meet node", "node", i)
+	// 1. CLUSTER MEET: everyone meets shard 0's master (the seed node).
+	seedName := shardMasterPodName(littleRed.Name, 0)
+	seedAddr := fmt.Sprintf("%s:%d", podIPs[seedName], littleredv1alpha1.RedisPort)
+	for _, ref := range refs {
+		if ref.Name == seedName {
+			continue
+		}
+		auditLog.Info("Meeting node", "node", ref.Name, "target", seedName)
+		if err := clusterClient.ClusterMeet(ctx, seedAddr, podIPs[ref.Name], littleredv1alpha1.RedisPort); err != nil {
+			auditLog.Error(err, "Failed to meet node", "node", ref.Name)
 		}
 	}
 
 	// Wait for gossip to propagate slightly
 	time.Sleep(2 * time.Second)
 
-	// 2. Assign Slots to Masters
+	// 2. Assign Slots to Masters (shard K's master is {name}-shard-K-0).
 	if littleRed.Annotations[AnnotationDebugSkipSlotAssignment] == annotationValueTrue {
 		auditLog.Info("DEBUG: Skipping slot assignment due to annotation")
 	} else {
 		slotRanges := redisclient.GenerateSlotRanges(cluster.Shards)
 
-		for i := 0; i < cluster.Shards; i++ {
-			masterAddr := fmt.Sprintf("%s:%d", podIPs[i], littleredv1alpha1.RedisPort)
+		for k := range cluster.Shards {
+			masterName := shardMasterPodName(littleRed.Name, k)
+			masterAddr := fmt.Sprintf("%s:%d", podIPs[masterName], littleredv1alpha1.RedisPort)
+			masterID := nodeIDs[masterName]
 
 			nodes, err := clusterClient.GetClusterNodes(ctx, masterAddr)
 			if err == nil {
 				hasSlots := false
 				for _, n := range nodes {
-					if n.NodeID == nodeIDs[i] && len(n.Slots) > 0 {
+					if n.NodeID == masterID && len(n.Slots) > 0 {
 						hasSlots = true
 						break
 					}
 				}
 				if hasSlots {
-					log.Info("Node already has slots, skipping assignment", "node", i)
+					log.Info("Node already has slots, skipping assignment", "shard", k, "pod", masterName)
 					continue
 				}
 			}
 
-			auditLog.Info("Assigning slots to master", "node", i, "slots", fmt.Sprintf("%d-%d", slotRanges[i].Start, slotRanges[i].End))
-			slots, _ := redisclient.ExpandSlotRange(redisclient.FormatSlotRange(slotRanges[i].Start, slotRanges[i].End))
+			auditLog.Info("Assigning slots to master", "shard", k, "pod", masterName, "slots", fmt.Sprintf("%d-%d", slotRanges[k].Start, slotRanges[k].End))
+			slots, _ := redisclient.ExpandSlotRange(redisclient.FormatSlotRange(slotRanges[k].Start, slotRanges[k].End))
 			if err := clusterClient.ClusterAddSlots(ctx, masterAddr, slots...); err != nil {
-				auditLog.Error(err, "Failed to add slots", "node", i)
+				auditLog.Error(err, "Failed to add slots", "shard", k, "pod", masterName)
 			}
 		}
 	}
 
-	// 3. Assign Replicas
-	for i := cluster.Shards; i < totalNodes; i++ {
-		masterIndex := (i - cluster.Shards) % cluster.Shards
-		masterID := nodeIDs[masterIndex]
+	// 3. Assign Replicas: each shard's -1..R replicate that shard's master.
+	for _, ref := range refs {
+		if ref.IsMaster {
+			continue
+		}
+		masterName := shardMasterPodName(littleRed.Name, ref.ShardIdx)
+		masterID := nodeIDs[masterName]
 
-		replicaAddr := fmt.Sprintf("%s:%d", podIPs[i], littleredv1alpha1.RedisPort)
+		replicaAddr := fmt.Sprintf("%s:%d", podIPs[ref.Name], littleredv1alpha1.RedisPort)
 
 		nodes, err := clusterClient.GetClusterNodes(ctx, replicaAddr)
 		alreadyCorrect := false
 		if err == nil {
 			for _, n := range nodes {
-				if n.NodeID == nodeIDs[i] && n.MasterID == masterID {
+				if n.NodeID == nodeIDs[ref.Name] && n.MasterID == masterID {
 					alreadyCorrect = true
 					break
 				}
@@ -649,9 +677,9 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 		}
 
 		if !alreadyCorrect {
-			auditLog.Info("Assigning replica to master", "replicaNode", i, "masterNode", masterIndex)
+			auditLog.Info("Assigning replica to master", "replica", ref.Name, "master", masterName)
 			if err := clusterClient.ClusterReplicate(ctx, replicaAddr, masterID); err != nil {
-				auditLog.Error(err, "Failed to replicate", "replica", i, "master", masterIndex)
+				auditLog.Error(err, "Failed to replicate", "replica", ref.Name, "master", masterName)
 			}
 		}
 	}
@@ -664,21 +692,20 @@ func (r *LittleRedReconciler) bootstrapCluster(ctx context.Context, littleRed *l
 func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, gt *redisclient.ClusterGroundTruth) (ctrl.Result, error) {
 	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
 	oldStatus := littleRed.Status.DeepCopy()
-	// Get StatefulSet status
-	sts := &appsv1.StatefulSet{}
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      clusterStatefulSetName(littleRed),
-		Namespace: littleRed.Namespace,
-	}, sts); err != nil {
+
+	// Aggregate readiness/total across all per-shard StatefulSets.
+	_, _, readyReplicas, totalSpecReplicas, err := r.clusterShardStatefulSets(ctx, littleRed)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
-
-	littleRed.Status.Redis.Ready = sts.Status.ReadyReplicas
-	littleRed.Status.Redis.Total = *sts.Spec.Replicas
+	littleRed.Status.Redis.Ready = readyReplicas
+	littleRed.Status.Redis.Total = totalSpecReplicas
 
 	clusterShards := int32(littleredv1alpha1.DefaultClusterShards)
+	replicasPerShard := 0
 	if littleRed.Spec.Cluster != nil {
 		clusterShards = int32(littleRed.Spec.Cluster.Shards)
+		replicasPerShard = clusterReplicasPerShard(littleRed.Spec.Cluster)
 	}
 
 	// Gather ground truth to get node details for status.
@@ -696,8 +723,8 @@ func (r *LittleRedReconciler) updateClusterStatus(ctx context.Context, littleRed
 
 		// Populate node details
 		nodeStates := make([]littleredv1alpha1.ClusterNodeState, 0)
-		for i := 0; i < int(*sts.Spec.Replicas); i++ {
-			podName := fmt.Sprintf("%s-cluster-%d", littleRed.Name, i)
+		for _, ref := range ClusterPodRefs(littleRed.Name, int(clusterShards), replicasPerShard) {
+			podName := ref.Name
 			if node, ok := gt.Nodes[podName]; ok {
 				nodeStates = append(nodeStates, littleredv1alpha1.ClusterNodeState{
 					PodName:      podName,
@@ -799,9 +826,15 @@ func (r *LittleRedReconciler) reconcileClusterHeadlessService(ctx context.Contex
 	return r.apply(ctx, littleRed, buildClusterHeadlessService(littleRed))
 }
 
-// reconcileClusterStatefulSet ensures the StatefulSet exists
+// reconcileClusterStatefulSet ensures one StatefulSet per shard exists ({name}-shard-K).
 func (r *LittleRedReconciler) reconcileClusterStatefulSet(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	return r.apply(ctx, littleRed, buildClusterStatefulSet(littleRed))
+	shards := clusterShardCount(littleRed)
+	for k := range shards {
+		if err := r.apply(ctx, littleRed, buildClusterShardStatefulSet(littleRed, k)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // reconcileClusterClientService ensures the client Service exists
@@ -809,15 +842,167 @@ func (r *LittleRedReconciler) reconcileClusterClientService(ctx context.Context,
 	return r.apply(ctx, littleRed, buildClusterClientService(littleRed))
 }
 
-// reconcileClusterPDB creates or deletes the PDB for the cluster StatefulSet based on spec.
-// A PDB is only created when the cluster has redundancy (replicasPerShard >= 1). With
+// reconcileClusterPDB creates or deletes one PDB per shard based on spec. A per-shard PDB
+// is only created when the cluster has redundancy (replicasPerShard >= 1). With
 // replicasPerShard == 0 every pod is the sole owner of its slots, so a PDB cannot protect
 // availability without blocking node drains — we never create one in that case.
 func (r *LittleRedReconciler) reconcileClusterPDB(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) error {
-	if r.pdbEnabled(littleRed) && clusterHasReplicas(littleRed) {
-		return r.apply(ctx, littleRed, buildClusterPDB(littleRed))
+	shards := clusterShardCount(littleRed)
+	create := r.pdbEnabled(littleRed) && clusterHasReplicas(littleRed)
+	for k := range shards {
+		if create {
+			if err := r.apply(ctx, littleRed, buildClusterShardPDB(littleRed, k)); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := r.deleteIfExists(ctx, littleRed, &policyv1.PodDisruptionBudget{}, clusterShardPDBName(littleRed, k)); err != nil {
+			return err
+		}
 	}
+	// Also clean up the pre-0.3.0 single cluster PDB if it lingers.
 	return r.deleteIfExists(ctx, littleRed, &policyv1.PodDisruptionBudget{}, clusterPodDisruptionBudgetName(littleRed))
+}
+
+// clusterShardCount returns the number of shards, defaulting a nil spec.
+func clusterShardCount(lr *littleredv1alpha1.LittleRed) int {
+	if lr.Spec.Cluster == nil {
+		return littleredv1alpha1.DefaultClusterShards
+	}
+	return lr.Spec.Cluster.Shards
+}
+
+// clusterShardStatefulSets fetches every per-shard StatefulSet. It returns the fetched
+// StatefulSets keyed by shard index (missing shards omitted), whether all expected shard
+// StatefulSets exist, and the summed ready and spec replica counts across all shards.
+func (r *LittleRedReconciler) clusterShardStatefulSets(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (byShard map[int]*appsv1.StatefulSet, allExist bool, ready, total int32, err error) {
+	shards := clusterShardCount(littleRed)
+	byShard = make(map[int]*appsv1.StatefulSet, shards)
+	allExist = true
+	for k := range shards {
+		sts := &appsv1.StatefulSet{}
+		if getErr := r.Get(ctx, types.NamespacedName{
+			Name:      clusterShardStatefulSetName(littleRed, k),
+			Namespace: littleRed.Namespace,
+		}, sts); getErr != nil {
+			if apierrors.IsNotFound(getErr) {
+				allExist = false
+				continue
+			}
+			return nil, false, 0, 0, getErr
+		}
+		byShard[k] = sts
+		ready += sts.Status.ReadyReplicas
+		if sts.Spec.Replicas != nil {
+			total += *sts.Spec.Replicas
+		}
+	}
+	return byShard, allExist, ready, total, nil
+}
+
+// detectLegacyClusterStatefulSet reports whether the pre-0.3.0 single cluster StatefulSet
+// ({name}-cluster) still exists. Its presence blocks per-shard reconciliation (see
+// reportLegacyClusterTopology) so we never fork the cluster or wipe data on upgrade.
+func (r *LittleRedReconciler) detectLegacyClusterStatefulSet(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (bool, error) {
+	sts := &appsv1.StatefulSet{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      clusterStatefulSetName(littleRed),
+		Namespace: littleRed.Namespace,
+	}, sts)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// reportLegacyClusterTopology surfaces the "legacy single-STS present" state and waits.
+// We deliberately do NOT delete the old StatefulSet: cluster storage is EmptyDir, so
+// deleting it destroys data, and LittleRed never deletes data by default. An operator must
+// migrate/remove the old workload; then per-shard reconciliation proceeds on the next pass.
+func (r *LittleRedReconciler) reportLegacyClusterTopology(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
+	const msg = "Legacy single-StatefulSet cluster ({name}-cluster) detected; 0.3.0 uses " +
+		"one StatefulSet per shard. Refusing to create per-shard StatefulSets beside it to " +
+		"avoid forking the cluster or losing data. Migrate/remove the old workload manually " +
+		"(see upgrade notes); reconciliation resumes automatically once it is gone."
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
+	log.Info("Refusing per-shard reconcile: legacy single-STS cluster present")
+	r.event(littleRed, corev1.EventTypeWarning, "LegacyClusterTopology", msg)
+
+	littleRed.Status.Phase = littleredv1alpha1.PhaseFailed
+	littleRed.Status.Status = "LegacyClusterTopology"
+	meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
+		Type:               littleredv1alpha1.ConditionReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             "LegacyClusterTopology",
+		Message:            msg,
+		LastTransitionTime: metav1.Now(),
+	})
+	if err := r.Status().Update(ctx, littleRed); err != nil && !apierrors.IsConflict(err) {
+		return ctrl.Result{}, err
+	}
+	_, steady := littleRed.GetRequeueIntervals()
+	return ctrl.Result{RequeueAfter: steady}, nil
+}
+
+// detectOrphanedShardStatefulSets returns the names of existing cluster shard
+// StatefulSets whose shard index is >= the desired shard count — i.e. shards left behind
+// by a scale-down of spec.cluster.shards. It lists by the shard-agnostic cluster labels
+// and reads the per-shard identity label to recover each shard index.
+func (r *LittleRedReconciler) detectOrphanedShardStatefulSets(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) ([]string, error) {
+	shards := clusterShardCount(littleRed)
+	list := &appsv1.StatefulSetList{}
+	if err := r.List(ctx, list,
+		client.InNamespace(littleRed.Namespace),
+		client.MatchingLabels(clusterSelectorLabels(littleRed)),
+	); err != nil {
+		return nil, err
+	}
+	var orphans []string
+	for i := range list.Items {
+		sts := &list.Items[i]
+		val, ok := sts.Labels[LabelShard]
+		if !ok {
+			continue
+		}
+		shardIdx, err := strconv.Atoi(val)
+		if err != nil {
+			continue
+		}
+		if shardIdx >= shards {
+			orphans = append(orphans, sts.Name)
+		}
+	}
+	return orphans, nil
+}
+
+// reportShardScaleDown surfaces a refused shard scale-down and waits. Like the legacy
+// guard, it does NOT delete the orphaned StatefulSets (that would destroy their data).
+func (r *LittleRedReconciler) reportShardScaleDown(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, orphans []string) (ctrl.Result, error) {
+	msg := fmt.Sprintf("Refusing to reduce cluster.shards to %d: shard StatefulSet(s) %s "+
+		"would be orphaned and their slots (and data) lost. There is no reshard-away path "+
+		"and LittleRed never deletes data by default. Restore cluster.shards or migrate the "+
+		"data and remove the shard(s) manually.", clusterShardCount(littleRed), strings.Join(orphans, ", "))
+	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
+	log.Info("Refusing cluster shard scale-down", "orphans", orphans)
+	r.event(littleRed, corev1.EventTypeWarning, "ShardScaleDownRefused", msg)
+
+	littleRed.Status.Phase = littleredv1alpha1.PhaseFailed
+	littleRed.Status.Status = "ShardScaleDownRefused"
+	meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
+		Type:               littleredv1alpha1.ConditionReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             "ShardScaleDownRefused",
+		Message:            msg,
+		LastTransitionTime: metav1.Now(),
+	})
+	if err := r.Status().Update(ctx, littleRed); err != nil && !apierrors.IsConflict(err) {
+		return ctrl.Result{}, err
+	}
+	_, steady := littleRed.GetRequeueIntervals()
+	return ctrl.Result{RequeueAfter: steady}, nil
 }
 
 // clusterHasReplicas reports whether cluster mode runs with at least one replica per shard.

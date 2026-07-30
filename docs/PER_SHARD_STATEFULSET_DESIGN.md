@@ -1,6 +1,8 @@
 # Design Note: Per-Shard StatefulSets & Topology-Aware Placement (Cluster Mode)
 
-> **Status:** Exploratory design — not yet committed, not yet implemented.
+> **Status:** Direction A **Milestone 1 (structural split) committed** in 0.3.0 — see
+> ADR-007 and changelog LR-020. Direction A Milestone 2 (the `placement.shardAntiAffinity`
+> API) and Direction B remain future work. This note keeps the full reasoning.
 > **Created:** 2026-07-29 (design discussion). This note captures the reasoning so a
 > future session can pick up without re-deriving it.
 > **Decision owners:** the littlered authors (spare-time OSS); also dogfooded on a
@@ -38,12 +40,23 @@ master and replica(s) on *different* physical failure domains. If a shard's mast
 only replica sit on the same node and that node dies, the shard's data is gone and the
 cluster loses slots.
 
-Today this requirement is **not expressible**. Cluster mode is a single StatefulSet whose
-pods all carry identical labels (no per-shard label, no per-role label), so a
-`topologySpreadConstraint` / `podAntiAffinity` can only say "spread *all* cluster pods,"
-never "spread the pods *within* a shard." (Confirmed in `internal/controller/resources.go`:
-`buildClusterStatefulSet` builds one STS at `replicas = shards × (1+replicasPerShard)`; there
-is no shard-index or role label anywhere in cluster mode.)
+Today this requirement is **not expressible**, and the reason is structural, not cosmetic.
+A `topologySpreadConstraint` only isolates pods it can *select*, and the scheduler evaluates
+it at **bind time** and never again (`...IgnoredDuringExecution`) — so per-shard isolation
+needs a **stable, schedule-time, per-shard grouping key**. A single StatefulSet cannot carry
+one: it has exactly one `spec.template`, so every pod is stamped identically, and the only
+per-pod metadata Kubernetes injects on its own (`statefulset.kubernetes.io/pod-name`,
+`apps.kubernetes.io/pod-index` = the raw ordinal, `controller-revision-hash`) is
+ordinal/revision identity — **never shard-semantic**. Shard is a *function* of the ordinal
+(`ordinal mod shards`), which K8s neither computes nor accepts, and `matchLabelKeys` groups by
+label *equality* only (raw ordinal → wrong grain). An operator-patched label lands *after*
+scheduling (too late); the only single-STS way to a schedule-time shard label is a bespoke
+mutating admission webhook. **One template ⇒ no schedule-time shard key ⇒ only a webhook could
+fake it** — so a `topologySpreadConstraint` / `podAntiAffinity` on one STS can only say "spread
+*all* cluster pods," never "spread the pods *within* a shard." (Confirmed pre-0.3.0 in
+`internal/controller/resources.go`: `buildClusterStatefulSet` built one STS at
+`replicas = shards × (1+replicasPerShard)` with no shard-index or role label anywhere. The full
+mandatory-not-cosmetic argument is ADR-007.)
 
 ### 2.1 Why a global spread does not satisfy the requirement
 
