@@ -83,13 +83,13 @@ var _ = Describe("LittleRed Security Features", Label("security"), func() {
 					g.Expect(curr.Status.Phase).To(Equal(littleredv1alpha1.PhaseRunning))
 				}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
-				podPrefix := crName
+				var podName string
 				if mode == "cluster" {
-					podPrefix = fmt.Sprintf("%s-cluster", crName)
+					// Cluster mode (0.3.0+): shard 0's master is {crName}-shard-0-0.
+					podName = clusterMasterPod(crName, 0)
 				} else {
-					podPrefix = fmt.Sprintf("%s-redis", crName)
+					podName = fmt.Sprintf("%s-redis-0", crName)
 				}
-				podName := fmt.Sprintf("%s-0", podPrefix)
 
 				By("verifying access is DENIED without password")
 				cmd := exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "redis", "--", "redis-cli", "PING")
@@ -166,13 +166,13 @@ var _ = Describe("LittleRed Security Features", Label("security"), func() {
 					g.Expect(curr.Status.Phase).To(Equal(littleredv1alpha1.PhaseRunning))
 				}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
-				podPrefix := crName
+				var podName string
 				if mode == "cluster" {
-					podPrefix = fmt.Sprintf("%s-cluster", crName)
+					// Cluster mode (0.3.0+): shard 0's master is {crName}-shard-0-0.
+					podName = clusterMasterPod(crName, 0)
 				} else {
-					podPrefix = fmt.Sprintf("%s-redis", crName)
+					podName = fmt.Sprintf("%s-redis-0", crName)
 				}
-				podName := fmt.Sprintf("%s-0", podPrefix)
 
 				By("verifying plain PING fails")
 				cmd := exec.Command("kubectl", "exec", podName, "-n", testNamespace, "-c", "redis", "--", "redis-cli", "PING")
