@@ -490,7 +490,7 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 				targetMaster := chooseReattachTarget(em.PodName, candidates, shardsWithReplicas, expectedReplicas)
 
 				if targetMaster != nil {
-					if shardIndexFromPodName(targetMaster.PodName) != shardIndexFromPodName(em.PodName) {
+					if redisclient.ShardIndexFromPodName(targetMaster.PodName) != redisclient.ShardIndexFromPodName(em.PodName) {
 						stateLog.Info("Reattaching empty pod cross-shard (no same-shard master needs a replica); shard/STS pairing may drift",
 							"pod", em.PodName, "targetPod", targetMaster.PodName, "targetNodeID", targetMaster.NodeID)
 					}

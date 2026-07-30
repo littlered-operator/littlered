@@ -10,10 +10,14 @@
 # Usage:
 #   kubectl apply -f littlered_v1alpha1_littlered_cluster.yaml
 #
+# Cluster mode runs one StatefulSet per shard ({name}-shard-K); pod {name}-shard-K-0 is
+# shard K's master and {name}-shard-K-1..R are its replicas.
+#
 # Check cluster status:
 #   kubectl get littlered store-cluster -o jsonpath='{.status.cluster}'
-#   kubectl exec store-cluster-cluster-0 -- redis-cli CLUSTER INFO
-#   kubectl exec store-cluster-cluster-0 -- redis-cli CLUSTER NODES
+#   kubectl exec store-cluster-shard-0-0 -- redis-cli CLUSTER INFO
+#   kubectl exec store-cluster-shard-0-0 -- redis-cli CLUSTER NODES
+#   lrctl verify store-cluster   # cross-checks health + shard-colocation
 #
 apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
 kind: LittleRed

@@ -30,6 +30,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
+	redisclient "github.com/littlered-operator/littlered-operator/internal/redis"
 	"github.com/littlered-operator/littlered-operator/test/utils"
 )
 
@@ -141,6 +142,28 @@ func verifyClusterTopologySync(namespace, crName string, expectedNodes int) {
 			} else {
 				g.Expect(nodeStatus.SlotRanges).NotTo(BeEmpty(), fmt.Sprintf("Master %s has no slots in Status", nodeStatus.PodName))
 			}
+		}
+
+		// Shard-colocation invariant (ADR-007 / LR-020): each Redis shard must live inside
+		// ONE shard StatefulSet — every replica's master must be a pod in the same shard
+		// (…-shard-K-…). The shard-blind Step 4 reattach used to scramble this at bootstrap
+		// (debug-artifacts-20260730); this is the guard that goes red on that regression.
+		idToPod := make(map[string]string, len(lr.Status.Cluster.Nodes))
+		for _, n := range lr.Status.Cluster.Nodes {
+			idToPod[n.NodeID] = n.PodName
+		}
+		for _, n := range lr.Status.Cluster.Nodes {
+			if n.Role != "replica" {
+				continue
+			}
+			masterPod, ok := idToPod[n.MasterNodeID]
+			g.Expect(ok).To(BeTrue(), fmt.Sprintf("replica %s: master %s not among nodes", n.PodName, n.MasterNodeID))
+			rShard := redisclient.ShardIndexFromPodName(n.PodName)
+			mShard := redisclient.ShardIndexFromPodName(masterPod)
+			g.Expect(rShard).To(BeNumerically(">=", 0), fmt.Sprintf("replica %s is not in per-shard form", n.PodName))
+			g.Expect(mShard).To(Equal(rShard), fmt.Sprintf(
+				"shard-colocation violated: replica %s (shard %d) follows master %s (shard %d) — Redis shard spans two StatefulSets",
+				n.PodName, rShard, masterPod, mShard))
 		}
 	}, 2*time.Minute, 5*time.Second).Should(Succeed(), "Operator status should eventually match Redis cluster topology")
 

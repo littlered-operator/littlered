@@ -86,23 +86,6 @@ func TestClusterPodRefs(t *testing.T) {
 	}
 }
 
-func TestShardIndexFromPodName(t *testing.T) {
-	cases := map[string]int{
-		"my-cache-shard-0-0":   0,
-		"my-cache-shard-1-0":   1,
-		"my-cache-shard-2-1":   2,
-		"my-cache-shard-10-3":  10,
-		"my-cache-cluster-0":   -1, // legacy striped name, not per-shard
-		"my-cache":             -1,
-		"weird-shard-name-x-y": -1,
-	}
-	for name, want := range cases {
-		if got := shardIndexFromPodName(name); got != want {
-			t.Errorf("shardIndexFromPodName(%q) = %d, want %d", name, got, want)
-		}
-	}
-}
-
 // TestChooseReattachTarget pins the invariant that keeps a Redis shard inside one shard
 // StatefulSet: an empty pod must reattach to the under-replicated slot-master in ITS OWN
 // shard, not an arbitrary one. The fixture is the exact bootstrap scramble observed in

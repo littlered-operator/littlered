@@ -18,7 +18,6 @@ package controller
 
 import (
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 
@@ -78,24 +77,6 @@ func clusterReplicasPerShard(cluster *littleredv1alpha1.ClusterSpec) int {
 	return *cluster.ReplicasPerShard
 }
 
-// shardPodNameRE matches a per-shard cluster pod name {instance}-shard-<K>-<O>,
-// capturing the shard index K.
-var shardPodNameRE = regexp.MustCompile(`-shard-(\d+)-\d+$`)
-
-// shardIndexFromPodName extracts shard index K from a pod named {instance}-shard-K-O.
-// Returns -1 if the name is not in per-shard form.
-func shardIndexFromPodName(podName string) int {
-	m := shardPodNameRE.FindStringSubmatch(podName)
-	if m == nil {
-		return -1
-	}
-	k, err := strconv.Atoi(m[1])
-	if err != nil {
-		return -1
-	}
-	return k
-}
-
 // chooseReattachTarget picks which under-replicated slot-owning master an empty pod
 // should replicate when the operator reattaches it (cluster_reconcile.go Step 4).
 //
@@ -110,7 +91,7 @@ func shardIndexFromPodName(podName string) int {
 // nodes are the candidate ground-truth nodes (typically all gt.Nodes); replicaCounts maps
 // a master NodeID to its current replica NodeIDs; expectedReplicas is replicasPerShard.
 func chooseReattachTarget(emptyPodName string, nodes []*redisclient.ClusterNodeState, replicaCounts map[string][]string, expectedReplicas int) *redisclient.ClusterNodeState {
-	myShard := shardIndexFromPodName(emptyPodName)
+	myShard := redisclient.ShardIndexFromPodName(emptyPodName)
 	// Deterministic order so the cross-shard fallback is stable (map iteration is not).
 	sorted := append([]*redisclient.ClusterNodeState(nil), nodes...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].PodName < sorted[j].PodName })
@@ -123,7 +104,7 @@ func chooseReattachTarget(emptyPodName string, nodes []*redisclient.ClusterNodeS
 		if len(replicaCounts[m.NodeID]) >= expectedReplicas {
 			continue // already has its full complement of replicas
 		}
-		if myShard >= 0 && shardIndexFromPodName(m.PodName) == myShard {
+		if myShard >= 0 && redisclient.ShardIndexFromPodName(m.PodName) == myShard {
 			return m // same-shard master: keeps the Redis shard inside this shard STS
 		}
 		if fallback == nil {

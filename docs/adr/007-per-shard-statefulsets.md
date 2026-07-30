@@ -110,6 +110,14 @@ master/replica land in different STSs, defeating Goal 1 — observed in the very
 (the operator's Step 4 scrambled the pairing at bootstrap). This is a thin slice of Direction B
 (operator role assignment) that A turns out to require; the A/B split is cleaner on paper.
 
+**Guards** (the invariant is now checkable, not just asserted in prose): the pure
+`ClusterGroundTruth.CheckShardColocation` reports any replica whose master is in a different
+shard STS. `lrctl verify` runs it and **fails** on a violation (previously it green-lit a
+scrambled cluster, since Redis itself was healthy), and additionally reports a `[DEGRADED]`
+(warn, not fail) state when a replica's replication link is down — a healthy cluster is not
+"consistent" while a shard runs at reduced redundancy. The e2e `verifyClusterTopologySync`
+asserts the same invariant, so a future regression goes red in CI.
+
 ## Consequences
 - Single-domain-loss survivability for a shard becomes expressible via a per-shard-scoped
   `topologySpreadConstraint` over the shard's StatefulSet. It survives failover **because the

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -190,12 +191,42 @@ func verifyCluster(
 	fmt.Printf("\nSummary:\n")
 	expectedNodes := int32(len(cCtx.RedisPods))
 	expectedShards := int32(gt.CountMasters())
-	if gt.IsHealthy(expectedNodes, expectedShards) {
-		fmt.Println("  [OK] Cluster is healthy and consistent.")
+	healthy := gt.IsHealthy(expectedNodes, expectedShards)
+
+	// Shard-colocation invariant (ADR-007): each Redis shard must live inside one shard
+	// StatefulSet. A cross-STS pairing is a real (non-transient) topology defect — the
+	// operator's shard-pinning has broken — so it fails verification.
+	violations := gt.CheckShardColocation()
+	for _, v := range violations {
+		fmt.Printf("  [FAIL] Replica %s (shard %d) follows a master in shard %d (%s) — Redis shard spans two StatefulSets\n",
+			v.ReplicaPod, v.ReplicaShard, v.MasterShard, v.MasterPod)
+	}
+
+	if !healthy || len(violations) > 0 {
+		fmt.Println("  [FAIL] Cluster has topology or health issues!")
+		return fmt.Errorf("cluster %s/%s has topology or health issues", cCtx.Namespace, cCtx.Name)
+	}
+
+	// Degraded (functional but reduced redundancy): a replica whose replication link is
+	// down is not currently receiving its master's stream. This is often a transient
+	// resync, so it warns rather than fails — but the cluster is not fully healthy.
+	var linkDown []string
+	for _, n := range gt.Nodes {
+		if n.Role == "replica" && n.LinkStatus == "down" {
+			linkDown = append(linkDown, n.PodName)
+		}
+	}
+	sort.Strings(linkDown)
+	if len(linkDown) > 0 {
+		for _, pod := range linkDown {
+			fmt.Printf("  [WARN] Replica %s link:down — reduced redundancy (may be a transient resync)\n", pod)
+		}
+		fmt.Printf("  [DEGRADED] Cluster is functional but %d replica link(s) are down; not fully healthy.\n", len(linkDown))
 		return nil
 	}
-	fmt.Println("  [FAIL] Cluster has topology or health issues!")
-	return fmt.Errorf("cluster %s/%s has topology or health issues", cCtx.Namespace, cCtx.Name)
+
+	fmt.Println("  [OK] Cluster is healthy and consistent.")
+	return nil
 }
 
 func verifySentinel(
