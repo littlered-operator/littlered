@@ -32,6 +32,16 @@ spec:
     replicasPerShard: 1
     # Cluster node timeout in milliseconds
     clusterNodeTimeout: 15000
+  # Per-shard failure-domain isolation (cluster mode). The operator spreads each shard's
+  # master + replica(s) across the given topology domain so a single node/zone loss can't
+  # take a whole shard. Optional; omit to place pods without per-shard isolation.
+  placement:
+    shardAntiAffinity:
+      # Failure domain: kubernetes.io/hostname (node) or topology.kubernetes.io/zone.
+      topologyKey: kubernetes.io/hostname
+      # ScheduleAnyway (default, best-effort) or DoNotSchedule (hard; may leave pods
+      # Pending when there are fewer domains than a shard has pods).
+      whenUnsatisfiable: ScheduleAnyway
   resources:
     requests:
       memory: 256Mi

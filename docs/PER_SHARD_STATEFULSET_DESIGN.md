@@ -1,8 +1,9 @@
 # Design Note: Per-Shard StatefulSets & Topology-Aware Placement (Cluster Mode)
 
-> **Status:** Direction A **Milestone 1 (structural split) committed** in 0.3.0 — see
-> ADR-007 and changelog LR-020. Direction A Milestone 2 (the `placement.shardAntiAffinity`
-> API) and Direction B remain future work. This note keeps the full reasoning.
+> **Status:** Direction A **complete** in 0.3.0 — Milestone 1 (structural split, ADR-007 /
+> changelog LR-020) and Milestone 2 (the `placement.shardAntiAffinity` knob, LR-022). Deferred:
+> the under-provisioning status condition (§7.3) and Direction B (§5). This note keeps the full
+> reasoning.
 > **Created:** 2026-07-29 (design discussion). This note captures the reasoning so a
 > future session can pick up without re-deriving it.
 > **Decision owners:** the littlered authors (spare-time OSS); also dogfooded on a
@@ -223,17 +224,20 @@ silently undid it. **That** is the false sense of safety — and note it is Goal
 
 ## 7. Open questions
 
-1. **Merge semantics** for operator-injected `placement.shardAntiAffinity` vs a user's raw
-   `spec.podTemplate.topologySpreadConstraints`: append both, or let a user constraint on the
-   same `topologyKey` override? Proposal: append, and document that the operator's per-shard
-   constraint always wins for the shard label (users layer *additional* constraints).
+1. **Merge semantics** — *resolved (LR-022): append.* The operator's per-shard constraint is
+   appended after the user's `spec.podTemplate.topologySpreadConstraints`; it always applies
+   (scoped to the shard label), users layer additional constraints. (`buildShardSpreadConstraint`
+   + the merge in `buildClusterShardStatefulSet`.)
 2. **matchLabelKeys vs per-STS selector.** `matchLabelKeys` is cleaner but sets a K8s ≥1.27
    floor. Per-STS templated selectors have no floor. Decide whether to require 1.27 or emit
    per-STS selectors (leaning: per-STS selectors, no version floor, since the operator templates
    each STS anyway).
-3. **Under-provisioning UX.** With `DoNotSchedule`, too few domains ⇒ `Pending` pods. The
-   operator must surface this as a status condition ("wanted 3 domains for shard-1, saw 2"),
-   not sit silently Pending. Required for A regardless of B.
+3. **Under-provisioning UX** — *deferred (LR-022), with reason.* A `PlacementUnderProvisioned`
+   status condition would need cluster-wide `nodes` list/watch RBAC (the operator reads no node
+   topology today) plus subtle usable-domain counting (taints/cordons/nodeSelector). With the
+   **soft default** pods never go `Pending`; under a hard `DoNotSchedule` a `Pending` pod is
+   already surfaced by the existing readiness status (`Ready<Total`/`Initializing`) — so the
+   condition is a better *diagnostic*, not a correctness fix. Tracked as a follow-up.
 4. **Rolling updates across shards** — *partially resolved (LR-021).* The split dropped the
    single StatefulSet's global one-pod-at-a-time serialization, so an operator-driven template
    change rolled all shards in parallel and restarted every master at once (an availability dip,

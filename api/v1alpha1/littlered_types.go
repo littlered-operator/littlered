@@ -88,6 +88,10 @@ type LittleRedSpec struct {
 	// PodDisruptionBudget defines PodDisruptionBudget settings
 	// +optional
 	PodDisruptionBudget PodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
+
+	// Placement defines topology/failure-domain placement rules (cluster mode only)
+	// +optional
+	Placement *PlacementSpec `json:"placement,omitempty"`
 }
 
 // PodDisruptionBudgetSpec defines whether a PodDisruptionBudget should be created
@@ -485,6 +489,34 @@ type ClusterSpec struct {
 	// +kubebuilder:default=5000
 	// +optional
 	ReshardMigrateTimeoutMillis int `json:"reshardMigrateTimeoutMillis,omitempty"`
+}
+
+// PlacementSpec defines topology/failure-domain placement rules. Cluster mode only.
+type PlacementSpec struct {
+	// ShardAntiAffinity spreads each shard's pods (its master and replicas) across a
+	// failure domain, so a single node/zone loss cannot take a whole shard. The operator
+	// translates it into a per-shard topologySpreadConstraint scoped (by the shard identity
+	// label) to that shard's pods, merged with any spec.podTemplate.topologySpreadConstraints.
+	// See ADR-007.
+	// +optional
+	ShardAntiAffinity *ShardAntiAffinitySpec `json:"shardAntiAffinity,omitempty"`
+}
+
+// ShardAntiAffinitySpec configures per-shard failure-domain isolation for cluster mode.
+type ShardAntiAffinitySpec struct {
+	// TopologyKey is the node label defining the failure domain to spread a shard's pods
+	// across (e.g. kubernetes.io/hostname for node-level, topology.kubernetes.io/zone for
+	// zone-level). Defaults to kubernetes.io/hostname.
+	// +optional
+	TopologyKey string `json:"topologyKey,omitempty"`
+
+	// WhenUnsatisfiable controls whether isolation is best-effort or enforced. ScheduleAnyway
+	// (the default) spreads a shard's pods when possible but never blocks scheduling, so small
+	// or single-node clusters still come up. DoNotSchedule enforces the spread, at the risk of
+	// pods staying Pending when there are fewer domains than a shard has pods.
+	// +kubebuilder:validation:Enum=DoNotSchedule;ScheduleAnyway
+	// +optional
+	WhenUnsatisfiable corev1.UnsatisfiableConstraintAction `json:"whenUnsatisfiable,omitempty"`
 }
 
 // LittleRedPhase represents the current phase of the LittleRed resource

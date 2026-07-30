@@ -65,6 +65,10 @@ const (
 	DefaultFailoverGracePeriod = 15
 	ClusterBusPortOffset       = 10000
 	ClusterBusPort             = RedisPort + ClusterBusPortOffset // 16379
+
+	// Placement defaults (cluster-mode shard anti-affinity)
+	DefaultShardTopologyKey       = "kubernetes.io/hostname"
+	DefaultShardWhenUnsatisfiable = corev1.ScheduleAnyway
 )
 
 // redis-exporter.Dockerfile is the single source of truth for the default
@@ -167,6 +171,24 @@ func (r *LittleRed) SetDefaults() {
 	}
 	if spec.Cluster != nil {
 		spec.Cluster.SetDefaults()
+	}
+
+	// Placement defaults (only when the block is present; not mode-gated / never auto-created)
+	if spec.Placement != nil {
+		spec.Placement.SetDefaults()
+	}
+}
+
+// SetDefaults applies default values to PlacementSpec.
+func (p *PlacementSpec) SetDefaults() {
+	if p.ShardAntiAffinity == nil {
+		return
+	}
+	if p.ShardAntiAffinity.TopologyKey == "" {
+		p.ShardAntiAffinity.TopologyKey = DefaultShardTopologyKey
+	}
+	if p.ShardAntiAffinity.WhenUnsatisfiable == "" {
+		p.ShardAntiAffinity.WhenUnsatisfiable = DefaultShardWhenUnsatisfiable
 	}
 }
 

@@ -18,7 +18,40 @@ package v1alpha1
 
 import (
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
 )
+
+func TestPlacementSetDefaults(t *testing.T) {
+	// nil placement stays nil (never auto-created).
+	lr := &LittleRed{Spec: LittleRedSpec{Mode: "cluster"}}
+	lr.SetDefaults()
+	if lr.Spec.Placement != nil {
+		t.Error("nil placement should stay nil after SetDefaults")
+	}
+
+	// shardAntiAffinity with empty fields → documented defaults filled.
+	lr = &LittleRed{Spec: LittleRedSpec{Mode: "cluster",
+		Placement: &PlacementSpec{ShardAntiAffinity: &ShardAntiAffinitySpec{}}}}
+	lr.SetDefaults()
+	saa := lr.Spec.Placement.ShardAntiAffinity
+	if saa.TopologyKey != DefaultShardTopologyKey {
+		t.Errorf("TopologyKey = %q, want %q", saa.TopologyKey, DefaultShardTopologyKey)
+	}
+	if saa.WhenUnsatisfiable != corev1.ScheduleAnyway {
+		t.Errorf("WhenUnsatisfiable = %q, want ScheduleAnyway (soft default)", saa.WhenUnsatisfiable)
+	}
+
+	// Explicit values are preserved.
+	lr = &LittleRed{Spec: LittleRedSpec{Mode: "cluster",
+		Placement: &PlacementSpec{ShardAntiAffinity: &ShardAntiAffinitySpec{
+			TopologyKey: "topology.kubernetes.io/zone", WhenUnsatisfiable: corev1.DoNotSchedule}}}}
+	lr.SetDefaults()
+	saa = lr.Spec.Placement.ShardAntiAffinity
+	if saa.TopologyKey != "topology.kubernetes.io/zone" || saa.WhenUnsatisfiable != corev1.DoNotSchedule {
+		t.Errorf("explicit placement values must be preserved, got %+v", saa)
+	}
+}
 
 const testRegistryGCR = "gcr.io"
 

@@ -1874,6 +1874,35 @@ func buildClusterRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 	return sb.String()
 }
 
+// buildShardSpreadConstraint builds the per-shard topologySpreadConstraint for shard shardIdx
+// from spec.placement.shardAntiAffinity, or nil when the knob is unset. It spreads exactly that
+// shard's pods (selected by the shard identity label via clusterShardSelectorLabels) across the
+// configured failure domain with maxSkew 1, so a single node/zone loss cannot take a whole
+// shard. Self-defaulting (topologyKey/whenUnsatisfiable) so it never emits an invalid
+// constraint even if SetDefaults was not applied. See ADR-007.
+func buildShardSpreadConstraint(lr *littleredv1alpha1.LittleRed, shardIdx int) *corev1.TopologySpreadConstraint {
+	if lr.Spec.Placement == nil || lr.Spec.Placement.ShardAntiAffinity == nil {
+		return nil
+	}
+	saa := lr.Spec.Placement.ShardAntiAffinity
+
+	topologyKey := saa.TopologyKey
+	if topologyKey == "" {
+		topologyKey = littleredv1alpha1.DefaultShardTopologyKey
+	}
+	whenUnsatisfiable := saa.WhenUnsatisfiable
+	if whenUnsatisfiable == "" {
+		whenUnsatisfiable = littleredv1alpha1.DefaultShardWhenUnsatisfiable
+	}
+
+	return &corev1.TopologySpreadConstraint{
+		MaxSkew:           1,
+		TopologyKey:       topologyKey,
+		WhenUnsatisfiable: whenUnsatisfiable,
+		LabelSelector:     &metav1.LabelSelector{MatchLabels: clusterShardSelectorLabels(lr, shardIdx)},
+	}
+}
+
 // buildClusterShardStatefulSet creates the StatefulSet for a single cluster shard.
 // In the per-shard model (0.3.0) cluster mode is N StatefulSets — one per shard,
 // {name}-shard-K — each sized 1+replicasPerShard, carrying the stable per-shard identity
@@ -1933,6 +1962,14 @@ func buildClusterShardStatefulSet(lr *littleredv1alpha1.LittleRed, shardIdx int)
 		minReadySeconds = 30
 	}
 
+	// Merge the user's topologySpreadConstraints with the operator's per-shard constraint
+	// (spec.placement.shardAntiAffinity). Append so the operator's shard-scoped spread always
+	// applies and users can layer additional constraints; copy to avoid mutating the spec slice.
+	topologySpread := lr.Spec.PodTemplate.TopologySpreadConstraints
+	if shardConstraint := buildShardSpreadConstraint(lr, shardIdx); shardConstraint != nil {
+		topologySpread = append(append([]corev1.TopologySpreadConstraint{}, topologySpread...), *shardConstraint)
+	}
+
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      clusterShardStatefulSetName(lr, shardIdx),
@@ -1959,7 +1996,7 @@ func buildClusterShardStatefulSet(lr *littleredv1alpha1.LittleRed, shardIdx int)
 					Tolerations:               lr.Spec.PodTemplate.Tolerations,
 					Affinity:                  lr.Spec.PodTemplate.Affinity,
 					PriorityClassName:         lr.Spec.PodTemplate.PriorityClassName,
-					TopologySpreadConstraints: lr.Spec.PodTemplate.TopologySpreadConstraints,
+					TopologySpreadConstraints: topologySpread,
 					ImagePullSecrets:          lr.Spec.Image.PullSecrets,
 				},
 			},

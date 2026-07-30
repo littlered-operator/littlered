@@ -400,7 +400,34 @@ spec:
 - Data durability through replication, not disk persistence
 - Minimum 3 shards required by Redis Cluster protocol
 
-### 2.13 Requeue Intervals
+### 2.13 Placement (Cluster Mode)
+
+Only applicable when `mode: cluster`; rejected by validation in standalone and
+sentinel mode. Configures per-shard failure-domain isolation. The operator
+translates `shardAntiAffinity` into a per-shard `topologySpreadConstraint`
+(`maxSkew: 1`, `labelSelector` scoped to that shard's pods via the operator-owned
+`redis.chuck-chuck-chuck.net/shard` label) injected into each shard StatefulSet,
+and **appended** to any `spec.podTemplate.topologySpreadConstraints`.
+
+```yaml
+spec:
+  placement:
+    shardAntiAffinity:
+      topologyKey: kubernetes.io/hostname   # failure domain to spread a shard's pods across
+      whenUnsatisfiable: ScheduleAnyway     # ScheduleAnyway (soft) | DoNotSchedule (hard)
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `placement.shardAntiAffinity` | `ShardAntiAffinity` | No | `nil` | Spread each shard's master and replica(s) across failure domains. Cluster mode only. |
+| `placement.shardAntiAffinity.topologyKey` | `string` | No | `kubernetes.io/hostname` | Node label defining the failure domain to spread a shard's pods across. Common alternative: `topology.kubernetes.io/zone`. |
+| `placement.shardAntiAffinity.whenUnsatisfiable` | `string` (enum: `DoNotSchedule` \| `ScheduleAnyway`) | No | `ScheduleAnyway` | `ScheduleAnyway` (soft): best-effort spread that never blocks scheduling. `DoNotSchedule` (hard): a shard's pods never co-locate, but can leave pods `Pending` when there are fewer failure domains than a shard has pods. |
+
+> **Note**: There is no under-provisioning status condition — with `DoNotSchedule`
+> and too few domains, unschedulable pods surface as standard `Pending` pods
+> (visible through readiness: `status.redis.ready < total`, phase `Initializing`).
+
+### 2.14 Requeue Intervals
 
 For tuning large-scale installations to reduce API server pressure:
 
@@ -416,7 +443,7 @@ spec:
 | `requeueIntervals.fast` | `Duration` | No | `2s` | Interval during init/recovery |
 | `requeueIntervals.steadyState` | `Duration` | No | `30s` | Interval when stable |
 
-### 2.14 PodDisruptionBudget
+### 2.15 PodDisruptionBudget
 
 A [PodDisruptionBudget](https://kubernetes.io/docs/concepts/workloads/pods/disruptions/) (PDB)
 protects the Redis pods from voluntary disruptions (node drains, rolling node

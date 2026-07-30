@@ -328,7 +328,33 @@ func (r *LittleRedReconciler) validateSpec(ctx context.Context, littleRed *littl
 		}
 	}
 
+	if err := r.validatePlacementSpec(littleRed); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// validatePlacementSpec validates spec.placement. shardAntiAffinity is cluster-mode only
+// (sentinel/standalone spread their pods via spec.podTemplate directly), and its
+// whenUnsatisfiable must be a valid topology-spread action. The CRD enum already enforces the
+// latter at admission; this is defense-in-depth (and catches the mode mismatch, which the CRD
+// cannot express here).
+func (r *LittleRedReconciler) validatePlacementSpec(littleRed *littleredv1alpha1.LittleRed) error {
+	p := littleRed.Spec.Placement
+	if p == nil || p.ShardAntiAffinity == nil {
+		return nil
+	}
+	if littleRed.Spec.Mode != ModeCluster {
+		return fmt.Errorf("spec.placement.shardAntiAffinity is only supported in cluster mode (mode is %q)", littleRed.Spec.Mode)
+	}
+	switch p.ShardAntiAffinity.WhenUnsatisfiable {
+	case "", corev1.ScheduleAnyway, corev1.DoNotSchedule:
+		return nil
+	default:
+		return fmt.Errorf("spec.placement.shardAntiAffinity.whenUnsatisfiable must be ScheduleAnyway or DoNotSchedule, got %q",
+			p.ShardAntiAffinity.WhenUnsatisfiable)
+	}
 }
 
 // reconcileStandalone reconciles standalone mode

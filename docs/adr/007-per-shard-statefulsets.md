@@ -1,8 +1,9 @@
 # ADR-007: Per-Shard StatefulSets & Stable Shard Identity (Cluster Mode)
 
 ## Status
-Accepted (0.3.0, Milestone 1 — the structural split). The first-class placement API
-(`spec.placement.shardAntiAffinity`) is Milestone 2 and is sketched under "Deferred" below.
+Accepted (0.3.0). Milestone 1 (the structural split) and Milestone 2 (the first-class
+`spec.placement.shardAntiAffinity` placement knob — LR-022) are both implemented. Direction B
+(topology-aware master balancing) remains deferred (below).
 
 ## Context
 
@@ -127,6 +128,17 @@ change detected cache-safely via an `AnnotationPodSpecHash` on the pod template)
 config change restarts every shard's master in one wave — a cluster-wide availability dip (not
 data loss) measured in the first e2e run. Governs operator-triggered rollouts only; a manual
 `kubectl rollout restart` bypasses it.
+
+### 8. First-class placement knob (Milestone 2, LR-022)
+The per-shard-scoped `topologySpreadConstraint` that makes Goal 1 real can't be hand-written by
+users (it must select on the operator-owned shard label), so `spec.placement.shardAntiAffinity
+{ topologyKey, whenUnsatisfiable }` is a first-class knob. The operator injects a per-shard
+constraint (`maxSkew: 1`, selector = that shard's pods) into each shard StatefulSet, appended to
+`spec.podTemplate.topologySpreadConstraints`. Defaults: `kubernetes.io/hostname` +
+**`ScheduleAnyway` (soft)** — matching CloudNativePG/Strimzi conventions and pillar 3.5; hard
+(`DoNotSchedule`) is opt-in. The under-provisioning status condition (domains < a shard's pods)
+is deferred — it needs cluster-wide `nodes` RBAC and the soft default plus existing readiness
+status make it a diagnostic nicety, not a correctness need.
 
 ## Consequences
 - Single-domain-loss survivability for a shard becomes expressible via a per-shard-scoped

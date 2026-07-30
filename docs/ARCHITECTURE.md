@@ -346,6 +346,17 @@ are its replicas).
 - Port 16379 used for cluster bus communication
 - `PodManagementPolicy: Parallel` for faster bootstrap
 
+**Per-shard failure-domain isolation.** Because each shard is its own StatefulSet
+with a stable `redis.chuck-chuck-chuck.net/shard` label, the operator can keep a
+shard's master and replica(s) apart across nodes or zones. This is configured via
+`spec.placement.shardAntiAffinity` (`topologyKey`, `whenUnsatisfiable`): the
+operator translates it into a per-shard `topologySpreadConstraint` (`maxSkew: 1`,
+`labelSelector` scoped to that shard's pods) injected into each shard StatefulSet
+and appended to any user-supplied `spec.podTemplate.topologySpreadConstraints`.
+This is the ergonomic completion of the per-shard-StatefulSet design (ADR-007,
+pillar 3.12); users cannot write the constraint themselves because the shard label
+is operator-owned. See `docs/USAGE.md` and `docs/API_SPEC.md` for the field.
+
 ---
 
 ## 4. Reconciliation Flow

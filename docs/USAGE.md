@@ -695,16 +695,64 @@ that holds across failover, because a failover only changes *which* pod is maste
 it never moves a pod. Apply the spread above to a `mode: sentinel` instance and
 you are done.
 
-**Cluster mode.** The instance-wide constraint above spreads *all* of an
-instance's cluster pods evenly across the chosen domains. As of 0.3.0 each shard is
-its own StatefulSet (`{name}-shard-K`) whose pods carry a stable
-`redis.chuck-chuck-chuck.net/shard` label, so you can now also express "keep a
-*shard's* pods in different domains" by adding a per-shard spread constraint that
-selects on that label. What still cannot be pinned by scheduling is *role*
-placement (master vs. replica) within a shard: pod `-K-0` starts as the shard
-master, but roles are assigned at runtime and change on failover, which
-pod-scheduling constraints cannot track. Even spread across domains remains a
-strong baseline.
+**Cluster mode — per-shard isolation via `spec.placement.shardAntiAffinity`.**
+The instance-wide `spec.podTemplate` constraint above spreads *all* of an
+instance's cluster pods evenly across the chosen domains, but it cannot keep an
+*individual shard's* master and replica(s) apart: a single shared `labelSelector`
+selects every pod of the instance, not one shard's. As of 0.3.0 each shard is its
+own StatefulSet (`{name}-shard-K`) whose pods carry a stable, schedule-time
+`redis.chuck-chuck-chuck.net/shard` label — but that label is operator-owned, so
+you cannot practically write a spread constraint against it yourself. The
+`spec.placement.shardAntiAffinity` knob does it for you: the operator injects a
+per-shard `topologySpreadConstraint` (`maxSkew: 1`, `labelSelector` scoped to that
+shard's pods) into **each** shard StatefulSet, so a shard's master and replica(s)
+never share the chosen failure domain.
+
+```yaml
+apiVersion: redis.chuck-chuck-chuck.net/v1alpha1
+kind: LittleRed
+metadata:
+  name: store
+spec:
+  mode: cluster
+  cluster:
+    shards: 3
+    replicasPerShard: 1
+  placement:
+    shardAntiAffinity:
+      topologyKey: kubernetes.io/hostname   # spread a shard's pods across nodes
+      whenUnsatisfiable: DoNotSchedule       # hard: refuse to co-locate a shard's pods
+```
+
+Two fields:
+
+- **`topologyKey`** (default `kubernetes.io/hostname`) — the node label defining the
+  failure domain to spread a shard's pods across. Use `topology.kubernetes.io/zone`
+  to spread a shard's pods across availability zones instead of nodes.
+- **`whenUnsatisfiable`** (default `ScheduleAnyway`) — `ScheduleAnyway` is a *soft*
+  preference: best-effort spread that still schedules a shard's pods when domains
+  run short (small/dev/single-node clusters still come up). `DoNotSchedule` is a
+  *hard* guarantee that a shard's pods never co-locate — but it can leave pods
+  `Pending` when there are fewer failure domains than a shard has pods (e.g.
+  `DoNotSchedule` on `kubernetes.io/hostname` with `replicasPerShard: 1` needs at
+  least 2 schedulable nodes per shard). The default is soft to match the
+  "enable, don't force" philosophy; opt into `DoNotSchedule` for production.
+
+The operator's per-shard constraint is **appended** to any
+`spec.podTemplate.topologySpreadConstraints` you supply — both apply, so you can
+still layer an instance-wide zone spread (or any other constraint) on top of the
+shard-scoped one. `spec.placement.shardAntiAffinity` is **cluster mode only**;
+validation rejects it in standalone and sentinel mode (where a single StatefulSet
+already covers master/replica domain diversity — see above).
+
+> **Known limitation.** There is no dedicated under-provisioning status condition
+> yet — the operator does not count cluster nodes or failure domains. With
+> `DoNotSchedule` and too few domains you will see standard `Pending` pods,
+> surfaced through the CR's readiness (`status.redis.ready < total`, phase
+> `Initializing`), not a "not enough domains" message. What still cannot be pinned
+> by scheduling is *role* placement (master vs. replica) within a shard: pod `-K-0`
+> starts as the shard master, but roles change on failover, which pod-scheduling
+> constraints cannot track. Even spread across domains remains a strong baseline.
 
 ### With authentication
 

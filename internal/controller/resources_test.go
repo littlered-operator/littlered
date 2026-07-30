@@ -1555,6 +1555,123 @@ func TestBuildClusterRedisConfig(t *testing.T) {
 	}
 }
 
+func TestBuildShardSpreadConstraint(t *testing.T) {
+	// Unset knob → no operator constraint.
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ModeCluster
+	if c := buildShardSpreadConstraint(lr, 1); c != nil {
+		t.Errorf("no placement set: expected nil constraint, got %+v", c)
+	}
+
+	// Knob set → per-shard constraint scoped to that shard's pods.
+	lr.Spec.Placement = &littleredv1alpha1.PlacementSpec{
+		ShardAntiAffinity: &littleredv1alpha1.ShardAntiAffinitySpec{
+			TopologyKey:       "topology.kubernetes.io/zone",
+			WhenUnsatisfiable: corev1.DoNotSchedule,
+		},
+	}
+	c := buildShardSpreadConstraint(lr, 2)
+	if c == nil {
+		t.Fatal("placement set: expected a constraint, got nil")
+	}
+	if c.MaxSkew != 1 {
+		t.Errorf("MaxSkew = %d, want 1", c.MaxSkew)
+	}
+	if c.TopologyKey != "topology.kubernetes.io/zone" {
+		t.Errorf("TopologyKey = %q, want zone", c.TopologyKey)
+	}
+	if c.WhenUnsatisfiable != corev1.DoNotSchedule {
+		t.Errorf("WhenUnsatisfiable = %q, want DoNotSchedule", c.WhenUnsatisfiable)
+	}
+	if c.LabelSelector == nil || c.LabelSelector.MatchLabels[LabelShard] != "2" {
+		t.Errorf("selector must scope to shard 2, got %+v", c.LabelSelector)
+	}
+	if c.LabelSelector.MatchLabels["app.kubernetes.io/component"] != ComponentCluster {
+		t.Error("selector must carry component=cluster")
+	}
+
+	// Self-defaulting: empty fields fall back to the documented defaults.
+	lr.Spec.Placement.ShardAntiAffinity = &littleredv1alpha1.ShardAntiAffinitySpec{}
+	d := buildShardSpreadConstraint(lr, 0)
+	if d == nil || d.TopologyKey != littleredv1alpha1.DefaultShardTopologyKey || d.WhenUnsatisfiable != corev1.ScheduleAnyway {
+		t.Errorf("self-defaulting failed: got %+v", d)
+	}
+}
+
+func TestValidatePlacementSpec(t *testing.T) {
+	r := &LittleRedReconciler{}
+	saa := func(when corev1.UnsatisfiableConstraintAction) *littleredv1alpha1.PlacementSpec {
+		return &littleredv1alpha1.PlacementSpec{ShardAntiAffinity: &littleredv1alpha1.ShardAntiAffinitySpec{WhenUnsatisfiable: when}}
+	}
+	tests := []struct {
+		name      string
+		mode      string
+		placement *littleredv1alpha1.PlacementSpec
+		wantErr   bool
+	}{
+		{"nil placement", ModeCluster, nil, false},
+		{"cluster + soft", ModeCluster, saa(corev1.ScheduleAnyway), false},
+		{"cluster + hard", ModeCluster, saa(corev1.DoNotSchedule), false},
+		{"cluster + empty when (defaulted later)", ModeCluster, saa(""), false},
+		{"cluster + bogus when", ModeCluster, saa("Sometimes"), true},
+		{"non-cluster mode rejected", ModeStandalone, saa(corev1.ScheduleAnyway), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lr := newTestLittleRed(testLRName, testNamespace)
+			lr.Spec.Mode = tt.mode
+			lr.Spec.Placement = tt.placement
+			err := r.validatePlacementSpec(lr)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validatePlacementSpec() err = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestClusterShardStatefulSetMergesShardSpread(t *testing.T) {
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ModeCluster
+	replicas := 1
+	lr.Spec.Cluster = &littleredv1alpha1.ClusterSpec{Shards: 3, ReplicasPerShard: &replicas}
+	// A user-supplied constraint plus the operator knob.
+	userTSC := corev1.TopologySpreadConstraint{
+		MaxSkew:           2,
+		TopologyKey:       "custom/key",
+		WhenUnsatisfiable: corev1.ScheduleAnyway,
+	}
+	lr.Spec.PodTemplate.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{userTSC}
+	lr.Spec.Placement = &littleredv1alpha1.PlacementSpec{
+		ShardAntiAffinity: &littleredv1alpha1.ShardAntiAffinitySpec{
+			TopologyKey:       "kubernetes.io/hostname",
+			WhenUnsatisfiable: corev1.DoNotSchedule,
+		},
+	}
+
+	tsc := buildClusterShardStatefulSet(lr, 1).Spec.Template.Spec.TopologySpreadConstraints
+	if len(tsc) != 2 {
+		t.Fatalf("expected 2 constraints (user + operator), got %d: %+v", len(tsc), tsc)
+	}
+	// Order: user first, operator's per-shard constraint appended.
+	if !reflect.DeepEqual(tsc[0], userTSC) {
+		t.Errorf("first constraint should be the user's, got %+v", tsc[0])
+	}
+	if tsc[1].TopologyKey != "kubernetes.io/hostname" || tsc[1].LabelSelector.MatchLabels[LabelShard] != "1" {
+		t.Errorf("second constraint should be the operator's shard-1 spread, got %+v", tsc[1])
+	}
+	// The user's spec slice must not be mutated by the merge.
+	if len(lr.Spec.PodTemplate.TopologySpreadConstraints) != 1 {
+		t.Error("merge must not mutate the user's spec.podTemplate.topologySpreadConstraints slice")
+	}
+
+	// Knob unset → only the user's constraints pass through (no operator injection).
+	lr.Spec.Placement = nil
+	plain := buildClusterShardStatefulSet(lr, 1).Spec.Template.Spec.TopologySpreadConstraints
+	if len(plain) != 1 {
+		t.Errorf("without placement, expected only the user constraint, got %d", len(plain))
+	}
+}
+
 func TestBuildClusterShardStatefulSet(t *testing.T) {
 	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.Mode = ModeCluster
