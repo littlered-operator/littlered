@@ -90,10 +90,33 @@ waits for an operator to migrate/remove it. Reducing `shards` is likewise refuse
 (`ShardScaleDownRefused`) — it would orphan shard StatefulSets and drop their slots, and there
 is no reshard-away path.
 
+### 6. The operator is the sole topology authority (shard↔STS pinning)
+A stable *pod* identity is necessary but **not sufficient** — the per-shard-scoped spread only
+delivers the goal if each Redis shard (its master + replicas) actually stays inside one shard
+StatefulSet. Nothing in Redis maintains that: OSS Redis/Valkey Cluster has **no failure-domain
+awareness** (rack-zone awareness is a Redis Enterprise-only feature; Valkey's AZ support is
+client-side read routing, not placement/failover), and two topology-blind mechanisms re-pair a
+shard's master and replica across StatefulSets — (a) the operator's own empty-master reattach
+(Step 4) and (b) Redis's autonomous *replica migration*. We close both:
+- **Shard-aware reattach** (`chooseReattachTarget`): a restarted empty pod reattaches to the
+  under-replicated slot-master **in its own shard STS**, falling back cross-shard only if none
+  needs a replica (logged). This keeps a Redis shard inside one STS across failover churn.
+- **`cluster-allow-replica-migration no`** in the cluster Redis config, so Redis never
+  autonomously moves a replica to a foreign shard ("a more stable topology when managed
+  externally"). At `replicasPerShard ≥ 2` this is load-bearing; at 1 it is defense-in-depth.
+
+Without this the shard label pins only *scheduling*; role assignment drifts and a shard's
+master/replica land in different STSs, defeating Goal 1 — observed in the very first e2e run
+(the operator's Step 4 scrambled the pairing at bootstrap). This is a thin slice of Direction B
+(operator role assignment) that A turns out to require; the A/B split is cleaner on paper.
+
 ## Consequences
 - Single-domain-loss survivability for a shard becomes expressible via a per-shard-scoped
-  `topologySpreadConstraint` over the shard's StatefulSet — and survives failover for free,
-  because the spread is defined over a stable pod set and role flaps happen *within* it.
+  `topologySpreadConstraint` over the shard's StatefulSet. It survives failover **because the
+  operator keeps each Redis shard inside one shard StatefulSet** (Decision 6) — *not* for free:
+  the spread is over a stable pod set, and shard-aware reattach + disabled replica migration are
+  what keep role flaps *within* that set. (Earlier drafts claimed "for free"; the first e2e run
+  falsified that — see changelog LR-020.)
 - Cluster mode is now N StatefulSets. Status still reports a flat `Nodes` list, now keyed by the
   `{name}-shard-K-N` pod names.
 - The reshard/state layers (`PlanReshard`, gatherer, `cluster_state`) are unchanged — they are

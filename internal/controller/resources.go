@@ -1793,6 +1793,12 @@ func buildClusterRedisConfig(lr *littleredv1alpha1.LittleRed) string {
 	sb.WriteString("cluster-enabled yes\n")
 	sb.WriteString("cluster-config-file /data/nodes.conf\n")
 	fmt.Fprintf(&sb, "cluster-node-timeout %d\n", cluster.ClusterNodeTimeout)
+	// The operator is the sole topology authority (ADR-007): it pins each Redis shard's
+	// master+replicas inside one shard StatefulSet so per-shard placement holds. Redis's
+	// autonomous replica migration would re-pair replicas across shards (topology-blind)
+	// and silently break that invariant, so we disable it — "a more stable cluster
+	// topology when it is managed externally" (Redis cluster spec).
+	sb.WriteString("cluster-allow-replica-migration no\n")
 
 	// Replication settings
 	sb.WriteString("\n# Replication settings\n")

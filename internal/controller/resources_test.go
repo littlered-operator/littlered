@@ -1535,6 +1535,26 @@ func TestBuildSentinelPDB(t *testing.T) {
 	}
 }
 
+func TestBuildClusterRedisConfig(t *testing.T) {
+	lr := newTestLittleRed(testLRName, testNamespace)
+	lr.Spec.Mode = ModeCluster
+	cfg := buildClusterRedisConfig(lr)
+
+	// The operator is the sole topology authority (ADR-007): Redis must not autonomously
+	// migrate replicas across shards, or it re-pairs a shard's master/replica across shard
+	// StatefulSets and defeats per-shard failure-domain placement.
+	if !strings.Contains(cfg, "cluster-allow-replica-migration no") {
+		t.Errorf("cluster config must disable replica migration; got:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, "cluster-enabled yes") {
+		t.Error("cluster config must enable cluster mode")
+	}
+	// Persistence stays disabled (pillar 3.1).
+	if !strings.Contains(cfg, "save \"\"") || !strings.Contains(cfg, "appendonly no") {
+		t.Error("cluster config must keep persistence disabled")
+	}
+}
+
 func TestBuildClusterShardStatefulSet(t *testing.T) {
 	lr := newTestLittleRed(testLRName, testNamespace)
 	lr.Spec.Mode = ModeCluster

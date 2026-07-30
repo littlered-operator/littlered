@@ -19,6 +19,8 @@ package controller
 import (
 	"reflect"
 	"testing"
+
+	redisclient "github.com/littlered-operator/littlered-operator/internal/redis"
 )
 
 func TestClusterPodRefs(t *testing.T) {
@@ -81,6 +83,63 @@ func TestClusterPodRefs(t *testing.T) {
 					tt.instance, tt.shards, tt.replicasPerShard, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestShardIndexFromPodName(t *testing.T) {
+	cases := map[string]int{
+		"my-cache-shard-0-0":   0,
+		"my-cache-shard-1-0":   1,
+		"my-cache-shard-2-1":   2,
+		"my-cache-shard-10-3":  10,
+		"my-cache-cluster-0":   -1, // legacy striped name, not per-shard
+		"my-cache":             -1,
+		"weird-shard-name-x-y": -1,
+	}
+	for name, want := range cases {
+		if got := shardIndexFromPodName(name); got != want {
+			t.Errorf("shardIndexFromPodName(%q) = %d, want %d", name, got, want)
+		}
+	}
+}
+
+// TestChooseReattachTarget pins the invariant that keeps a Redis shard inside one shard
+// StatefulSet: an empty pod must reattach to the under-replicated slot-master in ITS OWN
+// shard, not an arbitrary one. The fixture is the exact bootstrap scramble observed in
+// debug-artifacts-20260730 (shard-K-1 was wrongly welded to a different shard's master).
+func TestChooseReattachTarget(t *testing.T) {
+	master := func(pod, id, slots string) *redisclient.ClusterNodeState {
+		return &redisclient.ClusterNodeState{PodName: pod, NodeID: id, Role: "master", Slots: []string{slots}}
+	}
+	nodes := []*redisclient.ClusterNodeState{
+		master("c-shard-0-0", "id0", "0-5461"),
+		master("c-shard-1-0", "id1", "5462-10922"),
+		master("c-shard-2-0", "id2", "10923-16383"),
+	}
+	noReplicas := map[string][]string{}
+
+	// Same-shard preference: each empty replica pod must pick its own shard's master.
+	wantByPod := map[string]string{
+		"c-shard-0-1": "id0",
+		"c-shard-1-1": "id1",
+		"c-shard-2-1": "id2",
+	}
+	for pod, wantID := range wantByPod {
+		got := chooseReattachTarget(pod, nodes, noReplicas, 1)
+		if got == nil || got.NodeID != wantID {
+			t.Errorf("chooseReattachTarget(%q): got %v, want master %s", pod, got, wantID)
+		}
+	}
+
+	// Already-satisfied master is skipped even if same-shard.
+	full := map[string][]string{"id0": {"someReplica"}}
+	if got := chooseReattachTarget("c-shard-0-1", nodes, full, 1); got == nil || got.NodeID == "id0" {
+		t.Errorf("expected shard-0 master skipped (already has its replica), got %v", got)
+	}
+
+	// Fallback: no same-shard master → lowest-PodName under-replicated master, deterministically.
+	if got := chooseReattachTarget("c-shard-9-1", nodes, noReplicas, 1); got == nil || got.NodeID != "id0" {
+		t.Errorf("fallback: got %v, want lowest-PodName master id0", got)
 	}
 }
 

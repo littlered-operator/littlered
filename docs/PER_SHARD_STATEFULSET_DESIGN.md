@@ -104,13 +104,26 @@ thing that justifies B.
   - **Per-STS `labelSelector: {…/shard: "<i>"}`** stamped by the operator into each shard's
     pod template. No version floor; the operator builds each STS anyway.
 
-### 4.2 Why A survives failover (and why it is *not* a false sense of safety)
+### 4.2 Why A survives failover — but only with operator shard↔STS pinning (NOT for free)
 
-The spread is defined over a **stable pod set** — the shard's StatefulSet pods — and role
-flaps happen *within* that set. Master dies → an already-in-another-domain replica is
-promoted → a replacement pod is recreated and the spread constraint forces it back into the
-vacated domain. The invariant "this shard's pods occupy distinct domains" never referenced
-roles, so a failover cannot break it. (Contrast §5.)
+The spread is defined over a **stable pod set** — the shard's StatefulSet pods — and the
+argument works *iff a Redis shard's master + replicas actually stay inside that STS*. If they
+do, a master death promotes an already-in-another-domain replica within the set, the recreated
+pod is forced back into the vacated domain, and the invariant "this shard's pods occupy distinct
+domains" holds through failover.
+
+> **Correction (first e2e run).** That "iff" is not free, as an earlier draft of this note
+> assumed. OSS Redis/Valkey Cluster has **no failure-domain awareness** (Enterprise-only; Valkey
+> AZ = client read routing), and two topology-blind mechanisms re-pair a shard's master/replica
+> **across** StatefulSets: the operator's own empty-master reattach (Step 4) and Redis's
+> autonomous *replica migration*. The very first e2e run showed Step 4 scrambling the pairing at
+> bootstrap — every replica welded to a different shard's master — so per-shard scheduling was
+> pinning the wrong pods. A therefore **requires** the operator to hold the invariant:
+> **(1) shard-aware reattach** (`chooseReattachTarget` — attach an empty pod to the
+> under-replicated master in *its own* shard STS) and **(2) `cluster-allow-replica-migration no`**
+> in the cluster config. With both, role flaps stay *within* the set and the §4.2 argument holds.
+> This is a thin slice of Direction B (§5) that A turns out to need. See ADR-007 Decision 6 and
+> changelog LR-020.
 
 ### 4.3 topologySpreadConstraints span StatefulSets — by design
 

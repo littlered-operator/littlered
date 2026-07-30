@@ -475,18 +475,25 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 				expectedReplicas = *littleRed.Spec.Cluster.ReplicasPerShard
 			}
 
+			// Candidate masters, snapshotted once for a deterministic, shard-aware choice.
+			candidates := make([]*redisclient.ClusterNodeState, 0, len(gt.Nodes))
+			for _, m := range gt.Nodes {
+				candidates = append(candidates, m)
+			}
+
 			for _, em := range emptyMasters {
-				var targetMaster *redisclient.ClusterNodeState
-				for _, m := range gt.Nodes {
-					if m.Role == RoleMaster && len(m.Slots) > 0 {
-						if len(shardsWithReplicas[m.NodeID]) < expectedReplicas {
-							targetMaster = m
-							break
-						}
-					}
-				}
+				// Reattach to an under-replicated master in the empty pod's OWN shard,
+				// keeping the Redis shard inside its shard StatefulSet (ADR-007); a
+				// shard-blind choice here decouples shards from StatefulSets and defeats
+				// single-domain-loss survivability. Falls back cross-shard only if no
+				// same-shard master needs a replica (logged loudly below).
+				targetMaster := chooseReattachTarget(em.PodName, candidates, shardsWithReplicas, expectedReplicas)
 
 				if targetMaster != nil {
+					if shardIndexFromPodName(targetMaster.PodName) != shardIndexFromPodName(em.PodName) {
+						stateLog.Info("Reattaching empty pod cross-shard (no same-shard master needs a replica); shard/STS pairing may drift",
+							"pod", em.PodName, "targetPod", targetMaster.PodName, "targetNodeID", targetMaster.NodeID)
+					}
 					// CLUSTER REPLICATE is executed on the empty master and requires it
 					// to already know the target's NodeID; right after a CLUSTER MEET that
 					// knowledge may not have propagated yet, and the command would fail with

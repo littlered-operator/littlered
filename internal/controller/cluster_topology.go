@@ -18,9 +18,12 @@ package controller
 
 import (
 	"fmt"
+	"regexp"
+	"sort"
 	"strconv"
 
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
+	redisclient "github.com/littlered-operator/littlered-operator/internal/redis"
 )
 
 // ClusterPodRef identifies one pod in a per-shard cluster topology: which shard it
@@ -73,6 +76,61 @@ func clusterReplicasPerShard(cluster *littleredv1alpha1.ClusterSpec) int {
 		return 0
 	}
 	return *cluster.ReplicasPerShard
+}
+
+// shardPodNameRE matches a per-shard cluster pod name {instance}-shard-<K>-<O>,
+// capturing the shard index K.
+var shardPodNameRE = regexp.MustCompile(`-shard-(\d+)-\d+$`)
+
+// shardIndexFromPodName extracts shard index K from a pod named {instance}-shard-K-O.
+// Returns -1 if the name is not in per-shard form.
+func shardIndexFromPodName(podName string) int {
+	m := shardPodNameRE.FindStringSubmatch(podName)
+	if m == nil {
+		return -1
+	}
+	k, err := strconv.Atoi(m[1])
+	if err != nil {
+		return -1
+	}
+	return k
+}
+
+// chooseReattachTarget picks which under-replicated slot-owning master an empty pod
+// should replicate when the operator reattaches it (cluster_reconcile.go Step 4).
+//
+// It PREFERS a master that lives in the empty pod's own shard StatefulSet, so a Redis
+// shard (its master + replicas) stays inside one shard STS — the invariant per-shard
+// topology placement (ADR-007) depends on. Without this preference the choice is
+// shard-blind (historically the first master in random map order), which decouples Redis
+// shards from shard StatefulSets and defeats single-domain-loss survivability. Only when
+// no same-shard master is available does it fall back to the lowest-PodName under-
+// replicated master (deterministic, and the caller logs the cross-shard fallback).
+//
+// nodes are the candidate ground-truth nodes (typically all gt.Nodes); replicaCounts maps
+// a master NodeID to its current replica NodeIDs; expectedReplicas is replicasPerShard.
+func chooseReattachTarget(emptyPodName string, nodes []*redisclient.ClusterNodeState, replicaCounts map[string][]string, expectedReplicas int) *redisclient.ClusterNodeState {
+	myShard := shardIndexFromPodName(emptyPodName)
+	// Deterministic order so the cross-shard fallback is stable (map iteration is not).
+	sorted := append([]*redisclient.ClusterNodeState(nil), nodes...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].PodName < sorted[j].PodName })
+
+	var fallback *redisclient.ClusterNodeState
+	for _, m := range sorted {
+		if m.Role != RoleMaster || len(m.Slots) == 0 {
+			continue // only slot-owning masters can take a replica
+		}
+		if len(replicaCounts[m.NodeID]) >= expectedReplicas {
+			continue // already has its full complement of replicas
+		}
+		if myShard >= 0 && shardIndexFromPodName(m.PodName) == myShard {
+			return m // same-shard master: keeps the Redis shard inside this shard STS
+		}
+		if fallback == nil {
+			fallback = m
+		}
+	}
+	return fallback
 }
 
 // ClusterPodRefs enumerates every pod of a per-shard cluster in a stable order:
