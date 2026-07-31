@@ -556,6 +556,13 @@ const (
 	// deadlocked and needs attention (in cooldown, or refusing because data is
 	// present); False records a completed recovery.
 	ConditionLeaderlessRecovery = "LeaderlessRecovery"
+	// ConditionGhostMasterRecovery reflects a ghost-master Sentinel failover deadlock —
+	// a majority of Sentinels pinned to a dead (ghost) master IP with no promotable
+	// replica, so failover aborts no-good-slave while living survivors hold the data —
+	// and the operator's recovery of it (sentinel mode). True means deadlocked/needs
+	// attention (in cooldown, or refusing because divergent data is present); False
+	// records a completed recovery.
+	ConditionGhostMasterRecovery = "GhostMasterRecovery"
 )
 
 // LittleRedStatus defines the observed state of LittleRed
@@ -580,6 +587,15 @@ type LittleRedStatus struct {
 	// blip does not trigger a rebootstrap.
 	// +optional
 	LeaderlessSince *metav1.Time `json:"leaderlessSince,omitempty"`
+
+	// GhostMasterStuckSince records when the operator first observed the instance stuck
+	// in a ghost-master failover deadlock: a majority of Sentinels pinned to a dead
+	// (ghost) master IP with no promotable replica, so Sentinel aborts every failover
+	// no-good-slave while living survivors still hold the data. Cleared once a master is
+	// known again. Recovery only fires after this persists past a cooldown, so a recent
+	// master death gets its full Sentinel election window first.
+	// +optional
+	GhostMasterStuckSince *metav1.Time `json:"ghostMasterStuckSince,omitempty"`
 
 	// ObservedGeneration is the last observed generation
 	// +optional

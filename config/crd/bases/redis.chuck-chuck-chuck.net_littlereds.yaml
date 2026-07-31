@@ -2153,6 +2153,16 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              ghostMasterStuckSince:
+                description: |-
+                  GhostMasterStuckSince records when the operator first observed the instance stuck
+                  in a ghost-master failover deadlock: a majority of Sentinels pinned to a dead
+                  (ghost) master IP with no promotable replica, so Sentinel aborts every failover
+                  no-good-slave while living survivors still hold the data. Cleared once a master is
+                  known again. Recovery only fires after this persists past a cooldown, so a recent
+                  master death gets its full Sentinel election window first.
+                format: date-time
+                type: string
               leaderlessSince:
                 description: |-
                   LeaderlessSince records when the operator first observed the instance in a

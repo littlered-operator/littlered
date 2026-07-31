@@ -215,6 +215,35 @@ func (s *SentinelClusterState) HasHealthyKnownReplica() bool {
 	return false
 }
 
+// ReachableSentinels returns the number of reachable Sentinel pods.
+func (s *SentinelClusterState) ReachableSentinels() int {
+	n := 0
+	for _, sn := range s.SentinelNodes {
+		if sn.Reachable {
+			n++
+		}
+	}
+	return n
+}
+
+// SentinelsMonitorGhostMaster reports whether a majority of reachable Sentinels are
+// monitoring a master IP that is a ghost (no live pod). This is the signature of the
+// ghost-master failover deadlock — Sentinel is pinned to a dead master it cannot fail
+// over off — as distinct from the bare-Sentinel leaderless state (AllSentinelsBare).
+func (s *SentinelClusterState) SentinelsMonitorGhostMaster() bool {
+	reachable, ghost := 0, 0
+	for _, sn := range s.SentinelNodes {
+		if !sn.Reachable {
+			continue
+		}
+		reachable++
+		if sn.Monitoring && sn.MasterIP != "" && s.IsGhost(sn.MasterIP) {
+			ghost++
+		}
+	}
+	return reachable > 0 && ghost >= (reachable/2)+1
+}
+
 // GhostReplicaResetSafe reports whether it is safe to issue a broadcast SENTINEL
 // RESET to prune ghost replica entries from the topology.
 //

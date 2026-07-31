@@ -885,8 +885,15 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 	// the only rule that operates while leaderless; every other rule requires a
 	// consensus master. See ADR-005 (LR-015).
 	if state.RealMasterIP == "" {
+		// Two mutually-exclusive no-living-master deadlocks are recoverable here. Rule L
+		// handles the bare-Sentinel bootstrap deadlock; recoverGhostMasterDeadlock handles
+		// the ghost-master failover deadlock (Sentinels pinned to a dead master, no
+		// promotable replica). Each no-ops when it is not its case.
 		if err := r.recoverLeaderlessDeadlock(ctx, littleRed, state, redisMap, password); err != nil {
 			stateLog.Error(err, "leaderless deadlock recovery failed")
+		}
+		if err := r.recoverGhostMasterDeadlock(ctx, littleRed, state, redisMap, password); err != nil {
+			stateLog.Error(err, "ghost-master deadlock recovery failed")
 		}
 		return nil
 	}
@@ -895,6 +902,9 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 	// from a prior recovery attempt. No-op (no API call) when already clear.
 	if err := r.clearLeaderlessSince(ctx, littleRed, reasonRecovered, "A consensus master is known again."); err != nil {
 		stateLog.Error(err, "failed to clear leaderless marker")
+	}
+	if err := r.clearGhostMasterStuckSince(ctx, littleRed, reasonRecovered, "A consensus master is known again."); err != nil {
+		stateLog.Error(err, "failed to clear ghost-master marker")
 	}
 
 	// Rule D (continued): Prune ghost replicas.
