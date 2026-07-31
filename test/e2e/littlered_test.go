@@ -816,6 +816,12 @@ spec:
 				Expect(originalMaster).NotTo(BeEmpty())
 				_, _ = fmt.Fprintf(GinkgoWriter, "Original master: %s\n", originalMaster)
 
+				// Capture the master POD INSTANCE (UID), not just its name: a real
+				// failover/recovery replaces the instance, but a StatefulSet reuses the
+				// name, so we assert on the UID below (see the waiting step).
+				originalMasterUID := podUID(testNamespace, originalMaster)
+				Expect(originalMasterUID).NotTo(BeEmpty())
+
 				By("writing test data to master before failover")
 				cmd = exec.Command("kubectl", "exec", originalMaster,
 					"-n", testNamespace, "-c", "redis", "--",
@@ -837,9 +843,18 @@ spec:
 					g.Expect(err).NotTo(HaveOccurred())
 					newMaster = strings.TrimSpace(output)
 					g.Expect(newMaster).NotTo(BeEmpty())
-					// New master should be different from original (since original pod was deleted
-					// and one of the surviving replicas must have been promoted)
-					g.Expect(newMaster).NotTo(Equal(originalMaster), "New master must be a different pod")
+					// A real failover/recovery must have happened — but assert on the pod
+					// INSTANCE (UID), not the name. Under StatefulSet name reuse + the
+					// operator's data-based election, the deleted master's pod name can
+					// legitimately return and be re-elected once its recreated pod re-holds
+					// the data (it resyncs from the still-terminating old master during the
+					// delete grace window). So a name comparison is racy; the UID comparison
+					// holds whether a survivor was promoted OR the original name was recreated,
+					// and still fails if the delete silently no-op'd (same instance stays master).
+					newMasterUID := podUID(testNamespace, newMaster)
+					g.Expect(newMasterUID).NotTo(BeEmpty())
+					g.Expect(newMasterUID).NotTo(Equal(originalMasterUID),
+						"master must be a new pod instance (a real failover/recovery occurred), not the same instance")
 				}, 90*time.Second, 3*time.Second).Should(Succeed())
 				_, _ = fmt.Fprintf(GinkgoWriter, "New master: %s\n", newMaster)
 

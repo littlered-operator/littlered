@@ -453,3 +453,16 @@ func deletePodsWithLabelMode(namespace, labelSelector string, graceful bool) (st
 	cmd := exec.Command("kubectl", args...)
 	return utils.Run(cmd)
 }
+
+// podUID returns a pod's metadata.uid (empty string on error). Used to assert that a
+// failover produced a NEW pod instance without depending on the pod name — a StatefulSet
+// reuses the name of a deleted pod, and the operator's data-based election can legitimately
+// re-elect that recreated pod, so a name comparison is racy while a UID comparison is not.
+func podUID(namespace, pod string) string {
+	out, err := utils.Run(exec.Command("kubectl", "get", "pod", pod,
+		"-n", namespace, "-o", "jsonpath={.metadata.uid}"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
