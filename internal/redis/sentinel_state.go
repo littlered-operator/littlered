@@ -17,6 +17,7 @@ limitations under the License.
 package redis
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -31,8 +32,13 @@ type RedisNodeState struct {
 	// Keys is the total number of keys the node currently holds (INFO keyspace).
 	// Zero means empty. Used to decide whether leaderless recovery is data-safe.
 	Keys int64
-	// Replid is the node's master_replid — its replication lineage identity.
-	Replid    string
+	// Replid is the node's master_replid — its current replication lineage identity.
+	Replid string
+	// Replid2 is the node's master_replid2 — the lineage it descended from before its
+	// last promotion/resync rotated the replid. Two nodes are the SAME lineage when their
+	// replid histories connect through this (a promotion chain), even though their current
+	// Replids differ. Ignoring it makes a normal post-failover survivor look divergent.
+	Replid2   string
 	Reachable bool
 }
 
@@ -157,10 +163,15 @@ func (s *SentinelClusterState) DataHolders() []*RedisNodeState {
 // more-complete data and the other with an older snapshot — the higher offset is
 // the newer node, so full-syncs should flow outward from it.
 //
-// diverged reports whether the holders span more than one replication lineage
-// (distinct master_replid). When true, the offsets are NOT comparable across
-// lineages and electing any single master will discard genuinely independent
-// writes — callers should surface this loudly.
+// diverged reports whether the holders span more than one INDEPENDENT replication
+// lineage. When true, the offsets are NOT comparable and electing any single master
+// discards genuinely independent writes — callers should surface this loudly.
+//
+// Divergence is computed over each node's replid AND replid2 (see holdersDiverged), not
+// its current replid alone: a promotion or resync rotates the current replid to a new
+// value and shifts the old one into replid2, so a normal post-failover survivor has a
+// different current replid yet is the SAME lineage. Comparing only replid would flag such
+// a promotion chain as divergent and wrongly refuse a safe election.
 //
 // Returns (nil, false) when no node holds data.
 func (s *SentinelClusterState) BestDataHolder() (best *RedisNodeState, diverged bool) {
@@ -168,12 +179,8 @@ func (s *SentinelClusterState) BestDataHolder() (best *RedisNodeState, diverged 
 	if len(holders) == 0 {
 		return nil, false
 	}
-	replids := make(map[string]bool)
 	best = holders[0]
 	for _, h := range holders {
-		if h.Replid != "" {
-			replids[h.Replid] = true
-		}
 		switch {
 		case h.Offset != best.Offset:
 			if h.Offset > best.Offset {
@@ -187,7 +194,72 @@ func (s *SentinelClusterState) BestDataHolder() (best *RedisNodeState, diverged 
 			best = h
 		}
 	}
-	return best, len(replids) > 1
+	return best, holdersDiverged(holders)
+}
+
+// isZeroReplid reports whether a replid is empty or the all-zero sentinel Redis reports
+// for an unset master_replid2.
+func isZeroReplid(r string) bool {
+	if r == "" {
+		return true
+	}
+	for _, c := range r {
+		if c != '0' {
+			return false
+		}
+	}
+	return true
+}
+
+// holdersDiverged reports whether the data holders span more than one independent
+// replication lineage. Each holder's replid and replid2 are treated as the same lineage
+// (a promotion/resync rotated one into the other); holders are then grouped by the
+// connected component of their replids via union-find. More than one component across the
+// holders means genuinely independent write histories.
+func holdersDiverged(holders []*RedisNodeState) bool {
+	parent := map[string]string{}
+	var find func(string) string
+	find = func(x string) string {
+		p, ok := parent[x]
+		if !ok {
+			parent[x] = x
+			return x
+		}
+		if p != x {
+			r := find(p)
+			parent[x] = r
+			return r
+		}
+		return x
+	}
+	union := func(a, b string) { parent[find(a)] = find(b) }
+	valid := func(r string) bool { return !isZeroReplid(r) }
+
+	// Pass 1: connect each holder's replid<->replid2 (and register lone replids).
+	for _, h := range holders {
+		switch {
+		case valid(h.Replid) && valid(h.Replid2):
+			union(h.Replid, h.Replid2)
+		case valid(h.Replid):
+			find(h.Replid)
+		case valid(h.Replid2):
+			find(h.Replid2)
+		}
+	}
+	// Pass 2: count distinct components across holders (after all unions are applied).
+	comps := map[string]bool{}
+	for i, h := range holders {
+		switch {
+		case valid(h.Replid):
+			comps[find(h.Replid)] = true
+		case valid(h.Replid2):
+			comps[find(h.Replid2)] = true
+		default:
+			// A holder with no lineage info at all — treat as its own component.
+			comps[fmt.Sprintf("__noreplid_%d", i)] = true
+		}
+	}
+	return len(comps) > 1
 }
 
 // IsGhost returns true if the given IP is not in the set of valid pod IPs

@@ -45,6 +45,7 @@ type rnSpec struct {
 	keys      int64
 	offset    int64
 	replid    string
+	replid2   string
 	role      string
 }
 
@@ -60,7 +61,7 @@ func buildState(sentinels []snSpec, redis []rnSpec) *redisclient.SentinelCluster
 		s.ValidIPs[rn.ip] = true
 		s.RedisNodes[rn.ip] = &redisclient.RedisNodeState{
 			IP: rn.ip, PodName: "pod-" + rn.ip, Reachable: rn.reachable,
-			Keys: rn.keys, Offset: rn.offset, Replid: rn.replid, Role: rn.role,
+			Keys: rn.keys, Offset: rn.offset, Replid: rn.replid, Replid2: rn.replid2, Role: rn.role,
 		}
 	}
 	return s

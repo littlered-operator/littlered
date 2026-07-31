@@ -516,10 +516,13 @@ type ReplicationSnapshot struct {
 	// decide whether a leaderless-recovery rebootstrap is data-safe — role does
 	// not answer that question (a freshly restarted empty pod reports role:master).
 	Keys int64
-	// Replid is the master_replid — it identifies the replication lineage. Two
-	// nodes with different Replids have independent write histories, so their
-	// offsets are not comparable and their data cannot be safely reconciled.
+	// Replid is the master_replid — it identifies the current replication lineage.
 	Replid string
+	// Replid2 is the master_replid2 — the lineage this node descended from before its
+	// last promotion/resync rotated the replid. Needed to recognise a promotion chain as
+	// a single lineage; comparing Replid alone flags a normal post-failover survivor as
+	// divergent. See SentinelClusterState.holdersDiverged.
+	Replid2 string
 }
 
 // GetReplicationInfo gets replication + keyspace state from a redis instance.
@@ -545,6 +548,7 @@ func GetReplicationInfo(ctx context.Context, addr, password string, tlsEnabled b
 		MasterHost:       ParseInfoField(info, "master_host"),
 		MasterLinkStatus: ParseInfoField(info, "master_link_status"),
 		Replid:           ParseInfoField(info, "master_replid"),
+		Replid2:          ParseInfoField(info, "master_replid2"),
 		Keys:             ParseKeyspaceKeys(info),
 	}
 

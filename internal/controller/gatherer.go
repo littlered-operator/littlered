@@ -50,6 +50,7 @@ func (g *operatorGatherer) GetRedisState(ctx context.Context, podName, ip string
 		Offset:     snap.Offset,
 		Keys:       snap.Keys,
 		Replid:     snap.Replid,
+		Replid2:    snap.Replid2,
 		Reachable:  true,
 	}, nil
 }

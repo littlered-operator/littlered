@@ -53,7 +53,7 @@ func buildGhostState(sentinels []ghostSnSpec, redis []rnSpec) *redisclient.Senti
 		s.ValidIPs[rn.ip] = true
 		s.RedisNodes[rn.ip] = &redisclient.RedisNodeState{
 			IP: rn.ip, PodName: "pod-" + rn.ip, Reachable: rn.reachable,
-			Keys: rn.keys, Offset: rn.offset, Replid: rn.replid, Role: rn.role,
+			Keys: rn.keys, Offset: rn.offset, Replid: rn.replid, Replid2: rn.replid2, Role: rn.role,
 		}
 	}
 	return s
@@ -233,6 +233,47 @@ func TestPlanGhostMasterRecovery(t *testing.T) {
 			wantMasterIP: "10.0.0.1",
 			wantDiverged: true,
 			wantHolders:  2,
+		},
+
+		// --- promotion chains: same lineage despite rotated replids (the real bug) -------
+		{
+			name:      "func: survivor was promoted (replid rotated to replid2) -> SAME lineage, elect, no opt-in",
+			sentinels: ghostQuorum(),
+			redis: []rnSpec{
+				{ip: "10.0.0.1", reachable: true, keys: 5, offset: 100, replid: "716d42", role: "slave"},
+				{ip: "10.0.0.2", reachable: true, keys: 5, offset: 250, replid: "1cc4b7", replid2: "716d42", role: "master"},
+			},
+			since:        elapsed(),
+			wantAction:   recoveryPromoteSurvivor,
+			wantMasterIP: "10.0.0.2",
+			wantDiverged: false,
+			wantHolders:  2,
+		},
+		{
+			name:      "func: 3-node promotion chain (the real graceful->crash state) -> one lineage, elect highest offset",
+			sentinels: ghostQuorum(),
+			redis: []rnSpec{
+				{ip: "10.0.0.1", reachable: true, keys: 1, offset: 100, replid: "716d42", role: "slave"},
+				{ip: "10.0.0.2", reachable: true, keys: 1, offset: 100, replid: "716d42", replid2: "7df3f8", role: "slave"},
+				{ip: "10.0.0.3", reachable: true, keys: 1, offset: 120, replid: "1cc4b7", replid2: "716d42", role: "master"},
+			},
+			since:        elapsed(),
+			wantAction:   recoveryPromoteSurvivor,
+			wantMasterIP: "10.0.0.3",
+			wantDiverged: false,
+			wantHolders:  3,
+		},
+		{
+			name:      "func: genuinely independent lineages (no shared replid history) -> diverged, refuse",
+			sentinels: ghostQuorum(),
+			redis: []rnSpec{
+				{ip: "10.0.0.1", reachable: true, keys: 5, offset: 100, replid: "AAA", replid2: "PPP", role: "master"},
+				{ip: "10.0.0.2", reachable: true, keys: 5, offset: 90, replid: "BBB", replid2: "QQQ", role: "master"},
+			},
+			allowUnsafe: false,
+			since:       elapsed(),
+			wantAction:  recoveryRefuse,
+			wantHolders: 2,
 		},
 	}
 
