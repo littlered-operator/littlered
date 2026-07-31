@@ -1608,10 +1608,18 @@ func (r *LittleRedReconciler) seedSentinelsWithMaster(ctx context.Context, lr *l
 		podAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, littleredv1alpha1.SentinelPort)
 		podSC := redisclient.NewSentinelClient([]string{podAddr}, password, lr.Spec.TLS.Enabled)
 
-		// Idempotent guard: leave a sentinel that already knows a master alone.
+		// Idempotent guard: leave a sentinel that already monitors the CORRECT master
+		// alone (avoids re-MONITOR churn every reconcile). But if it monitors a DIFFERENT
+		// master — e.g. a dead ghost master during a failover deadlock (LR-024) — force it
+		// onto masterIP by REMOVE-ing the stale entry first: a plain SENTINEL MONITOR is
+		// rejected while a same-named master is still configured, so without this the
+		// sentinel stays stranded on the ghost and the election never takes effect.
 		if info, gerr := podSC.GetMaster(ctx); gerr == nil && info != nil {
-			configured++
-			continue
+			if info.IP == masterIP {
+				configured++
+				continue
+			}
+			_ = podSC.Remove(ctx, redisclient.SentinelMasterName)
 		}
 
 		auditLog.Info("Pointing Sentinel at master", "sentinel", pod.Name, "master", masterIP)
