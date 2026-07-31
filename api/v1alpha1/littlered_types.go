@@ -613,6 +613,17 @@ const (
 	// attention (in cooldown, or refusing because divergent data is present); False
 	// records a completed recovery.
 	ConditionGhostMasterRecovery = "GhostMasterRecovery"
+	// ConditionFailoverRecovery reflects a failover-mode no-master state and the
+	// operator's response to it (failover mode only). True means the instance
+	// needs attention — most importantly the refuse-and-wait state, where the
+	// surviving data holders span divergent replication lineages and electing
+	// any one would discard independent writes (set
+	// failover.allowUnsafeRebootstrapOnDeadlock to authorize); False records a
+	// completed recovery. A dedicated type (rather than reusing
+	// LeaderlessRecovery, whose documented semantics are the sentinel-mode
+	// bare-Sentinel deadlock) keeps the sentinel-vs-failover graduation-gate
+	// comparison honest.
+	ConditionFailoverRecovery = "FailoverRecovery"
 )
 
 // LittleRedStatus defines the observed state of LittleRed
@@ -699,6 +710,15 @@ type FailoverStatus struct {
 	// back from status.
 	// +optional
 	AssignmentEpoch int64 `json:"assignmentEpoch,omitempty"`
+
+	// TransitionSince records when the operator last stamped a new master
+	// intent (an assignment-epoch bump: bootstrap seed, failover promotion, or
+	// unsafe elect). It anchors the short post-transition cooldown that
+	// serializes cascading failovers (ADR-011 §6). Monitoring surface only —
+	// if lost, at worst one cooldown window is skipped; nothing load-bearing
+	// is persisted.
+	// +optional
+	TransitionSince *metav1.Time `json:"transitionSince,omitempty"`
 }
 
 // RedisStatus contains Redis pod status
