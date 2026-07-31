@@ -658,6 +658,15 @@ type ClusterStatusInfo struct {
 	// OrphanedReplicas tracks replicas whose master is gone, for timeout-based force-promotion
 	// +optional
 	OrphanedReplicas []OrphanedReplicaInfo `json:"orphanedReplicas,omitempty"`
+
+	// WipeDeadlockSince records when the operator first observed the total-/partial-wipe
+	// deadlock signature: cluster pods stuck not-Ready and crash-looping (redis down, so —
+	// pure in-memory — holding no data) while the instance cannot reach a healthy topology.
+	// It arms the cooldown before the operator recycles the stuck pods (the cluster analog
+	// of the sentinel leaderless recovery; see the reconciliation changelog). Cleared as
+	// soon as the signature no longer holds.
+	// +optional
+	WipeDeadlockSince *metav1.Time `json:"wipeDeadlockSince,omitempty"`
 }
 
 // OrphanedReplicaInfo tracks an orphaned replica for timeout-based recovery

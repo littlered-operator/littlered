@@ -100,6 +100,17 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 			"ready", readyReplicas,
 			"expected", expectedReplicas)
 
+		// Total-/partial-wipe deadlock recovery. Pods stuck not-Ready and crash-looping
+		// (redis down ⇒ no data in a pure in-memory cluster) can never become Ready on their
+		// own — e.g. a mass container crash where every restarted master parks in the startup
+		// yield loop with no live replica to fail over to. The operator recycles exactly those
+		// pods (delete ⇒ StatefulSet reschedules fresh) after a cooldown, never touching a
+		// Ready data holder, and the normal repair loop then re-bootstraps. Mutates the
+		// WipeDeadlockSince cooldown marker, persisted by the Status().Update below. ADR-008.
+		if err := r.recoverClusterWipeDeadlock(ctx, littleRed); err != nil {
+			return ctrl.Result{}, err
+		}
+
 		littleRed.Status.Phase = littleredv1alpha1.PhaseInitializing
 		littleRed.Status.Redis.Ready = readyReplicas
 		littleRed.Status.Redis.Total = totalSpecReplicas

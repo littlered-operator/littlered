@@ -22,12 +22,14 @@ package e2e
 import (
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	redisclient "github.com/littlered-operator/littlered-operator/internal/redis"
 	"github.com/littlered-operator/littlered-operator/test/utils"
 )
 
@@ -176,22 +178,90 @@ var _ = Describe("Cluster Total-Wipe Re-Bootstrap", func() {
 		BeforeAll(func() { crName = fmt.Sprintf("wipe-kill9-%d", time.Now().Unix()); deployCluster(crName) })
 		AfterAll(func() { cleanup(crName) })
 
-		It("re-bootstraps from a mass container crash (arbiter of the mutual-yield gap)", func() {
+		It("re-bootstraps from a mass container crash (operator recycles the parked pods)", func() {
 			writeCanary(crName, "canary-kill9", "pre-wipe")
 
 			By("kill -9 every redis process (pods/IPs/EmptyDir survive → nodes.conf survives)")
 			// Sequential per pod (killPodProcess launches a privileged hostPID helper each),
-			// but all land within the startup script's 60s STEP-3 yield window, so every node
-			// re-enters RESTART_DETECTED=true with no healthy peer to confirm demotion — the
-			// mutual-yield condition. If the operator/script self-heals anyway this passes and
-			// documents that there is no cluster deadlock; if it stalls, this is the red.
+			// but all land within the startup script's 60s STEP-3 yield window, so every master
+			// re-enters RESTART_DETECTED=true with no healthy peer to confirm demotion and parks
+			// → CrashLoopBackOff (the mutual-yield deadlock). The pods never become Ready on
+			// their own, so the operator's wipe-recovery (recoverClusterWipeDeadlock) must, after
+			// the cooldown, recycle the stuck redis-down pods → they reschedule fresh → the
+			// normal repair loop re-bootstraps. Without that recovery this deadlocks forever.
 			for _, pod := range clusterPodNames(crName, clusterShards, clusterReplicasPerShard) {
 				killPodProcess(testNamespace, pod)
 			}
 
-			// Longer budget than Flavor A: each node may burn up to ~60s in the STEP-3 yield
-			// loop before it either resolves or is restarted by the liveness probe.
+			// Budget covers the ~120s recovery cooldown plus reschedule + re-bootstrap.
 			expectRecovered(crName, 8*time.Minute)
+		})
+	})
+
+	// --- Partial wipe: a surviving data-holder must NOT be recycled (LR-003 guard) ----
+	// The safety property behind recycling stuck pods: recycle ONLY not-Ready, crash-looping
+	// (redis-down ⇒ dataless) pods, NEVER a Ready pod that may hold the only copy of a shard's
+	// data. Here we keep exactly one shard's replica alive (Ready, holding replicated data)
+	// while kill-9'ing everything else, and assert that shard's data survives recovery — i.e.
+	// the operator promoted the survivor and never recycled it. This is the explicit regression
+	// guard for the ADR-001 / LR-003 crash-protection the fix must not undo.
+	Context("Partial wipe keeps a surviving data-holder", Ordered, func() {
+		var crName string
+		BeforeAll(func() { crName = fmt.Sprintf("wipe-partial-%d", time.Now().Unix()); deployCluster(crName) })
+		AfterAll(func() { cleanup(crName) })
+
+		It("preserves the surviving replica's data and never recycles it", func() {
+			const key = "survivor-shard-key"
+			const val = "must-survive"
+
+			By("writing a key and locating the shard that owns it")
+			cmd := exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
+				"-n", testNamespace, "-c", "redis", "--", "redis-cli", "-c", "SET", key, val)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			slotOut, err := utils.Run(exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
+				"-n", testNamespace, "-c", "redis", "--", "redis-cli", "CLUSTER", "KEYSLOT", key))
+			Expect(err).NotTo(HaveOccurred())
+			slot, err := strconv.Atoi(strings.TrimSpace(slotOut))
+			Expect(err).NotTo(HaveOccurred())
+
+			survivorShard := -1
+			for i, rng := range redisclient.GenerateSlotRanges(clusterShards) {
+				if slot >= rng.Start && slot <= rng.End {
+					survivorShard = i
+					break
+				}
+			}
+			Expect(survivorShard).To(BeNumerically(">=", 0), "could not map slot to a shard")
+			survivor := clusterReplicaPod(crName, survivorShard, 1)
+			AddReportEntry("survivor-pod", survivor)
+
+			By(fmt.Sprintf("waiting for the survivor replica %s to hold the replicated data", survivor))
+			Eventually(func(g Gomega) {
+				out, _ := utils.Run(exec.Command("kubectl", "exec", survivor,
+					"-n", testNamespace, "-c", "redis", "--", "redis-cli", "DBSIZE"))
+				g.Expect(strings.TrimSpace(out)).NotTo(Equal("0"))
+			}, 30*time.Second, 2*time.Second).Should(Succeed(), "survivor replica never received the data")
+
+			By("kill -9 every pod EXCEPT the survivor replica (it stays Ready, holding data)")
+			for _, pod := range clusterPodNames(crName, clusterShards, clusterReplicasPerShard) {
+				if pod == survivor {
+					continue
+				}
+				killPodProcess(testNamespace, pod)
+			}
+
+			expectRecovered(crName, 8*time.Minute)
+
+			By("the surviving shard's data must be intact after recovery (survivor promoted, never recycled)")
+			Eventually(func(g Gomega) {
+				out, err := utils.Run(exec.Command("kubectl", "exec", clusterMasterPod(crName, 0),
+					"-n", testNamespace, "-c", "redis", "--", "redis-cli", "-c", "GET", key))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(out)).To(Equal(val))
+			}, 1*time.Minute, 3*time.Second).Should(Succeed(),
+				"surviving replica's data was lost — it was wrongly recycled or not promoted before slot assignment")
 		})
 	})
 })
