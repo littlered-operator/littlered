@@ -2,8 +2,8 @@
 
 > **Status:** Direction A **complete** in 0.3.0 — Milestone 1 (structural split, ADR-007 /
 > changelog LR-020) and Milestone 2 (the `placement.shardAntiAffinity` knob, LR-022). Deferred:
-> the under-provisioning status condition (§7.3) and Direction B (§5). This note keeps the full
-> reasoning.
+> the under-provisioning status condition (§7.3). **Direction B (§5) is now declined — see
+> ADR-009** (a challenge surface). This note keeps the full reasoning.
 > **Created:** 2026-07-29 (design discussion). This note captures the reasoning so a
 > future session can pick up without re-deriving it.
 > **Decision owners:** the littlered authors (spare-time OSS); also dogfooded on a
@@ -173,6 +173,12 @@ minimal interference: we enable, we do not force.)
 ---
 
 ## 5. Direction B — topology-aware role assignment (Goal 2 only)
+
+> **Decision (superseding this section): DECLINED — see ADR-009.** After evaluation, we do not
+> build active master balancing: replica-routed reads (a common client config) already spread the
+> load, `replicasPerShard:1` has no balancing freedom, there is no schedule-time master label, and
+> active balancing only adds failover churn. The analysis below is retained as the problem
+> statement; ADR-009 is the decision of record and the challenge surface.
 
 ### 5.1 The false-safety failure A does *not* have, and B fixes
 
