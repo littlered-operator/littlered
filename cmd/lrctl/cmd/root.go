@@ -16,11 +16,13 @@ const (
 	modeStandalone     = "standalone"
 	modeCluster        = "cluster"
 	modeSentinel       = "sentinel"
+	modeFailover       = "failover"
 	roleMaster         = "master"
 	redisCliBin        = "redis-cli"
 	infoSubcommand     = "info"
 	clusterSubcommand  = "cluster"
 	sentinelMasterName = "mymaster"
+	statusUnreachable  = "unreachable"
 )
 
 var (

@@ -72,6 +72,7 @@ func (g *cliGatherer) GetRedisState(ctx context.Context, podName, ip string) (*r
 		Offset:     offset,
 		Keys:       redisclient.ParseKeyspaceKeys(stdout),
 		Replid:     redisclient.ParseInfoField(stdout, "master_replid"),
+		Replid2:    redisclient.ParseInfoField(stdout, "master_replid2"),
 		Reachable:  true,
 	}, nil
 }
