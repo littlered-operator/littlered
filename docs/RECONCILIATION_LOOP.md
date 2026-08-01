@@ -3,6 +3,7 @@
 This diagram describes the high-level reconciliation flow of the LittleRed operator. Mode-specific details are in dedicated documents:
 
 - **[Sentinel Mode](RECONCILIATION_LOOP_SENTINEL.md)** — ground truth gathering, healing rules, kill-9 protection, DetermineRealMaster algorithm
+- **[Failover Mode](RECONCILIATION_LOOP_FAILOVER.md)** (experimental) — operator-assignment intent model, master-death detection, the planFailover decision table, epoch-fenced kill-9 yield
 - **[Cluster Mode](RECONCILIATION_LOOP_CLUSTER.md)** — ground truth gathering, repair loop (quorum recovery, partitions, ghosts, slots, replication), kill-9 protection
 
 ```mermaid
@@ -18,7 +19,7 @@ graph TD
     HasFinalizer -- Yes --> Validate[Validate Spec<br/><i>Auth secret, TLS secret, cluster config</i>]
 
     Validate -- Fail --> SetFailed[Phase: Failed]
-    Validate -- OK --> InitBootstrap{Sentinel & New?}
+    Validate -- OK --> InitBootstrap{"Sentinel/Failover & New?"}
 
     InitBootstrap -- Yes --> SetBootstrap[Set bootstrapRequired = true]
     InitBootstrap -- No --> ModeSwitch
@@ -39,6 +40,18 @@ graph TD
     end
 
     SentinelBox --> SentinelRequeue["Requeue"]
+
+    %% Failover (experimental)
+    ModeSwitch -- failover --> FailoverBox
+
+    subgraph FailoverBox ["Failover Mode (experimental)  → RECONCILIATION_LOOP_FAILOVER.md"]
+        direction TB
+        FailoverRes["Ensure Resources"]
+        FailoverRes --> FailoverEngine["Bootstrap / Assignment Engine<br/>(detection + planFailover)"]
+        FailoverEngine --> FailoverStatus["Update Status"]
+    end
+
+    FailoverBox --> FailoverRequeue["Requeue"]
 
     %% Cluster
     ModeSwitch -- cluster --> ClusterBox
