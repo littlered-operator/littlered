@@ -61,41 +61,87 @@ func (r *LittleRedReconciler) reshardConsolidated(
 
 	// One move per reconcile; the next gather observes progress and re-plans.
 	move := plan.Moves[0]
-	destAddr := fmt.Sprintf("%s:%d", move.Dest.PodIP, littleredv1alpha1.RedisPort)
 
 	auditLog.Info("Consolidated-shard reshard: relocating surplus range (LR-018)",
 		"range", fmt.Sprintf("%d-%d", move.Start, move.End),
 		"source", move.Source.PodName, "dest", move.Dest.PodName,
 		"atomicSlotMigration", gt.AtomicSlotMigration)
 
+	// Drive one pass of the move via the shared executor (ASM or dance by capability).
+	// A move was planned, so we always acted this pass (acted=true); the caller returns
+	// the requeue and the next gather observes progress and re-plans. Transient failures
+	// are already turned into a fast requeue inside moveSlotRange (no hard error surfaces).
+	_, res, err := r.moveSlotRange(ctx, littleRed, gt, clusterClient, &move)
+	if err != nil {
+		auditLog.Error(err, "Consolidated-shard reshard move failed; will retry",
+			"range", fmt.Sprintf("%d-%d", move.Start, move.End))
+		return ctrl.Result{RequeueAfter: fast}, true
+	}
+	return res, true
+}
+
+// moveSlotRange executes ONE pass of moving a single slot range (move.Source → move.Dest),
+// choosing native atomic slot migration (Redis 8.4+) or the pre-8.4 key-preserving MIGRATE
+// dance by the gather-time capability probe (gt.AtomicSlotMigration). It is the shared
+// executor behind both the consolidated-shard reshard (LR-018, reshardConsolidated) and the
+// legacy→per-shard migration Draining phase (ADR-013, migrateLegacyCluster). It preserves
+// keys and is resumable from on-node markers; transient Redis failures are logged and turned
+// into a fast requeue (never a hard error), matching the rest of the repair loop, so err is
+// nil in practice.
+//
+// done reports whether this pass completed the move: true only on the dance's ownership-flip
+// pass (the range is now on Dest). For native ASM, completion is instead observed by the next
+// gather's re-plan (Dest owns the range), so done stays false while ASM drives/waits — both
+// callers requeue and re-plan regardless, so done is advisory. res is the requeue result the
+// caller should return.
+//
+// err is part of the shared-executor contract (both callers propagate it), but is nil in
+// practice today: transient Redis failures are intentionally logged and turned into a fast
+// requeue, matching the rest of the repair loop, rather than surfaced as hard errors.
+//
+//nolint:unparam // err reserved by the executor contract; transient failures requeue, not error.
+func (r *LittleRedReconciler) moveSlotRange(
+	ctx context.Context,
+	littleRed *littleredv1alpha1.LittleRed,
+	gt *redisclient.ClusterGroundTruth,
+	clusterClient *redisclient.ClusterClient,
+	move *redisclient.ReshardMove,
+) (done bool, res ctrl.Result, err error) {
+	fast, _ := littleRed.GetRequeueIntervals()
+	stateLog := r.getLogger(ctx, littleRed, LogCategoryState)
+	auditLog := r.getLogger(ctx, littleRed, LogCategoryAudit)
+
+	destAddr := fmt.Sprintf("%s:%d", move.Dest.PodIP, littleredv1alpha1.RedisPort)
+
 	if !gt.AtomicSlotMigration {
 		// Pre-8.4 / non-ASM engine: key-preserving incremental MIGRATE dance.
-		return r.reshardViaDance(ctx, littleRed, gt, clusterClient, move)
+		danceDone, danceRes := r.reshardViaDance(ctx, littleRed, gt, clusterClient, *move)
+		return danceDone, danceRes, nil
 	}
 
 	// Native atomic slot migration (Redis 8.4+). Re-entrant: if a task is already in
 	// flight on the destination, wait for it (the gather shows completion when the
 	// destination owns the range) rather than relaunching IMPORT.
-	inFlight, err := clusterClient.ClusterMigrationInFlight(ctx, destAddr)
-	if err != nil {
-		auditLog.Error(err, "Failed to query atomic slot migration status; will retry", "dest", move.Dest.PodName)
-		return ctrl.Result{RequeueAfter: fast}, true
+	inFlight, qErr := clusterClient.ClusterMigrationInFlight(ctx, destAddr)
+	if qErr != nil {
+		auditLog.Error(qErr, "Failed to query atomic slot migration status; will retry", "dest", move.Dest.PodName)
+		return false, ctrl.Result{RequeueAfter: fast}, nil
 	}
 	if inFlight {
 		stateLog.Info("Atomic slot migration in progress; waiting", "dest", move.Dest.PodName,
 			"range", fmt.Sprintf("%d-%d", move.Start, move.End))
-		return ctrl.Result{RequeueAfter: fast}, true
+		return false, ctrl.Result{RequeueAfter: fast}, nil
 	}
 
-	taskID, err := clusterClient.ClusterMigrationImport(ctx, destAddr, [][2]int{{move.Start, move.End}})
-	if err != nil {
-		auditLog.Error(err, "Failed to start atomic slot migration; will retry",
+	taskID, iErr := clusterClient.ClusterMigrationImport(ctx, destAddr, [][2]int{{move.Start, move.End}})
+	if iErr != nil {
+		auditLog.Error(iErr, "Failed to start atomic slot migration; will retry",
 			"dest", move.Dest.PodName, "range", fmt.Sprintf("%d-%d", move.Start, move.End))
-		return ctrl.Result{RequeueAfter: fast}, true
+		return false, ctrl.Result{RequeueAfter: fast}, nil
 	}
 	auditLog.Info("Started atomic slot migration", "taskID", taskID,
 		"dest", move.Dest.PodName, "range", fmt.Sprintf("%d-%d", move.Start, move.End))
-	return ctrl.Result{RequeueAfter: fast}, true
+	return false, ctrl.Result{RequeueAfter: fast}, nil
 }
 
 // reshardViaDance is the pre-8.4 key-preserving executor: the classic
@@ -105,13 +151,15 @@ func (r *LittleRedReconciler) reshardConsolidated(
 // the same move and this method resumes it (state lives in the cluster's slot markers,
 // not in the operator). Bounded to ReshardMaxKeysPerReconcile keys per pass so it never
 // hogs the single reconcile worker. See LR-018 §7.2.
+// Returns (done, res): done is true only on the ownership-flip pass (the range is fully
+// drained and now owned by Dest); res is the fast requeue the caller returns each pass.
 func (r *LittleRedReconciler) reshardViaDance(
 	ctx context.Context,
 	littleRed *littleredv1alpha1.LittleRed,
 	gt *redisclient.ClusterGroundTruth,
 	clusterClient *redisclient.ClusterClient,
 	move redisclient.ReshardMove,
-) (ctrl.Result, bool) {
+) (done bool, res ctrl.Result) {
 	fast, _ := littleRed.GetRequeueIntervals()
 	stateLog := r.getLogger(ctx, littleRed, LogCategoryState)
 	auditLog := r.getLogger(ctx, littleRed, LogCategoryAudit)
@@ -141,18 +189,18 @@ func (r *LittleRedReconciler) reshardViaDance(
 	//    redirection and lets the destination accept MIGRATE'd keys.
 	if err := clusterClient.ClusterSetSlotsImporting(ctx, destAddr, slots, move.Source.NodeID); err != nil {
 		auditLog.Error(err, "reshard dance: mark importing failed; will retry", "dest", move.Dest.PodName)
-		return ctrl.Result{RequeueAfter: fast}, true
+		return false, ctrl.Result{RequeueAfter: fast}
 	}
 	if err := clusterClient.ClusterSetSlotsMigrating(ctx, srcAddr, slots, move.Dest.NodeID); err != nil {
 		auditLog.Error(err, "reshard dance: mark migrating failed; will retry", "source", move.Source.PodName)
-		return ctrl.Result{RequeueAfter: fast}, true
+		return false, ctrl.Result{RequeueAfter: fast}
 	}
 
 	// 2. Which slots still hold keys on the source?
 	counts, err := clusterClient.ClusterCountKeysInSlots(ctx, srcAddr, slots)
 	if err != nil {
 		auditLog.Error(err, "reshard dance: count keys failed; will retry", "source", move.Source.PodName)
-		return ctrl.Result{RequeueAfter: fast}, true
+		return false, ctrl.Result{RequeueAfter: fast}
 	}
 	toDrain := redisclient.SlotsNeedingDrain(counts)
 
@@ -162,12 +210,12 @@ func (r *LittleRedReconciler) reshardViaDance(
 		for _, addr := range reachableMasterAddrs(gt) {
 			if err := clusterClient.ClusterSetSlotsNode(ctx, addr, slots, move.Dest.NodeID); err != nil {
 				auditLog.Error(err, "reshard dance: flip ownership failed; will retry", "addr", addr)
-				return ctrl.Result{RequeueAfter: fast}, true
+				return false, ctrl.Result{RequeueAfter: fast}
 			}
 		}
 		auditLog.Info("reshard dance: drain complete, ownership flipped to dest",
 			"range", fmt.Sprintf("%d-%d", move.Start, move.End), "dest", move.Dest.PodName)
-		return ctrl.Result{RequeueAfter: fast}, true
+		return true, ctrl.Result{RequeueAfter: fast}
 	}
 
 	// 4. Drain up to maxKeys keys this reconcile, then yield (resume next pass).
@@ -177,7 +225,7 @@ func (r *LittleRedReconciler) reshardViaDance(
 			keys, err := clusterClient.ClusterGetKeysInSlot(ctx, srcAddr, slot, batch)
 			if err != nil {
 				auditLog.Error(err, "reshard dance: GETKEYSINSLOT failed; will retry", "slot", slot)
-				return ctrl.Result{RequeueAfter: fast}, true
+				return false, ctrl.Result{RequeueAfter: fast}
 			}
 			if len(keys) == 0 {
 				break
@@ -188,7 +236,7 @@ func (r *LittleRedReconciler) reshardViaDance(
 				// the slot so the field can see it, and retry next reconcile.
 				auditLog.Error(err, "reshard dance: MIGRATE failed (possible oversized key); will retry",
 					"slot", slot, "batch", len(keys), "migrateTimeoutMs", migTimeout)
-				return ctrl.Result{RequeueAfter: fast}, true
+				return false, ctrl.Result{RequeueAfter: fast}
 			}
 			moved += len(keys)
 		}
@@ -199,7 +247,7 @@ func (r *LittleRedReconciler) reshardViaDance(
 	stateLog.Info("reshard dance: migrated key batch this pass (incremental)",
 		"range", fmt.Sprintf("%d-%d", move.Start, move.End),
 		"movedThisPass", moved, "slotsRemaining", len(toDrain))
-	return ctrl.Result{RequeueAfter: fast}, true
+	return false, ctrl.Result{RequeueAfter: fast}
 }
 
 // reachableMasterAddrs returns host:port for every reachable master in the ground

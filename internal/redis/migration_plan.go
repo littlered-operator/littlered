@@ -88,13 +88,16 @@ type MigrationPlan struct {
 	Reason       string
 }
 
-// planClusterMigration derives the migration phase and the single action set for this
+// PlanClusterMigration derives the migration phase and the single action set for this
 // pass PURELY from live ground truth + LegacyFacts (ADR-013 §7). Phase is never read
 // back from status; the driver re-plans every reconcile. It emits one range Move per
 // pass (the lowest un-migrated shard, for determinism), defers a replica attach whose
 // target the replica does not yet NodeKnows, and only FORGETs/deletes legacy once every
 // legacy node owns zero slots.
-func planClusterMigration(gt *ClusterGroundTruth, shards, replicasPerShard int, name string,
+//
+// Exported so the package controller migration driver (cluster_migration.go) can drive it;
+// the logic stays a pure seam (no I/O).
+func PlanClusterMigration(gt *ClusterGroundTruth, shards, replicasPerShard int, name string,
 	legacy LegacyFacts) MigrationPlan {
 	plan := MigrationPlan{TotalShards: shards}
 	if shards <= 0 {
@@ -168,11 +171,11 @@ func planStandupOrMeet(plan MigrationPlan, gt *ClusterGroundTruth, name string, 
 	return plan
 }
 
-// legacyMigrationReady is the health gate (ADR-013 §2). Migration begins only when the
+// LegacyMigrationReady is the health gate (ADR-013 §2). Migration begins only when the
 // legacy cluster is safe to rewrite: cluster_state ok, all 16384 slots assigned, all
 // legacy pods Ready (kubelet readiness, injected as a bool — blackhole-proof per
-// LR-017/023), and a reachable master quorum.
-func legacyMigrationReady(gt *ClusterGroundTruth, allLegacyPodsReady bool) bool {
+// LR-017/023), and a reachable master quorum. Exported for the migration driver.
+func LegacyMigrationReady(gt *ClusterGroundTruth, allLegacyPodsReady bool) bool {
 	if gt.ClusterState != "ok" {
 		return false
 	}
@@ -186,11 +189,12 @@ func legacyMigrationReady(gt *ClusterGroundTruth, allLegacyPodsReady bool) bool 
 	return total > 0 && reachable*2 > total
 }
 
-// legacyShapePreserved reports whether the legacy cluster is shape-preserving (ADR-013
+// LegacyShapePreserved reports whether the legacy cluster is shape-preserving (ADR-013
 // §5): exactly `shards` slot-owning masters, each owning exactly one aligned
 // GenerateSlotRanges(shards)[K] range, and a member count of shards×(1+replicasPerShard).
 // Anything else is refused (the 1:1 range mapping only holds for the identical shape).
-func legacyShapePreserved(gt *ClusterGroundTruth, shards, replicasPerShard int) bool {
+// Exported for the migration driver.
+func LegacyShapePreserved(gt *ClusterGroundTruth, shards, replicasPerShard int) bool {
 	if shards <= 0 {
 		return false
 	}

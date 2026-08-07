@@ -254,7 +254,7 @@ func TestPlanClusterMigration(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := planClusterMigration(tc.gt, shards, rps, name, tc.facts)
+			got := PlanClusterMigration(tc.gt, shards, rps, name, tc.facts)
 			assertPlanEqual(t, got, tc.want)
 		})
 	}
@@ -341,7 +341,7 @@ func TestLegacyMigrationReady(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			gt := healthy()
 			tc.mutate(gt)
-			if got := legacyMigrationReady(gt, tc.podsReady); got != tc.want {
+			if got := LegacyMigrationReady(gt, tc.podsReady); got != tc.want {
 				t.Errorf("legacyMigrationReady = %v, want %v", got, tc.want)
 			}
 		})
@@ -400,7 +400,7 @@ func TestLegacyShapePreserved(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := legacyShapePreserved(tc.gt, shards, rps); got != tc.want {
+			if got := LegacyShapePreserved(tc.gt, shards, rps); got != tc.want {
 				t.Errorf("legacyShapePreserved = %v, want %v", got, tc.want)
 			}
 		})

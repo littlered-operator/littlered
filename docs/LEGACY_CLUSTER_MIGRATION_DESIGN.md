@@ -245,3 +245,43 @@ node → failing repro first.
   the e2e should run at least once on a pre-8.4 image to exercise the dance (as LR-018 did).
 - **Shard-count / replica-count change** during migration is explicitly out of scope (ADR-013 §5);
   a follow-up reshard handles it post-migration.
+
+## 8. As-built deltas (M3)
+
+Accepted deviations from §1–§7, folded into the record after the M3 driver landed:
+
+- **`restrictToLegacyMesh` (new helper, refines §2.3).** `GatherClusterGroundTruth` includes *every*
+  reachable probed pod in `gt.Nodes` — but a fresh, un-MET `{name}-shard-K-0` is its own single-node
+  cluster, so it would appear in `gt.Nodes` prematurely and M1's plan (which keys Meet-detection on
+  `gt.Nodes` *absence*) would skip Meet straight to a doomed Draining. The driver therefore filters
+  `gt.Nodes` down to the legacy-rooted partition (via `gt.Partitions`) before planning, reconstructing
+  M1's mesh-membership contract. Safe default: if no legacy-containing partition is identifiable, it
+  does not filter.
+- **Entry gates run once, at intact-legacy entry (refines §2.4/§5).** `LegacyMigrationReady` and
+  `LegacyShapePreserved` are enforced only while no new-shard pod exists yet. Once migration is
+  underway a drained legacy master owns zero slots and would false-fail the shape check, so the gates
+  are not re-run; the migration is idempotent and resumable and cannot be un-started.
+- **`moveSlotRange` shared executor (refines §1).** Extracted from `reshardConsolidated`; both the
+  LR-018 consolidated-shard reshard and the migration Draining phase call it. `reshardViaDance`'s
+  return changed to `(done, res)` — `done` is true only on the ownership-flip pass; inert for the
+  reshard caller (which ignores it), advisory logging for the migration caller. Behavior-preserving
+  (existing reshard tests + envtest are the guard).
+- **No new `LittleRedPhase` (refines §3).** During migration `status.phase` stays `Initializing` and
+  `status.status` = `"Migrating"`; the migration phase is surfaced via `status.cluster.migration.phase`
+  and the repurposed `LegacyClusterTopology` (Ready=False) condition. Avoids CRD enum churn / lrctl drift.
+- **`ensureMigrationResources` excludes the PDB reconcile (refines §3).** It creates ConfigMap +
+  shared Services + per-shard STSs but deliberately does NOT run `reconcileClusterPDB`, which would
+  delete the legacy `{name}-cluster-pdb` early. The legacy PDB survives until Decommission so legacy
+  pods keep disruption protection while they still hold slots; per-shard PDBs are created by the
+  normal reconcile once migration completes.
+- **Condition reasons:** `MigrationHeld` (hold), `MigrationWaitingSeed` (no reachable legacy seed),
+  `MigrationWaitingHealthy` (health gate), `MigrationInProgress` (per-phase), `MigrationUnsupportedTopology`
+  (terminal refuse). `reportLegacyClusterTopology` was renamed `reportLegacyMigrationRefused` and now
+  serves only the terminal-refuse case.
+- **RBAC unchanged.** `apps/statefulsets` already carried `delete` (LR-023); no marker/role change needed.
+- **Investigations resolved.** (1) New-master self-bootstrap: SAFE — a fresh cluster pod (no `nodes.conf`)
+  execs `redis-server` without ever running `CLUSTER ADDSLOTS`; slot assignment is operator-only
+  (`bootstrapCluster` inside `repairCluster`, which is suspended during migration), so a fresh new pod is
+  an empty single-node cluster waiting to be MET, never a rival cluster with slots. (2) Shared-Service
+  coexistence: CONFIRMED — pre-split pods carry `component=cluster` (`git show 85e1a93^`), which the shared
+  headless Service `{name}-cluster` selects, so it fronts legacy + new pods. M5 adds the live assertion.

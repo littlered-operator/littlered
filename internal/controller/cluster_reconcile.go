@@ -48,14 +48,16 @@ func (r *LittleRedReconciler) reconcileCluster(ctx context.Context, littleRed *l
 		littleRed.Status.Phase = littleredv1alpha1.PhasePending
 	}
 
-	// Legacy single-STS guard (0.3.0 migration). We never silently rebuild data: if a
-	// pre-0.3.0 single {name}-cluster StatefulSet is still present, refuse to stand up
-	// the per-shard StatefulSets beside it (that would fork the cluster and can wipe
-	// data) until an operator migrates/removes it. See ADR per-shard StatefulSets.
-	if legacy, err := r.detectLegacyClusterStatefulSet(ctx, littleRed); err != nil {
-		return ctrl.Result{}, err
-	} else if legacy {
-		return r.reportLegacyClusterTopology(ctx, littleRed)
+	// Legacy single-STS migration (ADR-013). When a pre-0.3.0 single {name}-cluster
+	// StatefulSet is present, the operator drives an in-place, online, data-safe migration
+	// into the per-shard layout (drain slots old→new, then delete the emptied legacy
+	// workload) instead of refusing forever. While a migration is in flight the driver owns
+	// the reconcile (handled=true) and the steady-state repair loop below is fully suspended
+	// (ADR-013 §6). A non-shape-preserving legacy topology is still refused (terminal),
+	// inside the driver. This must run before ensureClusterResources so the per-shard
+	// StatefulSets are stood up beside the legacy one under migration control, not blindly.
+	if res, handled, err := r.migrateLegacyCluster(ctx, littleRed); handled || err != nil {
+		return res, err
 	}
 
 	// Shard scale-down guard. Reducing spec.cluster.shards would orphan the high-index
@@ -321,6 +323,15 @@ func (r *LittleRedReconciler) repairCluster(ctx context.Context, littleRed *litt
 
 	// 2. Forget Ghost Nodes (With Safety Check)
 	if gt.HasGhostNodes() {
+		// Belt-and-suspenders (ADR-013 §6): never FORGET a node while a legacy {name}-cluster
+		// StatefulSet exists. During migration the steady gather enumerates only the NEW pods,
+		// so live legacy nodes appear as ghosts here; the migration driver (which normally owns
+		// the reconcile via handled=true) is the sole authority over legacy-node lifecycle.
+		// A stray steady-state pass must not evict a legacy node mid-migration.
+		if legacyExists, _ := r.detectLegacyClusterStatefulSet(ctx, littleRed); legacyExists {
+			stateLog.Info("Legacy cluster StatefulSet present; skipping ghost FORGET (migration owns legacy-node lifecycle)")
+			return ctrl.Result{RequeueAfter: fast}, nil
+		}
 		// Safety: Don't forget a ghost if it is the master of a live replica.
 		// We should wait for the replica to be promoted (Step 0) instead.
 		protectedMasters := make(map[string]bool)
@@ -976,8 +987,8 @@ func (r *LittleRedReconciler) clusterShardStatefulSets(ctx context.Context, litt
 }
 
 // detectLegacyClusterStatefulSet reports whether the pre-0.3.0 single cluster StatefulSet
-// ({name}-cluster) still exists. Its presence blocks per-shard reconciliation (see
-// reportLegacyClusterTopology) so we never fork the cluster or wipe data on upgrade.
+// ({name}-cluster) still exists. Its presence triggers the in-place legacy→per-shard
+// migration (see migrateLegacyCluster, ADR-013) so we never fork the cluster or wipe data.
 func (r *LittleRedReconciler) detectLegacyClusterStatefulSet(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (bool, error) {
 	sts := &appsv1.StatefulSet{}
 	err := r.Get(ctx, types.NamespacedName{
@@ -993,17 +1004,16 @@ func (r *LittleRedReconciler) detectLegacyClusterStatefulSet(ctx context.Context
 	return true, nil
 }
 
-// reportLegacyClusterTopology surfaces the "legacy single-STS present" state and waits.
-// We deliberately do NOT delete the old StatefulSet: cluster storage is EmptyDir, so
-// deleting it destroys data, and LittleRed never deletes data by default. An operator must
-// migrate/remove the old workload; then per-shard reconciliation proceeds on the next pass.
-func (r *LittleRedReconciler) reportLegacyClusterTopology(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (ctrl.Result, error) {
-	const msg = "Legacy single-StatefulSet cluster ({name}-cluster) detected; 0.3.0 uses " +
-		"one StatefulSet per shard. Refusing to create per-shard StatefulSets beside it to " +
-		"avoid forking the cluster or losing data. Migrate/remove the old workload manually " +
-		"(see upgrade notes); reconciliation resumes automatically once it is gone."
+// reportLegacyMigrationRefused is the terminal refuse for a legacy cluster the operator
+// cannot safely migrate (ADR-013 §5 — a non-shape-preserving topology). It sets Phase=Failed
+// with the LegacyClusterTopology condition carrying the given reason/message and emits a
+// warning event. It never deletes the legacy workload (EmptyDir storage — deleting destroys
+// data; LittleRed never deletes data by default). It replaces ADR-007's blanket terminal
+// refuse: the healthy legacy cluster now migrates automatically (migrateLegacyCluster); only
+// the genuinely unsupported cases land here.
+func (r *LittleRedReconciler) reportLegacyMigrationRefused(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, reason, msg string) (ctrl.Result, error) {
 	log := r.getLogger(ctx, littleRed, LogCategoryRecon)
-	log.Info("Refusing per-shard reconcile: legacy single-STS cluster present")
+	log.Info("Refusing legacy cluster migration", "reason", reason)
 	r.event(littleRed, corev1.EventTypeWarning, "LegacyClusterTopology", msg)
 
 	littleRed.Status.Phase = littleredv1alpha1.PhaseFailed
@@ -1011,7 +1021,7 @@ func (r *LittleRedReconciler) reportLegacyClusterTopology(ctx context.Context, l
 	meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
 		Type:               littleredv1alpha1.ConditionReady,
 		Status:             metav1.ConditionFalse,
-		Reason:             "LegacyClusterTopology",
+		Reason:             reason,
 		Message:            msg,
 		LastTransitionTime: metav1.Now(),
 	})
