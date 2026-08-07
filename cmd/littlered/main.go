@@ -180,15 +180,11 @@ func main() {
 	leaderElectionNamespace := os.Getenv("POD_NAMESPACE")
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsServerOptions,
-		WebhookServer:          webhookServer,
-		HealthProbeBindAddress: probeAddr,
-		Cache:                  scope.CacheOptions(),
-		// Leader election is always enabled to guarantee that only one
-		// controller manager reconciles at a time, regardless of the number
-		// of replicas. It is not configurable on purpose: running multiple
-		// active reconcilers would race over Sentinel master/failover state.
+		Scheme:                  scheme,
+		Metrics:                 metricsServerOptions,
+		WebhookServer:           webhookServer,
+		HealthProbeBindAddress:  probeAddr,
+		Cache:                   scope.CacheOptions(),
 		LeaderElection:          true,
 		LeaderElectionID:        scope.LeaderElectionID,
 		LeaderElectionNamespace: leaderElectionNamespace,
