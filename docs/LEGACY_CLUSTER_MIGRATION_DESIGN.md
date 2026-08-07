@@ -174,7 +174,8 @@ member count matches `shards × (1+replicasPerShard)`. Anything else → refuse 
 ---
 
 ## 4. Status surface
-`api/v1alpha1` — add to `ClusterStatus` (monitoring only, re-derived each pass, ADR-006):
+`api/v1alpha1` — add to `ClusterStatusInfo` (the real type name; monitoring only, re-derived each
+pass, ADR-006):
 
 ```go
 type ClusterMigrationStatus struct {

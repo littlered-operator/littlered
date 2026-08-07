@@ -683,6 +683,35 @@ type ClusterStatusInfo struct {
 	// soon as the signature no longer holds.
 	// +optional
 	WipeDeadlockSince *metav1.Time `json:"wipeDeadlockSince,omitempty"`
+
+	// Migration reports an in-progress in-place legacy→per-shard cluster migration
+	// (ADR-013). Monitoring surface only; set while a legacy {name}-cluster StatefulSet
+	// is being drained into the per-shard layout, and cleared once migration completes.
+	// +optional
+	Migration *ClusterMigrationStatus `json:"migration,omitempty"`
+}
+
+// ClusterMigrationStatus is a monitoring-only view of an in-progress in-place
+// legacy→per-shard migration (ADR-013). Re-derived from live cluster state every
+// reconcile; nothing here is load-bearing (ADR-006).
+type ClusterMigrationStatus struct {
+	// Phase is the current migration phase: Standup, Meet, Draining, ReplicasAttached,
+	// Decommission, or Complete.
+	// +optional
+	Phase string `json:"phase,omitempty"`
+
+	// ShardsMoved is the number of shard slot ranges already relocated onto their new
+	// per-shard masters.
+	// +optional
+	ShardsMoved int `json:"shardsMoved,omitempty"`
+
+	// TotalShards is the total number of shard slot ranges to migrate.
+	// +optional
+	TotalShards int `json:"totalShards,omitempty"`
+
+	// StartedAt records when the operator first entered migration mode.
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
 }
 
 // OrphanedReplicaInfo tracks an orphaned replica for timeout-based recovery
