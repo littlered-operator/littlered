@@ -43,6 +43,7 @@ import (
 
 	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 	"github.com/littlered-operator/littlered-operator/internal/controller"
+	"github.com/littlered-operator/littlered-operator/internal/watchscope"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -160,17 +161,37 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
+	// Namespace scoping (ADR-014). WATCH_NAMESPACE (allow-list) and
+	// IGNORE_NAMESPACE (deny-list) are mutually exclusive, comma-separated, and
+	// opt-in; unset ⇒ today's cluster-scoped behavior. The derived lease ID is
+	// scope-unique so disjoint-scope operators never contend for one lease.
+	scope, err := watchscope.Parse(os.Getenv("WATCH_NAMESPACE"), os.Getenv("IGNORE_NAMESPACE"))
+	if err != nil {
+		setupLog.Error(err, "invalid namespace scoping configuration")
+		os.Exit(1)
+	}
+	setupLog.Info("effective operator scope",
+		"mode", scope.Mode, "namespaces", scope.Namespaces, "leaderElectionID", scope.LeaderElectionID)
+
+	// LeaderElectionNamespace: keep the lease in the operator's own namespace
+	// when the downward-API POD_NAMESPACE is provided, so a scoped operator's
+	// lease does not live cluster-wide. Unset ⇒ current behavior (namespace
+	// inferred from the in-cluster config / --leader-election-namespace default).
+	leaderElectionNamespace := os.Getenv("POD_NAMESPACE")
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsServerOptions,
-		WebhookServer:          webhookServer,
-		HealthProbeBindAddress: probeAddr,
+		Scheme:                  scheme,
+		Metrics:                 metricsServerOptions,
+		WebhookServer:           webhookServer,
+		HealthProbeBindAddress:  probeAddr,
+		Cache:                   scope.CacheOptions(),
 		// Leader election is always enabled to guarantee that only one
 		// controller manager reconciles at a time, regardless of the number
 		// of replicas. It is not configurable on purpose: running multiple
 		// active reconcilers would race over Sentinel master/failover state.
-		LeaderElection:   true,
-		LeaderElectionID: "64adfe7c.chuck-chuck-chuck.net",
+		LeaderElection:          true,
+		LeaderElectionID:        scope.LeaderElectionID,
+		LeaderElectionNamespace: leaderElectionNamespace,
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
