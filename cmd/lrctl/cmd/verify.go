@@ -11,6 +11,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 	"github.com/littlered-operator/littlered-operator/internal/cli/discovery"
 	"github.com/littlered-operator/littlered-operator/internal/cli/k8s"
 	"github.com/littlered-operator/littlered-operator/internal/cli/types"
@@ -83,6 +84,19 @@ var verifyCmd = &cobra.Command{
 				fmt.Println(strings.Repeat("=", 40))
 			}
 			fmt.Printf("Verifying Cluster: %s/%s (Mode: %s)\n", cCtx.Namespace, cCtx.Name, cCtx.Mode)
+
+			// Surface an in-progress in-place legacy→per-shard cluster migration
+			// (ADR-013). Read-only, best-effort: the migration phase lives on the CR
+			// status, which --unmanaged targets don't have. A fetch error is non-fatal
+			// (verify's job is live health, not migration reporting).
+			if !unmanaged {
+				lr := &littleredv1alpha1.LittleRed{}
+				if err := k8sClient.Get(ctx, key, lr); err == nil {
+					if banner := migrationBanner(clusterMigration(lr)); banner != "" {
+						fmt.Println(banner)
+					}
+				}
+			}
 
 			var verifyErr error
 			switch cCtx.Mode {

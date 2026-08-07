@@ -92,6 +92,13 @@ func printStatus(lr *littleredv1alpha1.LittleRed) {
 	}
 	fmt.Printf("Redis Nodes: %d/%d Ready\n", lr.Status.Redis.Ready, lr.Status.Redis.Total)
 
+	// Surface an in-progress in-place legacy→per-shard cluster migration (ADR-013).
+	// One line, only while migrating (nil / Complete render nothing, so non-migrating
+	// output is unchanged).
+	if banner := migrationBanner(clusterMigration(lr)); banner != "" {
+		fmt.Println(banner)
+	}
+
 	// Surface the leaderless bootstrap-deadlock condition (ADR-005 / LR-015).
 	if c := apimeta.FindStatusCondition(lr.Status.Conditions, littleredv1alpha1.ConditionLeaderlessRecovery); c != nil {
 		marker := "[recovered]"
