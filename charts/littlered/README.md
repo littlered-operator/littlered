@@ -48,6 +48,8 @@ kubectl delete crd littlereds.chuck-chuck-chuck.net
 | `tolerations` | Tolerations for operator pods | `[]` |
 | `affinity` | Affinity rules for operator pods | `{}` |
 | `topologySpreadConstraints` | Topology spread constraints for operator pods (only meaningful with `replicas > 1`) | `[]` |
+| `scope.watchNamespaces` | Allow-list: watch only these namespaces (renders namespaced RBAC, sets `WATCH_NAMESPACE`). Mutually exclusive with `scope.ignoreNamespaces`. | `[]` |
+| `scope.ignoreNamespaces` | Deny-list: watch all namespaces except these (keeps cluster-wide RBAC, sets `IGNORE_NAMESPACE`). | `[]` |
 | `metrics.enabled` | Expose Prometheus metrics endpoint | `false` |
 | `metrics.port` | Metrics port | `8080` |
 | `metrics.serviceMonitor.enabled` | Create a Prometheus Operator ServiceMonitor | `false` |
@@ -112,9 +114,20 @@ helm upgrade littlered oci://ghcr.io/littlered-operator/charts/littlered \
 
 ## RBAC
 
-The chart creates the following RBAC resources:
+By default (cluster-scoped, or deny-list via `scope.ignoreNamespaces`) the chart creates:
 
 - **ClusterRole**: Permissions to manage LittleRed CRs, Pods, Services, ConfigMaps, StatefulSets, Secrets, and ServiceMonitors
 - **ClusterRoleBinding**: Binds the ClusterRole to the operator ServiceAccount
-- **Role** (namespaced): Leader election permissions
-- **RoleBinding** (namespaced): Binds the leader election Role
+- **Role** (namespaced, operator namespace): Leader election permissions
+- **RoleBinding** (namespaced, operator namespace): Binds the leader election Role
+
+### Namespace scoping (least-privilege)
+
+When `scope.watchNamespaces` is set (allow-list), the operator is scoped to those
+namespaces and the cluster-wide grant is dropped: instead of the ClusterRole /
+ClusterRoleBinding, the chart renders the **same reconcile permissions as a `Role` +
+`RoleBinding` in each watched namespace**, bound to the operator ServiceAccount (which
+stays in the operator's own namespace). The leader-election Role/RoleBinding remain in
+the operator's namespace in all modes. The CRD is always installed cluster-wide (from
+`crds/`). `scope.watchNamespaces` and `scope.ignoreNamespaces` are mutually exclusive —
+setting both fails the render.

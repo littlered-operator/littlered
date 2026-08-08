@@ -13,3 +13,30 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "littlered.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- /*
+Allow-list scoping (ADR-014): bind the per-namespace manager Role (role.yaml) to
+the operator's ServiceAccount (which lives in the operator's own namespace) in
+EACH watched namespace, in place of the cluster-scoped ClusterRoleBinding.
+*/ -}}
+{{- if eq (include "littlered.scopeMode" .) "allow" }}
+{{- $root := . }}
+{{- range $ns := .Values.scope.watchNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "littlered.fullname" $root }}-manager
+  namespace: {{ $ns }}
+  labels:
+    {{- include "littlered.labels" $root | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "littlered.fullname" $root }}-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "littlered.serviceAccountName" $root }}
+    namespace: {{ $root.Release.Namespace }}
+{{- end }}
+{{- end }}

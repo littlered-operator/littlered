@@ -58,3 +58,131 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Namespace-scoping mode (ADR-014). Returns exactly "allow", "deny", or "none":
+- allow: scope.watchNamespaces set        -> least-privilege namespaced RBAC
+- deny:  scope.ignoreNamespaces set        -> cluster-wide RBAC (watch all-but)
+- none:  neither set (default)             -> cluster-wide RBAC (watch all)
+Both lists set is a fatal render error (mirrors the operator's fail-fast on
+WATCH_NAMESPACE + IGNORE_NAMESPACE both set).
+*/}}
+{{- define "littlered.scopeMode" -}}
+{{- $watch := .Values.scope.watchNamespaces | default list -}}
+{{- $ignore := .Values.scope.ignoreNamespaces | default list -}}
+{{- if and (gt (len $watch) 0) (gt (len $ignore) 0) -}}
+{{- fail "scope.watchNamespaces and scope.ignoreNamespaces are mutually exclusive" -}}
+{{- end -}}
+{{- if gt (len $watch) 0 -}}allow{{- else if gt (len $ignore) 0 -}}deny{{- else -}}none{{- end -}}
+{{- end }}
+
+{{/*
+Manager (reconcile) RBAC rules. Shared VERBATIM between the cluster-scoped
+ClusterRole (default / deny-list modes) and the per-namespace Roles (allow-list
+mode), so scoping never silently drops a permission. Every rule here is on a
+namespaced resource — nothing genuinely cluster-scoped is reconciled (the CRD
+itself is cluster-scoped but is installed separately from crds/, not granted
+here). Emits the list body under `rules:`; callers set the indentation.
+*/}}
+{{- define "littlered.managerRules" -}}
+- apiGroups:
+  - ''
+  resources:
+  - configmaps
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ''
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ''
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ''
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - monitoring.coreos.com
+  resources:
+  - servicemonitors
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - policy
+  resources:
+  - poddisruptionbudgets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - redis.chuck-chuck-chuck.net
+  resources:
+  - littlereds
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - redis.chuck-chuck-chuck.net
+  resources:
+  - littlereds/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - redis.chuck-chuck-chuck.net
+  resources:
+  - littlereds/status
+  verbs:
+  - get
+  - patch
+  - update
+{{- end }}

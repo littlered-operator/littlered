@@ -1,3 +1,5 @@
+{{- /* Fail fast if both scoping lists are set (mirrors the operator's mutual-exclusion). */ -}}
+{{- $scopeMode := include "littlered.scopeMode" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,6 +37,25 @@ spec:
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}
             - --metrics-secure=false
+            {{- end }}
+          env:
+            # Operator's own namespace (downward API) — holds the leader-election
+            # lease so a scoped operator's lease never lives cluster-wide (ADR-014).
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- $watch := .Values.scope.watchNamespaces | default list }}
+            {{- if gt (len $watch) 0 }}
+            # Allow-list scoping: watch only these namespaces (ADR-014 Decision 1).
+            - name: WATCH_NAMESPACE
+              value: {{ join "," $watch | quote }}
+            {{- end }}
+            {{- $ignore := .Values.scope.ignoreNamespaces | default list }}
+            {{- if gt (len $ignore) 0 }}
+            # Deny-list scoping: watch all namespaces except these (ADR-014 Decision 1).
+            - name: IGNORE_NAMESPACE
+              value: {{ join "," $ignore | quote }}
             {{- end }}
           securityContext:
             readOnlyRootFilesystem: true

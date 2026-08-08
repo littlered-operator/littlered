@@ -37,3 +37,24 @@ rules:
     verbs:
       - create
       - patch
+{{- end }}
+{{- /*
+Allow-list scoping (ADR-014): render a namespaced manager Role carrying the
+operator's reconcile rules in EACH watched namespace, in place of the
+cluster-scoped ClusterRole. Bound by the manager RoleBinding in rolebinding.yaml.
+*/ -}}
+{{- if eq (include "littlered.scopeMode" .) "allow" }}
+{{- $root := . }}
+{{- range $ns := .Values.scope.watchNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "littlered.fullname" $root }}-manager
+  namespace: {{ $ns }}
+  labels:
+    {{- include "littlered.labels" $root | nindent 4 }}
+rules:
+  {{- include "littlered.managerRules" $root | nindent 2 }}
+{{- end }}
+{{- end }}
