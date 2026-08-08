@@ -165,6 +165,99 @@ spec:
 
 ---
 
+## Namespace Scoping
+
+By default the operator is **cluster-scoped**: it watches every `LittleRed` CR in
+every namespace and ships cluster-wide RBAC (a `ClusterRole` + `ClusterRoleBinding`).
+This is unchanged — scoping is entirely opt-in, and leaving both settings below empty
+gives you exactly today's behavior.
+
+Scoping lets you restrict which namespaces an operator manages, so more than one
+operator can safely share a cluster. It is expressed as *the operator's watch-list*
+(which namespaces this operator owns), configured through two **mutually exclusive**
+Helm values (set **at most one**):
+
+| Value | Env var set on the operator | Mode | RBAC |
+|-------|-----------------------------|------|------|
+| `scope.watchNamespaces` | `WATCH_NAMESPACE` | Allow-list — watch only these namespaces | Namespaced `Role` + `RoleBinding` per namespace (least-privilege); no `ClusterRole` |
+| `scope.ignoreNamespaces` | `IGNORE_NAMESPACE` | Deny-list — watch all namespaces *except* these | Cluster-wide `ClusterRole` (kept) |
+| *(neither set — default)* | *(none)* | Cluster-scoped (all namespaces) | Cluster-wide `ClusterRole` |
+
+The CRD is always installed cluster-wide (from the chart's `crds/`); only the CR
+*instances* are namespaced.
+
+### Allow-list mode (`scope.watchNamespaces`)
+
+The operator's informers and reconcilers see **only** the listed namespaces. Because
+it needs no cluster-wide reach, the chart drops the `ClusterRole`/`ClusterRoleBinding`
+and instead renders the same reconcile permissions as a **`Role` + `RoleBinding` in
+each watched namespace**, bound to the operator's ServiceAccount (which stays in the
+operator's own namespace). This is the least-privilege deployment.
+
+Use it for a single-tenant or per-team operator ("this operator manages only the
+`team-a` namespace"), or to manage a specific set of namespaces:
+
+```bash
+helm install littlered ./charts/littlered \
+  -n littlered-system \
+  --create-namespace \
+  --set scope.watchNamespaces={team-a,team-b}
+```
+
+This sets `WATCH_NAMESPACE="team-a,team-b"` on the operator and renders a
+`littlered-manager` `Role` + `RoleBinding` in both `team-a` and `team-b`.
+
+### Deny-list mode (`scope.ignoreNamespaces`)
+
+The operator watches **all namespaces except** the listed ones. This is the "one
+global operator, but hands off these" model — it inherently watches cluster-wide, so
+it keeps the `ClusterRole` (there is no least-privilege gain to be had, which is
+expected for a global operator).
+
+```yaml
+# values.yaml
+scope:
+  ignoreNamespaces:
+    - staging
+```
+
+This sets `IGNORE_NAMESPACE="staging"` on the operator; the operator reconciles every
+namespace but leaves `staging` entirely alone.
+
+### Mutual exclusivity
+
+`scope.watchNamespaces` and `scope.ignoreNamespaces` are mutually exclusive. Setting
+both is a **fail-fast error in two places**: the Helm chart refuses to render, and if
+both env vars are somehow set the operator exits at startup rather than guessing a
+merge.
+
+### The multi-operator partition pattern (staged rollout)
+
+The headline use is running two operators side by side with **zero overlap** — for
+example, to stage a new operator version against one namespace without touching the
+rest of the cluster:
+
+- A **global** operator with `scope.ignoreNamespaces: [staging]` — manages everything
+  except `staging`.
+- A **second** operator (e.g. a new version) with `scope.watchNamespaces: [staging]` —
+  manages only `staging`.
+
+Their watch-lists are disjoint, so no CR is reconciled by both operators
+(no double-reconcile), and each gets its own leader lease (see below). When the new
+version is validated in `staging`, promote it to the rest of the cluster.
+
+### Leader election and `POD_NAMESPACE`
+
+The operator's leader-election lease lives in its **own** namespace: the chart wires
+the downward-API `POD_NAMESPACE` env var (from `metadata.namespace`) so a scoped
+operator's lease never lives cluster-wide. In addition, the lease **ID is derived from
+the operator's scope** (mode + namespace set), so two operators with disjoint
+watch-lists never contend for the same lease — the unscoped default keeps the original
+fixed lease ID, unchanged. No configuration is needed for this; it follows from the
+`scope.*` values.
+
+---
+
 ## Standalone Mode
 
 A single Redis instance for development or simple caching.
