@@ -986,9 +986,61 @@ func (r *LittleRedReconciler) clusterShardStatefulSets(ctx context.Context, litt
 	return byShard, allExist, ready, total, nil
 }
 
-// detectLegacyClusterStatefulSet reports whether the pre-0.3.0 single cluster StatefulSet
-// ({name}-cluster) still exists. Its presence triggers the in-place legacy→per-shard
-// migration (see migrateLegacyCluster, ADR-013) so we never fork the cluster or wipe data.
+// isLegacyClusterStatefulSet is the pure legacy-shape identification behind
+// detectLegacyClusterStatefulSet. A name-only trigger ({name}-cluster exists) risks a
+// false-positive auto-migration against any StatefulSet that merely shares the name; this is a
+// positive identification of a genuine pre-0.3.0 single-STS cluster (ADR-013 §5). Every
+// discriminator must hold:
+//   - name == {name}-cluster — guaranteed by the Get that fetched sts, asserted defensively;
+//   - carries component=cluster — the shard-agnostic label the pre-0.3 builder stamped
+//     (buildClusterStatefulSet @ 85e1a93^);
+//   - does NOT carry the LabelShard key — the single strongest discriminator vs a 0.3
+//     per-shard STS ({name}-shard-K), which always stamps it;
+//   - Replicas == shards*(1+replicasPerShard) — the old whole-cluster sizing (a per-shard STS
+//     is sized 1+replicasPerShard);
+//   - is controller-owned by this CR — the pre-0.3 builder set a controller OwnerReference via
+//     SetControllerReference, so a genuine legacy STS holds one.
+//
+// Any check failing ⇒ not a legacy cluster we should auto-migrate (returns false).
+func isLegacyClusterStatefulSet(sts *appsv1.StatefulSet, lr *littleredv1alpha1.LittleRed) bool {
+	if sts == nil {
+		return false
+	}
+	// Defensive: the Get keys on this name, but a name-only trigger is exactly the hazard we
+	// are hardening against — assert it explicitly.
+	if sts.Name != clusterStatefulSetName(lr) {
+		return false
+	}
+	// component=cluster — the shard-agnostic label the pre-0.3 builder stamped.
+	if sts.Labels[labelAppComponent] != ComponentCluster {
+		return false
+	}
+	// A 0.3 per-shard STS carries the shard label; a legacy single STS never did.
+	if _, hasShard := sts.Labels[LabelShard]; hasShard {
+		return false
+	}
+	// Whole-cluster sizing: shards*(1+replicasPerShard).
+	cluster := lr.Spec.Cluster
+	if cluster == nil {
+		cluster = &littleredv1alpha1.ClusterSpec{}
+		cluster.SetDefaults()
+	}
+	if sts.Spec.Replicas == nil || int(*sts.Spec.Replicas) != cluster.GetTotalNodes() {
+		return false
+	}
+	// The pre-0.3 builder owned the STS via SetControllerReference (controller OwnerReference).
+	if !metav1.IsControlledBy(sts, lr) {
+		return false
+	}
+	return true
+}
+
+// detectLegacyClusterStatefulSet reports whether a genuine pre-0.3.0 single cluster StatefulSet
+// ({name}-cluster) still exists. Presence of a legacy-shaped STS triggers the in-place
+// legacy→per-shard migration (see migrateLegacyCluster, ADR-013) so we never fork the cluster
+// or wipe data. It fetches {name}-cluster and defers the legacy-vs-not decision to the pure
+// isLegacyClusterStatefulSet — a StatefulSet that merely shares the name (e.g. a 0.3 artifact,
+// or a hand-created STS) does NOT trigger migration.
 func (r *LittleRedReconciler) detectLegacyClusterStatefulSet(ctx context.Context, littleRed *littleredv1alpha1.LittleRed) (bool, error) {
 	sts := &appsv1.StatefulSet{}
 	err := r.Get(ctx, types.NamespacedName{
@@ -1001,7 +1053,7 @@ func (r *LittleRedReconciler) detectLegacyClusterStatefulSet(ctx context.Context
 	if err != nil {
 		return false, err
 	}
-	return true, nil
+	return isLegacyClusterStatefulSet(sts, littleRed), nil
 }
 
 // reportLegacyMigrationRefused is the terminal refuse for a legacy cluster the operator

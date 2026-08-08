@@ -21,6 +21,11 @@ import (
 	"sort"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+
+	littleredv1alpha1 "github.com/littlered-operator/littlered-operator/api/v1alpha1"
 	redisclient "github.com/littlered-operator/littlered-operator/internal/redis"
 )
 
@@ -217,5 +222,93 @@ func TestRestrictToLegacyMesh_NoNewPods(t *testing.T) {
 	restrictToLegacyMesh(gt, []string{"L0"}, "mr")
 	if len(gt.Nodes) != 1 {
 		t.Errorf("no-op expected when no new pods; got %d nodes", len(gt.Nodes))
+	}
+}
+
+// TestIsLegacyClusterStatefulSet is the WS3 hardening of the migration trigger (ADR-013 §5):
+// detectLegacyClusterStatefulSet must not fire on any StatefulSet that merely shares the
+// {name}-cluster name — it must positively identify a genuine pre-0.3.0 single-STS cluster.
+// Authored red-first: with the pure helper stubbed to return false the genuine case fails
+// (want true); stubbed to return true every negative case fails (want false); the real body
+// makes all cases green (see the milestone report for the two observed red runs).
+func TestIsLegacyClusterStatefulSet(t *testing.T) {
+	int32Ptr := func(i int32) *int32 { return &i }
+	boolPtr := func(b bool) *bool { return &b }
+	intPtr := func(i int) *int { return &i }
+
+	const crUID = types.UID("cr-uid-abc123")
+
+	// shards=3, replicasPerShard=1 ⇒ GetTotalNodes() == 6 (whole-cluster sizing).
+	newLR := func() *littleredv1alpha1.LittleRed {
+		return &littleredv1alpha1.LittleRed{
+			ObjectMeta: metav1.ObjectMeta{Name: "mr", Namespace: "ns", UID: crUID},
+			Spec: littleredv1alpha1.LittleRedSpec{
+				Cluster: &littleredv1alpha1.ClusterSpec{Shards: 3, ReplicasPerShard: intPtr(1)},
+			},
+		}
+	}
+
+	// A genuine pre-0.3.0 single-STS cluster: name {name}-cluster, component=cluster, NO shard
+	// label, replicas == shards*(1+replicasPerShard) == 6, controller-owned by the CR.
+	genuine := func() *appsv1.StatefulSet {
+		return &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mr-cluster",
+				Namespace: "ns",
+				Labels:    map[string]string{labelAppComponent: ComponentCluster},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: littleredv1alpha1.GroupVersion.String(),
+					Kind:       "LittleRed",
+					Name:       "mr",
+					UID:        crUID,
+					Controller: boolPtr(true),
+				}},
+			},
+			Spec: appsv1.StatefulSetSpec{Replicas: int32Ptr(6)},
+		}
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*appsv1.StatefulSet)
+		want   bool
+	}{
+		{"genuine legacy single-STS cluster", func(*appsv1.StatefulSet) {}, true},
+		{"per-shard STS: carries shard label", func(s *appsv1.StatefulSet) {
+			s.Labels[LabelShard] = clusterShardLabelValue(0)
+		}, false},
+		{"wrong replica count (per-shard sizing 1+rps)", func(s *appsv1.StatefulSet) {
+			s.Spec.Replicas = int32Ptr(2)
+		}, false},
+		{"nil replica count", func(s *appsv1.StatefulSet) {
+			s.Spec.Replicas = nil
+		}, false},
+		{"missing component label", func(s *appsv1.StatefulSet) {
+			delete(s.Labels, labelAppComponent)
+		}, false},
+		{"wrong component label", func(s *appsv1.StatefulSet) {
+			s.Labels[labelAppComponent] = ComponentRedis
+		}, false},
+		{"not controller-owned: foreign UID", func(s *appsv1.StatefulSet) {
+			s.OwnerReferences[0].UID = types.UID("someone-else")
+		}, false},
+		{"not controller-owned: no owner references", func(s *appsv1.StatefulSet) {
+			s.OwnerReferences = nil
+		}, false},
+		{"owned but not controller (Controller=false)", func(s *appsv1.StatefulSet) {
+			s.OwnerReferences[0].Controller = boolPtr(false)
+		}, false},
+		{"wrong name (not {name}-cluster)", func(s *appsv1.StatefulSet) {
+			s.Name = "mr-shard-0"
+		}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sts := genuine()
+			tc.mutate(sts)
+			if got := isLegacyClusterStatefulSet(sts, newLR()); got != tc.want {
+				t.Errorf("isLegacyClusterStatefulSet() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

@@ -285,3 +285,18 @@ Accepted deviations from §1–§7, folded into the record after the M3 driver l
   an empty single-node cluster waiting to be MET, never a rival cluster with slots. (2) Shared-Service
   coexistence: CONFIRMED — pre-split pods carry `component=cluster` (`git show 85e1a93^`), which the shared
   headless Service `{name}-cluster` selects, so it fronts legacy + new pods. M5 adds the live assertion.
+
+## 9. As-built deltas (WS3 — precise trigger)
+
+The migration trigger `detectLegacyClusterStatefulSet` is no longer name-only. It now Gets the
+`{name}-cluster` StatefulSet and applies a pure `isLegacyClusterStatefulSet(sts, lr)` that requires ALL
+of: name `{name}-cluster`, `component=cluster` label, the per-shard `redis.chuck-chuck-chuck.net/shard`
+label **absent** (strongest discriminator vs a 0.3 per-shard STS), `spec.replicas == shards*(1+rps)`
+(`GetTotalNodes()`, whole-cluster sizing), and controller-owned by this CR (`IsControlledBy`). Any check
+failing ⇒ not a legacy cluster ⇒ no auto-migration. This is **defense-in-depth**, not the ms-smoke fix
+(that was operator scoping — ADR-014): the ms-smoke STS was a genuinely legacy-shaped STS, so precise
+detection wouldn't have changed it; what this stops is a stray / mis-sized / half-formed `{name}-cluster`
+StatefulSet triggering a spurious migration. Edge (kept, fails *safe*): a CR deleted+recreated (new UID)
+with an orphaned legacy STS lingering would fail `IsControlledBy` → no migration — acceptable, since
+acting on an ambiguously-owned workload is the riskier choice. Red-first: a 10-case table observed
+failing under both a false-stub and a true-stub before implementing.
