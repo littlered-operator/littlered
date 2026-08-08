@@ -6,7 +6,10 @@
 *.dylib
 bin/*
 Dockerfile.cross
-littlered
+# Anchored to repo root: the operator build binary only. A bare `littlered`
+# also matched the `littlered` path component (charts/littlered, cmd/littlered),
+# silently hiding new files under those dirs from git.
+/littlered
 
 # Test binary, built with `go test -c`
 *.test
