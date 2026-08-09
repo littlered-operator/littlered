@@ -39,7 +39,21 @@ import (
 // ({name}-cluster, pods {name}-cluster-N) no longer refuses (ADR-007 §5's terminal
 // LegacyClusterTopology) — it drives an online, data-safe, in-cluster migration into
 // the 0.3 per-shard layout ({name}-shard-K, pods {name}-shard-K-M) on the SAME running
-// Redis Cluster: Standup → Meet → Draining → ReplicasAttached → Decommission → Complete.
+// Redis Cluster.
+//
+// Mechanism (LR-025, replicate-then-failover — ADR-013 Decision 4, §10): the migration
+// does NOT move slots. Each new pod joins as a slot-less REPLICATE of the legacy master
+// owning its range and full-syncs; then {name}-shard-K-0 is promoted by a coordinated
+// CLUSTER FAILOVER — an atomic ownership flip to an already-synced node whose old master
+// demotes to a live replica of it. Phases:
+//
+//	Standup → Meet → Replicate → Failover → Decommission → Complete.
+//
+// A new node reaches the slot-owning state only after a clean, already-redundant handoff,
+// so a new master always has a synced replica to fail over to (the demoted legacy master,
+// then its own new replicas) and never trips the startup STEP-3 guard (LR-003). No -ASK/
+// -MOVED churn during the transfer — new nodes sync as invisible replicas, and each shard
+// sees exactly ONE atomic -MOVED at its failover.
 //
 // The harness's distinctive need is a REAL legacy layout to migrate FROM. The CRD is
 // byte-identical pre-0.3 vs 0.3 (ADR-013 Context 1: the split touched only workloads,
@@ -113,12 +127,14 @@ var _ = Describe("Cluster Legacy→Per-Shard In-Place Migration (ADR-013)", Labe
 			assertSharedServiceCoexistence(crName)
 
 			By("sampling the data plane THROUGHOUT the migration window (records transient blips; does not fail on them)")
-			// ADR-013 WS2 correction: under Redis default cluster-require-full-coverage=yes, a
-			// native ASM transfer briefly leaves a range owned by nobody, so the whole cluster
-			// reports CLUSTERDOWN for that window — expected, data-safe, self-recovering. We
-			// therefore RECORD blips rather than fail on them; the data-safety teeth are the
-			// downstream verifyDataset + cluster_state:ok + recovery assertions. The sampler runs
-			// for the FULL window (not a fixed 30s) so it actually overlaps the Draining transfer.
+			// LR-025 replicate-then-failover has NO slot move: new nodes are invisible slot-less
+			// replicas until their shard's single atomic CLUSTER FAILOVER, so the only client-
+			// visible event per shard is ONE -MOVED at that failover (a client following the
+			// redirect re-reads cleanly). We therefore expect FAR fewer blips than the superseded
+			// reshard path (no cluster-require-full-coverage CLUSTERDOWN window, no per-slot -ASK
+			// churn), but still RECORD rather than fail on any transient — the data-safety teeth
+			// are the downstream verifyDataset + cluster_state:ok + recovery assertions. The
+			// sampler runs the FULL window so it overlaps every per-shard failover.
 			sampler := startCoexistenceSampler(crName, dataset)
 
 			By("waiting for the operator to drive migration all the way to Complete")
@@ -220,6 +236,105 @@ var _ = Describe("Cluster Legacy→Per-Shard In-Place Migration (ADR-013)", Labe
 
 			By("data + topology intact after the resumed migration")
 			verifyDataset(clusterMasterPod(crName, clusterShards-1), dataset)
+			expectPerShardLayout(crName)
+			verifyClusterTopologySync(testNamespace, crName, expectedNodes)
+		})
+	})
+
+	// --- LR-025 restart-during-migration chaos tier: the headline regression guard ---
+	//
+	// This is the whole point of the replicate-then-failover redesign. While a migration
+	// is in flight we crash the redis CONTAINER of a new per-shard master {name}-shard-K-0
+	// (a kill-9 of PID 1 — EmptyDir + nodes.conf survive, IP preserved; NOT a pod delete,
+	// which would wipe EmptyDir and take a different path). We crash it in BOTH windows:
+	//   (A) pre-failover — while K-0 is a slot-less synced replica of the legacy master; and
+	//   (B) post-failover — while K-0 OWNS its slot range (a master with the demoted legacy
+	//       master as its live replica) — the exact state that deadlocked under the old path.
+	// Assertions (must ALWAYS hold, even though the precise instant is opportunistic):
+	//   - the crashed pod does NOT wedge in a CrashLoopBackOff deadlock (it restarts and its
+	//     redis comes back reachable and rejoins the cluster);
+	//   - no seeded key is lost (byte-for-byte survivor check);
+	//   - migration still reaches Complete, cluster_state:ok, colocation passes.
+	//
+	// WHY THIS WOULD FAIL AGAINST THE OLD RESHARD MECHANISM (the red-meaningful part):
+	// the superseded Draining path MOVED slots onto a bare {name}-shard-K-0 that owned slots
+	// on EmptyDir with NO replica for the whole drain. A container restart there trips the
+	// startup STEP-3 guard (LR-003): the restarted slot-owner yields waiting for a replica to
+	// CLUSTER FAILOVER TAKEOVER, finds none, times out → parks forever → CrashLoopBackOff; and
+	// the just-migrated keys, already MIGRATE-deleted from the source, are gone. Replicate-then-
+	// failover keeps K-0 slot-less until an atomic, already-redundant handoff, so at every
+	// instant the shard has >=2 live copies and a restarted K-0 ALWAYS has a synced replica
+	// (the demoted legacy master, then its own new replicas) for STEP-3's TAKEOVER breaker to
+	// promote — no deadlock, no loss. Run against redis:7.4.0 (E2E_REDIS_IMAGE) for fidelity to
+	// the version that first exposed the hole on s1.
+	Context("restart during migration must not deadlock or lose data (LR-025)", Ordered, func() {
+		var crName string
+		var dataset map[string]string
+		const victimShard = 0 // shard 0 fails over first (lowest K), so K-0 owns slots earliest
+
+		BeforeAll(func() {
+			crName = fmt.Sprintf("mig-chaos-%d", time.Now().Unix())
+			AddReportEntry("cr:" + crName)
+
+			bootstrapLegacyCluster(crName, expectedNodes)
+
+			By("seeding a known dataset spanning all shards through a legacy seed node")
+			dataset = writeDatasetSpanningShards(legacyPod(crName), 50)
+			Expect(dataset).To(HaveLen(clusterShards * 50))
+		})
+
+		AfterAll(func() {
+			restoreMigrationOperator()
+			if debugOnFailure && suiteOrSpecFailed() {
+				By("skipping cleanup to allow debugging")
+				return
+			}
+			By("cleaning up cluster CR")
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "littlered", crName,
+				"-n", testNamespace, "--ignore-not-found", "--timeout=2m"))
+		})
+
+		It("survives a {name}-shard-K-0 container crash mid-migration (no deadlock, no data loss)", func() {
+			victim := clusterMasterPod(crName, victimShard) // {name}-shard-0-0
+
+			By("upgrading to the migration-capable operator image (the migration TRIGGER)")
+			upgradeToMigrationOperator()
+
+			// --- Crash (A): pre-failover, while K-0 is a slot-less synced replica --------------
+			// By strict-precedence the plan finishes ALL replication before ANY failover, so once
+			// K-0 is a running cluster member it is (still) a slot-less replica — a wide, reliable
+			// window. Under the OLD mechanism a restart here was survivable too (K-0 had no slots
+			// yet), so this crash mainly proves the sync restarts cleanly; crash (B) is the teeth.
+			By(fmt.Sprintf("waiting for the new master %s to join as a slot-less replica (Replicate window)", victim))
+			waitClusterMemberRunning(crName, victim)
+			roleA := migVictimClusterRole(crName, victim)
+			AddReportEntry(fmt.Sprintf("crashA-role=%s legacySTS=%v", roleA, stsExists(clusterStatefulSetName(crName))))
+			crashContainerAssertRecovers(crName, victim, "A (pre-failover)")
+
+			// --- Crash (B): post-failover, while K-0 OWNS its slot range -----------------------
+			// The exact old-bug state: a restarted new master owning slots. It survives ONLY
+			// because the demoted legacy master (its live replica) lets STEP-3's TAKEOVER breaker
+			// promote a replica so K-0 can rejoin — the replicate-then-failover guarantee.
+			By(fmt.Sprintf("waiting for %s to OWN its slot range (post-failover, the old-bug state)", victim))
+			waitVictimOwnsRange(crName, victim, victimShard)
+			AddReportEntry(fmt.Sprintf("crashB legacySTS=%v", stsExists(clusterStatefulSetName(crName))))
+			crashContainerAssertRecovers(crName, victim, "B (post-failover, owns slots)")
+
+			By("migration must still be driven all the way to Complete after the crashes")
+			waitMigrationComplete(crName)
+
+			By("(no data loss) every seeded key must survive the crashes + migration, byte-for-byte")
+			verifyDataset(clusterMasterPod(crName, clusterShards-1), dataset)
+
+			By("(healthy) cluster_state ok with all 16384 slots assigned")
+			Eventually(func(g Gomega) {
+				out, err := redisExec(testNamespace, clusterMasterPod(crName, clusterShards-1), "CLUSTER", "INFO")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(ContainSubstring("cluster_state:ok"))
+				g.Expect(out).To(ContainSubstring("cluster_slots_assigned:16384"))
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("(topology) per-shard layout + lrctl-verify colocation intact")
 			expectPerShardLayout(crName)
 			verifyClusterTopologySync(testNamespace, crName, expectedNodes)
 		})
@@ -427,15 +542,20 @@ func bootstrapLegacyCluster(crName string, expectedNodes int) {
 }
 
 // redisImageSpecFields returns a `spec.image` YAML block for E2E_REDIS_IMAGE, or "" when the
-// env var is unset (in which case the operator default — Redis 8.4.2 — applies). This lets the
-// SAME migration suite exercise BOTH slot-migration mechanisms without any code change: the
-// operator's free gather-time capability probe (gt.AtomicSlotMigration, true on Redis 8.4+)
-// chooses native atomic slot migration (CLUSTER MIGRATION IMPORT) on 8.4.2 and the pre-8.4
-// key-preserving reshardViaDance on 7.4.0. spec.image flows to BOTH the pre-split bootstrap pods
-// AND the migration per-shard pods (the migration operator redeploys over the SAME CR with no
-// spec change), so source and destination nodes run the intended version and the probe sees it.
-//   Run A (ASM):   E2E_REDIS_IMAGE unset or redis:8.4.2
-//   Run B (dance): E2E_REDIS_IMAGE=redis:7.4.0
+// env var is unset (in which case the operator default — Redis 8.4.2 — applies). spec.image
+// flows to BOTH the pre-split bootstrap pods AND the migration per-shard pods (the migration
+// operator redeploys over the SAME CR with no spec change), so source and destination nodes
+// run the intended version.
+//
+// LR-025 note: replicate-then-failover is VERSION-AGNOSTIC — it uses only MEET/REPLICATE/
+// coordinated FAILOVER/FORGET, with no slot move, so there is no ASM-vs-dance capability
+// branch to exercise (unlike the superseded reshard path). E2E_REDIS_IMAGE is retained for
+// REGRESSION FIDELITY: pin it to redis:7.4.0 to reproduce the exact version that deadlocked
+// and lost data under the old mechanism on s1 (the environment that drove this redesign). The
+// operator-default 8.4.2 run is a cheap cross-version confirmation.
+//
+//	Regression run: E2E_REDIS_IMAGE=redis:7.4.0
+//	Default run:    E2E_REDIS_IMAGE unset (redis:8.4.2)
 func redisImageSpecFields() string {
 	ref := os.Getenv("E2E_REDIS_IMAGE")
 	if ref == "" {
@@ -541,7 +661,8 @@ func expectPerShardLayout(crName string) {
 
 // waitMigrationComplete waits until the operator has driven migration to Complete: phase
 // back to Running, legacy STS gone, and the migration monitoring status cleared. Generous
-// timeout consistent with the reshard/wipe tiers (draining is per-range, one range/reconcile).
+// timeout consistent with the reshard/wipe tiers (the plan is strict-precedence and paced
+// one coordinated failover per shard per reconcile, and each new pod full-syncs first).
 func waitMigrationComplete(crName string) {
 	Eventually(func(g Gomega) {
 		g.Expect(getPhase(crName)).To(Equal("Running"))
@@ -549,6 +670,170 @@ func waitMigrationComplete(crName string) {
 			"legacy StatefulSet still present — migration not yet Complete")
 	}, 15*time.Minute, 10*time.Second).Should(Succeed(),
 		"operator did not drive the legacy cluster to the per-shard layout")
+}
+
+// =============================================================================
+// LR-025 chaos-tier helpers (restart-during-migration)
+// =============================================================================
+
+// migLegacySeedPod returns a stable topology-query pod for the chaos windows: a legacy
+// pod that stays a cluster member until Decommission. CLUSTER NODES read from it gives a
+// full mesh view (legacy + new nodes) throughout the migration.
+func migLegacySeedPod(crName string) string { return legacyPod(crName) }
+
+// migVictimClusterRole returns the victim's role ("master"/"replica") as seen in the mesh's
+// CLUSTER NODES (queried from a legacy seed), or "" if the victim is not yet a member. Keyed
+// by the victim's pod IP (cluster-announce-ip == POD_IP, strict IP identity).
+func migVictimClusterRole(crName, victim string) string {
+	role, _, present := migClusterNodeInfo(crName, victim)
+	if !present {
+		return ""
+	}
+	return role
+}
+
+// migClusterNodeInfo parses CLUSTER NODES (from a legacy seed) for the line whose address is
+// the victim's pod IP, returning its role, whether it owns any slots, and whether it is
+// present at all. A node owns slots iff its line carries a trailing slot field (fields >= 9).
+func migClusterNodeInfo(crName, victim string) (role string, ownsSlots, present bool) {
+	ip := podIP(victim)
+	if ip == "" {
+		return "", false, false
+	}
+	out, err := redisExec(testNamespace, migLegacySeedPod(crName), "CLUSTER", "NODES")
+	if err != nil {
+		return "", false, false
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 8 {
+			continue
+		}
+		// fields[1] is ip:port@cbusport — match the announced pod IP.
+		addr := fields[1]
+		if i := strings.IndexAny(addr, ":@"); i >= 0 {
+			addr = addr[:i]
+		}
+		if addr != ip {
+			continue
+		}
+		role = "master"
+		if strings.Contains(fields[2], "slave") {
+			role = "replica"
+		}
+		return role, len(fields) >= 9 && strings.TrimSpace(fields[8]) != "", true
+	}
+	return "", false, false
+}
+
+// waitClusterMemberRunning waits until the victim's redis is up (PING) AND it is a member of
+// the legacy-rooted mesh — i.e. it has been MET and (by strict precedence) is a slot-less
+// replica in the Replicate window. Bounded generously; the window opens early in migration.
+func waitClusterMemberRunning(crName, victim string) {
+	Eventually(func(g Gomega) {
+		pong, err := redisExec(testNamespace, victim, "PING")
+		g.Expect(err).NotTo(HaveOccurred(), "victim redis not reachable yet")
+		g.Expect(strings.TrimSpace(pong)).To(Equal("PONG"))
+		_, _, present := migClusterNodeInfo(crName, victim)
+		g.Expect(present).To(BeTrue(), "victim not yet a cluster member (not MET)")
+	}, 8*time.Minute, 3*time.Second).Should(Succeed(),
+		"new master %s never came up as a cluster member during migration", victim)
+}
+
+// waitVictimOwnsRange waits until the victim ({name}-shard-K-0) OWNS its shard's slot range —
+// i.e. its coordinated failover has completed and it is now a master holding slots. This is
+// the post-failover state whose restart-safety is the LR-025 regression guard.
+func waitVictimOwnsRange(crName, victim string, shard int) {
+	rng := redisclient.GenerateSlotRanges(clusterShards)[shard]
+	want := redisclient.FormatSlotRange(rng.Start, rng.End)
+	Eventually(func(g Gomega) {
+		out, err := redisExec(testNamespace, migLegacySeedPod(crName), "CLUSTER", "NODES")
+		g.Expect(err).NotTo(HaveOccurred())
+		ip := podIP(victim)
+		g.Expect(ip).NotTo(BeEmpty())
+		found := false
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 9 {
+				continue
+			}
+			addr := fields[1]
+			if i := strings.IndexAny(addr, ":@"); i >= 0 {
+				addr = addr[:i]
+			}
+			if addr != ip {
+				continue
+			}
+			slots := strings.Join(fields[8:], ",")
+			g.Expect(strings.Contains(flags(fields), "master")).To(BeTrue(),
+				"victim seen but not a master yet")
+			g.Expect(slots).To(ContainSubstring(want),
+				"victim is master but does not yet own range %s (has %q)", want, slots)
+			found = true
+			break
+		}
+		g.Expect(found).To(BeTrue(), "victim %s not yet owning range %s", victim, want)
+	}, 8*time.Minute, 3*time.Second).Should(Succeed())
+}
+
+// flags returns the CLUSTER NODES flags field (index 2), or "" if the line is too short.
+func flags(fields []string) string {
+	if len(fields) < 3 {
+		return ""
+	}
+	return fields[2]
+}
+
+// migRestartCount returns the redis container's restart count for a pod (0 if unknown).
+func migRestartCount(pod string) int {
+	out, _ := utils.Run(exec.Command("kubectl", "get", "pod", pod, "-n", testNamespace,
+		"-o", `jsonpath={.status.containerStatuses[?(@.name=="redis")].restartCount}`))
+	var n int
+	_, _ = fmt.Sscan(strings.TrimSpace(out), &n)
+	return n
+}
+
+// crashContainerAssertRecovers kill-9's the victim's redis CONTAINER (PID 1, via the privileged
+// hostPID helper — EmptyDir/nodes.conf survive, IP preserved) and asserts it recovers without a
+// CrashLoopBackOff deadlock: the pod is NOT replaced (UID unchanged), the container restarts
+// (restart count increments), and redis comes back reachable and rejoins the mesh. Under the
+// superseded reshard mechanism the post-failover crash would NEVER recover here (STEP-3 parks a
+// replica-less slot-owner → perpetual restart), so "redis reachable again within the window" is
+// exactly the assertion that distinguishes the fix from the old deadlock.
+func crashContainerAssertRecovers(crName, victim, label string) {
+	By("crash " + label + ": kill-9 the redis container of " + victim)
+	beforeUID := podUID(testNamespace, victim)
+	beforeRestarts := migRestartCount(victim)
+	Expect(beforeUID).NotTo(BeEmpty(), "could not read victim pod UID before crash")
+
+	killPodProcess(testNamespace, victim)
+
+	By("the pod must NOT be replaced (container restart, not a reschedule that wipes EmptyDir)")
+	Consistently(func(g Gomega) {
+		g.Expect(podUID(testNamespace, victim)).To(Equal(beforeUID),
+			"victim pod UID changed — this was a pod replacement, not an in-container crash")
+	}, 12*time.Second, 3*time.Second).Should(Succeed())
+
+	By("the redis container must restart (restart count increments)")
+	Eventually(func(g Gomega) {
+		g.Expect(migRestartCount(victim)).To(BeNumerically(">", beforeRestarts),
+			"redis container did not restart after kill-9")
+	}, 90*time.Second, 3*time.Second).Should(Succeed())
+
+	By("the victim must RECOVER — redis reachable again + rejoined the cluster (NO CrashLoopBackOff deadlock)")
+	// The teeth: under the old replica-less deadlock this never becomes reachable (STEP-3 parks →
+	// liveness kills → restart → park → CrashLoopBackOff). Generous window covers the STEP-3
+	// yield/TAKEOVER path (~30s) plus reschedule of any helper artifacts.
+	Eventually(func(g Gomega) {
+		pong, err := redisExec(testNamespace, victim, "PING")
+		g.Expect(err).NotTo(HaveOccurred(), "victim redis still not reachable — possible CrashLoopBackOff deadlock")
+		g.Expect(strings.TrimSpace(pong)).To(Equal("PONG"))
+		waiting, _ := utils.Run(exec.Command("kubectl", "get", "pod", victim, "-n", testNamespace,
+			"-o", `jsonpath={.status.containerStatuses[?(@.name=="redis")].state.waiting.reason}`))
+		g.Expect(strings.TrimSpace(waiting)).NotTo(Equal("CrashLoopBackOff"),
+			"victim redis container is in CrashLoopBackOff — the restart-during-migration deadlock")
+	}, 5*time.Minute, 5*time.Second).Should(Succeed(),
+		"victim %s did not recover after crash %s", victim, label)
 }
 
 // stsExists reports whether a StatefulSet exists in the test namespace.
@@ -610,7 +895,7 @@ func assertSharedServiceCoexistence(crName string) {
 type coexistenceSample struct {
 	samples     int // total probe attempts
 	okReads     int // clean reads returning the exact seeded value
-	clusterDown int // -CLUSTERDOWN (the ASM full-coverage blip we want to measure)
+	clusterDown int // -CLUSTERDOWN (should not occur under LR-025 replicate-then-failover; measured to confirm)
 	redirect    int // -ASK / -MOVED / -TRYAGAIN that surfaced as an error to the client
 	connErr     int // dial / i-o-timeout / connection-refused (pod churning)
 	podGone     int // kubectl: the seed pod no longer exists (Decommission end-of-window)
