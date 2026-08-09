@@ -21,10 +21,11 @@ import (
 	"testing"
 )
 
-// Red-first table tests for the ADR-013 pure migration seam. They assert the exact
-// MigrationPlan for every phase transition of planClusterMigration, and the truth
-// table of the two predicates. Authored against zero-value stubs and observed to
-// fail before the real bodies landed (see the milestone report).
+// Red-first table tests for the ADR-013 pure migration seam, reworked for the LR-025
+// replicate-then-failover mechanism. They assert the exact MigrationPlan for every phase
+// transition of PlanClusterMigration, and the truth table of the gate predicates. Authored
+// against the still-reshard-based body (Draining/ReplicasAttached, nil Failovers) and
+// observed to fail for exactly that reason before the new body landed (see the milestone report).
 
 // mgt builds a ClusterGroundTruth keyed by PodName from the given nodes. Health
 // fields (ClusterState/TotalSlots) default to a healthy legacy cluster; tests that
@@ -38,6 +39,15 @@ func mgt(nodes ...*ClusterNodeState) *ClusterGroundTruth {
 		gt.AllNodeIDs[n.NodeID] = true
 	}
 	return gt
+}
+
+// rReplicaUp is a reachable, link-UP replica of masterID (the LR-025 "synced" gate:
+// isLinkUpReplicaOf requires LinkStatus == "up"). The reshard-era rReplica leaves
+// LinkStatus == "" (not synced), which the new plan treats as still-syncing.
+func rReplicaUp(pod, id, masterID string) *ClusterNodeState {
+	n := rReplica(pod, id, masterID)
+	n.LinkStatus = "up"
+	return n
 }
 
 // legacyFacts for the shards=2, replicasPerShard=1 fixtures below.
@@ -54,15 +64,11 @@ func mFacts() LegacyFacts {
 	}
 }
 
-// The four legacy pods of a healthy shards=2/rps=1 legacy cluster, in the given
-// slot-ownership state.
-func legacyDrained() []*ClusterNodeState {
-	return []*ClusterNodeState{
-		rEmpty("mr-cluster-0", "L0"),
-		rEmpty("mr-cluster-1", "L1"),
-		rReplica("mr-cluster-2", "L2", "L0"),
-		rReplica("mr-cluster-3", "L3", "L1"),
-	}
+// knows wires up the KnownNodes gossip adjacency (observer -> targets it knows) so
+// Replicate can emit (rather than defer) a CLUSTER REPLICATE.
+func knows(gt *ClusterGroundTruth, m map[string][]string) *ClusterGroundTruth {
+	gt.KnownNodes = m
+	return gt
 }
 
 func TestPlanClusterMigration(t *testing.T) {
@@ -78,6 +84,14 @@ func TestPlanClusterMigration(t *testing.T) {
 			rReplica("mr-cluster-3", "L3", "L1"),
 		}
 	}
+	// The intact legacy cluster (L0 owns range 0, L1 owns range 1).
+	legFull := func() []*ClusterNodeState {
+		return legNodesFull([]string{"0-8191"}, []string{"8192-16383"})
+	}
+	// knowsOwners: every new pod knows its legacy range owner (so Replicate emits, not defers).
+	knowsOwners := map[string][]string{
+		"N00": {"L0"}, "N01": {"L0"}, "N10": {"L1"}, "N11": {"L1"},
+	}
 
 	tests := []struct {
 		name  string
@@ -87,13 +101,13 @@ func TestPlanClusterMigration(t *testing.T) {
 	}{
 		{
 			name:  "standup: new pods not up yet (no addrs)",
-			gt:    mgt(legNodesFull([]string{"0-8191"}, []string{"8192-16383"})...),
+			gt:    mgt(legFull()...),
 			facts: seedOnly,
 			want:  MigrationPlan{Phase: MigrationStandup, TotalShards: 2},
 		},
 		{
 			name:  "meet: all new pods up, none MET",
-			gt:    mgt(legNodesFull([]string{"0-8191"}, []string{"8192-16383"})...),
+			gt:    mgt(legFull()...),
 			facts: mFacts(),
 			want: MigrationPlan{
 				Phase:       MigrationMeet,
@@ -103,7 +117,7 @@ func TestPlanClusterMigration(t *testing.T) {
 		},
 		{
 			name: "meet: partially MET (shard 0 joined, shard 1 not)",
-			gt: mgt(append(legNodesFull([]string{"0-8191"}, []string{"8192-16383"}),
+			gt: mgt(append(legFull(),
 				rEmpty("mr-shard-0-0", "N00"), rEmpty("mr-shard-0-1", "N01"))...),
 			facts: mFacts(),
 			want: MigrationPlan{
@@ -113,123 +127,157 @@ func TestPlanClusterMigration(t *testing.T) {
 			},
 		},
 		{
-			name: "draining: shard 0 moved, shard 1 still on legacy",
-			gt: mgt(
-				rMaster("mr-shard-0-0", "N00", "0-8191"),
-				rEmpty("mr-shard-0-1", "N01"),
-				rEmpty("mr-shard-1-0", "N10"),
-				rEmpty("mr-shard-1-1", "N11"),
-				rEmpty("mr-cluster-0", "L0"),
+			name: "replicate: all MET as empty masters, none replicating yet",
+			gt: knows(mgt(append(legFull(),
+				rEmpty("mr-shard-0-0", "N00"), rEmpty("mr-shard-0-1", "N01"),
+				rEmpty("mr-shard-1-0", "N10"), rEmpty("mr-shard-1-1", "N11"))...), knowsOwners),
+			facts: mFacts(),
+			want: MigrationPlan{
+				Phase: MigrationReplicate,
+				Replicates: []ReplicaAttach{
+					{ReplicaAddr: "10.1.0.1:6379", MasterID: "L0"},
+					{ReplicaAddr: "10.1.0.2:6379", MasterID: "L0"},
+					{ReplicaAddr: "10.1.0.3:6379", MasterID: "L1"},
+					{ReplicaAddr: "10.1.0.4:6379", MasterID: "L1"},
+				},
+				TotalShards: 2,
+			},
+		},
+		{
+			name: "replicate: one replica deferred (does not NodeKnows its owner)",
+			gt: knows(mgt(append(legFull(),
+				rEmpty("mr-shard-0-0", "N00"), rEmpty("mr-shard-0-1", "N01"),
+				rEmpty("mr-shard-1-0", "N10"), rEmpty("mr-shard-1-1", "N11"))...),
+				map[string][]string{"N00": {"L0"}, "N10": {"L1"}, "N11": {"L1"}}), // N01 does not know L0
+			facts: mFacts(),
+			want: MigrationPlan{
+				Phase: MigrationReplicate,
+				Replicates: []ReplicaAttach{
+					{ReplicaAddr: "10.1.0.1:6379", MasterID: "L0"},
+					{ReplicaAddr: "10.1.0.3:6379", MasterID: "L1"},
+					{ReplicaAddr: "10.1.0.4:6379", MasterID: "L1"},
+				},
+				TotalShards: 2,
+			},
+		},
+		{
+			name: "replicate: master synced, one replica still an empty master",
+			gt: knows(mgt(append(legFull(),
+				rReplicaUp("mr-shard-0-0", "N00", "L0"), // synced (link-up) replica of L0
+				rEmpty("mr-shard-0-1", "N01"),           // not replicating yet
+				rReplicaUp("mr-shard-1-0", "N10", "L1"),
+				rReplicaUp("mr-shard-1-1", "N11", "L1"))...), knowsOwners),
+			facts: mFacts(),
+			want: MigrationPlan{
+				Phase:       MigrationReplicate,
+				Replicates:  []ReplicaAttach{{ReplicaAddr: "10.1.0.2:6379", MasterID: "L0"}},
+				TotalShards: 2,
+			},
+		},
+		{
+			name: "INVARIANT (i): K-0 not a link-up replica of owner must NOT emit a Failover",
+			gt: knows(mgt(
+				rMaster("mr-cluster-0", "L0", "0-8191"),
 				rMaster("mr-cluster-1", "L1", "8192-16383"),
 				rReplica("mr-cluster-2", "L2", "L0"),
 				rReplica("mr-cluster-3", "L3", "L1"),
-			),
+				rEmpty("mr-shard-0-0", "N00"), // K-0 still an empty master (NOT synced)
+				rReplicaUp("mr-shard-0-1", "N01", "L0"),
+				rReplicaUp("mr-shard-1-0", "N10", "L1"),
+				rReplicaUp("mr-shard-1-1", "N11", "L1")), knowsOwners),
 			facts: mFacts(),
 			want: MigrationPlan{
-				Phase: MigrationDraining,
-				Move: &ReshardMove{
-					Start:  8192,
-					End:    16383,
-					Source: rMaster("mr-cluster-1", "L1", "8192-16383"),
-					Dest:   rEmpty("mr-shard-1-0", "N10"),
-				},
+				Phase:       MigrationReplicate, // stays in Replicate; no Failover for shard 0
+				Replicates:  []ReplicaAttach{{ReplicaAddr: "10.1.0.1:6379", MasterID: "L0"}},
+				TotalShards: 2,
+			},
+		},
+		{
+			name: "failover: all new pods synced replicas, no K-0 owns its range -> one, lowest K",
+			gt: mgt(
+				rMaster("mr-cluster-0", "L0", "0-8191"),
+				rMaster("mr-cluster-1", "L1", "8192-16383"),
+				rReplica("mr-cluster-2", "L2", "L0"),
+				rReplica("mr-cluster-3", "L3", "L1"),
+				rReplicaUp("mr-shard-0-0", "N00", "L0"),
+				rReplicaUp("mr-shard-0-1", "N01", "L0"),
+				rReplicaUp("mr-shard-1-0", "N10", "L1"),
+				rReplicaUp("mr-shard-1-1", "N11", "L1")),
+			facts: mFacts(),
+			want: MigrationPlan{
+				Phase:       MigrationFailover,
+				Failovers:   []FailoverAction{{Addr: "10.1.0.1:6379", Force: false}},
+				TotalShards: 2,
+			},
+		},
+		{
+			name: "failover FORCE edge: range owner unreachable + K-0 synced -> TAKEOVER",
+			gt: mgt(
+				func() *ClusterNodeState { n := rMaster("mr-cluster-0", "L0", "0-8191"); n.Reachable = false; return n }(),
+				rMaster("mr-cluster-1", "L1", "8192-16383"),
+				rReplica("mr-cluster-2", "L2", "L0"),
+				rReplica("mr-cluster-3", "L3", "L1"),
+				rReplicaUp("mr-shard-0-0", "N00", "L0"), // confirmed synced before L0 died
+				rReplicaUp("mr-shard-0-1", "N01", "L0"),
+				rReplicaUp("mr-shard-1-0", "N10", "L1"),
+				rReplicaUp("mr-shard-1-1", "N11", "L1")),
+			facts: mFacts(),
+			want: MigrationPlan{
+				Phase:       MigrationFailover,
+				Failovers:   []FailoverAction{{Addr: "10.1.0.1:6379", Force: true}},
+				TotalShards: 2,
+			},
+		},
+		{
+			name: "failover: shard 0 done (owns range), shard 1 pending -> failover shard 1",
+			gt: mgt(
+				rMaster("mr-shard-0-0", "N00", "0-8191"), // shard 0 already promoted
+				rReplicaUp("mr-shard-0-1", "N01", "N00"),
+				rReplicaUp("mr-shard-1-0", "N10", "L1"),
+				rReplicaUp("mr-shard-1-1", "N11", "L1"),
+				rReplica("mr-cluster-0", "L0", "N00"), // demoted legacy master, now replica of N00
+				rMaster("mr-cluster-1", "L1", "8192-16383"),
+				rReplica("mr-cluster-2", "L2", "L0"),
+				rReplica("mr-cluster-3", "L3", "L1")),
+			facts: mFacts(),
+			want: MigrationPlan{
+				Phase:       MigrationFailover,
+				Failovers:   []FailoverAction{{Addr: "10.1.0.3:6379", Force: false}},
 				ShardsMoved: 1,
 				TotalShards: 2,
 			},
 		},
 		{
-			name: "draining: nothing moved yet, lowest-K first",
+			name: "INVARIANT (ii): a new replica not link-up on its new master must NOT emit legacy Forgets",
+			gt: knows(mgt(
+				rMaster("mr-shard-0-0", "N00", "0-8191"),
+				rEmpty("mr-shard-0-1", "N01"), // NOT yet a link-up replica of its new master N00
+				rMaster("mr-shard-1-0", "N10", "8192-16383"),
+				rReplicaUp("mr-shard-1-1", "N11", "N10"),
+				rReplica("mr-cluster-0", "L0", "N00"),
+				rReplica("mr-cluster-1", "L1", "N10"),
+				rReplica("mr-cluster-2", "L2", "N00"),
+				rReplica("mr-cluster-3", "L3", "N10")),
+				map[string][]string{"N01": {"N00"}}),
+			facts: mFacts(),
+			want: MigrationPlan{
+				Phase:       MigrationReplicate, // reparent the lagging replica; do NOT Forget yet
+				Replicates:  []ReplicaAttach{{ReplicaAddr: "10.1.0.2:6379", MasterID: "N00"}},
+				ShardsMoved: 2,
+				TotalShards: 2,
+			},
+		},
+		{
+			name: "decommission: all masters own ranges, all new replicas synced, legacy demoted+present",
 			gt: mgt(
-				rEmpty("mr-shard-0-0", "N00"),
-				rEmpty("mr-shard-0-1", "N01"),
-				rEmpty("mr-shard-1-0", "N10"),
-				rEmpty("mr-shard-1-1", "N11"),
-				rMaster("mr-cluster-0", "L0", "0-8191"),
-				rMaster("mr-cluster-1", "L1", "8192-16383"),
-				rReplica("mr-cluster-2", "L2", "L0"),
-				rReplica("mr-cluster-3", "L3", "L1"),
-			),
-			facts: mFacts(),
-			want: MigrationPlan{
-				Phase: MigrationDraining,
-				Move: &ReshardMove{
-					Start:  0,
-					End:    8191,
-					Source: rMaster("mr-cluster-0", "L0", "0-8191"),
-					Dest:   rEmpty("mr-shard-0-0", "N00"),
-				},
-				ShardsMoved: 0,
-				TotalShards: 2,
-			},
-		},
-		{
-			name: "replicas-attached: ranges moved, replicas known but unattached",
-			gt: func() *ClusterGroundTruth {
-				gt := mgt(
-					rMaster("mr-shard-0-0", "N00", "0-8191"),
-					rEmpty("mr-shard-0-1", "N01"),
-					rMaster("mr-shard-1-0", "N10", "8192-16383"),
-					rEmpty("mr-shard-1-1", "N11"),
-				)
-				for _, n := range legacyDrained() {
-					gt.Nodes[n.PodName] = n
-					gt.AllNodeIDs[n.NodeID] = true
-				}
-				gt.KnownNodes = map[string][]string{"N01": {"N00"}, "N11": {"N10"}}
-				return gt
-			}(),
-			facts: mFacts(),
-			want: MigrationPlan{
-				Phase: MigrationReplicasAttached,
-				Replicates: []ReplicaAttach{
-					{ReplicaAddr: "10.1.0.2:6379", MasterID: "N00"},
-					{ReplicaAddr: "10.1.0.4:6379", MasterID: "N10"},
-				},
-				ShardsMoved: 2,
-				TotalShards: 2,
-			},
-		},
-		{
-			name: "replicas-attached: one replica deferred (does not NodeKnows master)",
-			gt: func() *ClusterGroundTruth {
-				gt := mgt(
-					rMaster("mr-shard-0-0", "N00", "0-8191"),
-					rEmpty("mr-shard-0-1", "N01"),
-					rMaster("mr-shard-1-0", "N10", "8192-16383"),
-					rEmpty("mr-shard-1-1", "N11"),
-				)
-				for _, n := range legacyDrained() {
-					gt.Nodes[n.PodName] = n
-					gt.AllNodeIDs[n.NodeID] = true
-				}
-				gt.KnownNodes = map[string][]string{"N11": {"N10"}} // N01 does not know N00
-				return gt
-			}(),
-			facts: mFacts(),
-			want: MigrationPlan{
-				Phase: MigrationReplicasAttached,
-				Replicates: []ReplicaAttach{
-					{ReplicaAddr: "10.1.0.4:6379", MasterID: "N10"},
-				},
-				ShardsMoved: 2,
-				TotalShards: 2,
-			},
-		},
-		{
-			name: "decommission: all moved and attached, legacy still present",
-			gt: func() *ClusterGroundTruth {
-				gt := mgt(
-					rMaster("mr-shard-0-0", "N00", "0-8191"),
-					rReplica("mr-shard-0-1", "N01", "N00"),
-					rMaster("mr-shard-1-0", "N10", "8192-16383"),
-					rReplica("mr-shard-1-1", "N11", "N10"),
-				)
-				for _, n := range legacyDrained() {
-					gt.Nodes[n.PodName] = n
-					gt.AllNodeIDs[n.NodeID] = true
-				}
-				return gt
-			}(),
+				rMaster("mr-shard-0-0", "N00", "0-8191"),
+				rReplicaUp("mr-shard-0-1", "N01", "N00"),
+				rMaster("mr-shard-1-0", "N10", "8192-16383"),
+				rReplicaUp("mr-shard-1-1", "N11", "N10"),
+				rReplica("mr-cluster-0", "L0", "N00"), // demoted legacy masters (slot-less)
+				rReplica("mr-cluster-1", "L1", "N10"),
+				rReplica("mr-cluster-2", "L2", "N00"),
+				rReplica("mr-cluster-3", "L3", "N10")),
 			facts: mFacts(),
 			want: MigrationPlan{
 				Phase:        MigrationDecommission,
@@ -243,10 +291,9 @@ func TestPlanClusterMigration(t *testing.T) {
 			name: "complete: no legacy nodes remain",
 			gt: mgt(
 				rMaster("mr-shard-0-0", "N00", "0-8191"),
-				rReplica("mr-shard-0-1", "N01", "N00"),
+				rReplicaUp("mr-shard-0-1", "N01", "N00"),
 				rMaster("mr-shard-1-0", "N10", "8192-16383"),
-				rReplica("mr-shard-1-1", "N11", "N10"),
-			),
+				rReplicaUp("mr-shard-1-1", "N11", "N10")),
 			facts: mFacts(),
 			want:  MigrationPlan{Phase: MigrationComplete, ShardsMoved: 2, TotalShards: 2},
 		},
@@ -260,8 +307,83 @@ func TestPlanClusterMigration(t *testing.T) {
 	}
 }
 
+// TestPlanClusterMigrationRPS0 exercises the replicasPerShard=0 path: no new replicas, so
+// the Decommission redundancy gate is vacuous — Decommission is reached as soon as every
+// {name}-shard-K-0 owns its range.
+func TestPlanClusterMigrationRPS0(t *testing.T) {
+	const name, shards, rps = "mr", 2, 0
+	facts := LegacyFacts{
+		SeedAddrs:     []string{"10.0.0.1:6379"},
+		LegacyNodeIDs: []string{"L0", "L1"},
+		NewPodAddrs: map[string]string{
+			"mr-shard-0-0": "10.1.0.1:6379",
+			"mr-shard-1-0": "10.1.0.3:6379",
+		},
+	}
+	// Intact rps=0 legacy: two masters, no legacy replicas.
+	legFull := func() []*ClusterNodeState {
+		return []*ClusterNodeState{
+			rMaster("mr-cluster-0", "L0", "0-8191"),
+			rMaster("mr-cluster-1", "L1", "8192-16383"),
+		}
+	}
+
+	tests := []struct {
+		name string
+		gt   *ClusterGroundTruth
+		want MigrationPlan
+	}{
+		{
+			name: "replicate rps=0: both new masters replicate their legacy owner",
+			gt: knows(mgt(append(legFull(),
+				rEmpty("mr-shard-0-0", "N00"), rEmpty("mr-shard-1-0", "N10"))...),
+				map[string][]string{"N00": {"L0"}, "N10": {"L1"}}),
+			want: MigrationPlan{
+				Phase: MigrationReplicate,
+				Replicates: []ReplicaAttach{
+					{ReplicaAddr: "10.1.0.1:6379", MasterID: "L0"},
+					{ReplicaAddr: "10.1.0.3:6379", MasterID: "L1"},
+				},
+				TotalShards: 2,
+			},
+		},
+		{
+			name: "failover rps=0: both synced, no K-0 owns range -> failover shard 0",
+			gt: mgt(append(legFull(),
+				rReplicaUp("mr-shard-0-0", "N00", "L0"), rReplicaUp("mr-shard-1-0", "N10", "L1"))...),
+			want: MigrationPlan{
+				Phase:       MigrationFailover,
+				Failovers:   []FailoverAction{{Addr: "10.1.0.1:6379", Force: false}},
+				TotalShards: 2,
+			},
+		},
+		{
+			name: "decommission rps=0: both K-0 own ranges (vacuous redundancy gate), legacy demoted",
+			gt: mgt(
+				rMaster("mr-shard-0-0", "N00", "0-8191"),
+				rMaster("mr-shard-1-0", "N10", "8192-16383"),
+				rReplica("mr-cluster-0", "L0", "N00"),
+				rReplica("mr-cluster-1", "L1", "N10")),
+			want: MigrationPlan{
+				Phase:        MigrationDecommission,
+				Forgets:      []string{"L0", "L1"},
+				DeleteLegacy: true,
+				ShardsMoved:  2,
+				TotalShards:  2,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := PlanClusterMigration(tc.gt, shards, rps, name, facts)
+			assertPlanEqual(t, got, tc.want)
+		})
+	}
+}
+
 // assertPlanEqual compares the load-bearing fields of a MigrationPlan, ignoring Reason
-// (a human string). Move is compared by value (Start/End/Source/Dest identity by NodeID).
+// (a human string). Move is no longer part of the LR-025 migration plan.
 func assertPlanEqual(t *testing.T, got, want MigrationPlan) {
 	t.Helper()
 	if got.Phase != want.Phase {
@@ -272,6 +394,9 @@ func assertPlanEqual(t *testing.T, got, want MigrationPlan) {
 	}
 	if !reflect.DeepEqual(got.Replicates, want.Replicates) {
 		t.Errorf("Replicates = %v, want %v", got.Replicates, want.Replicates)
+	}
+	if !reflect.DeepEqual(got.Failovers, want.Failovers) {
+		t.Errorf("Failovers = %v, want %v", got.Failovers, want.Failovers)
 	}
 	if !reflect.DeepEqual(got.Forgets, want.Forgets) {
 		t.Errorf("Forgets = %v, want %v", got.Forgets, want.Forgets)
@@ -285,25 +410,52 @@ func assertPlanEqual(t *testing.T, got, want MigrationPlan) {
 	if got.TotalShards != want.TotalShards {
 		t.Errorf("TotalShards = %d, want %d", got.TotalShards, want.TotalShards)
 	}
-	assertMoveEqual(t, got.Move, want.Move)
 }
 
-func assertMoveEqual(t *testing.T, got, want *ReshardMove) {
-	t.Helper()
-	if (got == nil) != (want == nil) {
-		t.Fatalf("Move = %+v, want %+v", got, want)
+// TestOwnerOfRange asserts ownerOfRange returns the node owning exactly the given aligned
+// range (regardless of reachability), or nil when none does.
+func TestOwnerOfRange(t *testing.T) {
+	gt := mgt(
+		rMaster("mr-cluster-0", "L0", "0-8191"),
+		rMaster("mr-cluster-1", "L1", "8192-16383"),
+		rReplica("mr-cluster-2", "L2", "L0"),
+	)
+	if got := ownerOfRange(gt, 0, 8191); got == nil || got.NodeID != "L0" {
+		t.Errorf("ownerOfRange(0,8191) = %+v, want NodeID L0", got)
 	}
-	if got == nil {
-		return
+	if got := ownerOfRange(gt, 8192, 16383); got == nil || got.NodeID != "L1" {
+		t.Errorf("ownerOfRange(8192,16383) = %+v, want NodeID L1", got)
 	}
-	if got.Start != want.Start || got.End != want.End {
-		t.Errorf("Move range = %d-%d, want %d-%d", got.Start, got.End, want.Start, want.End)
+	if got := ownerOfRange(gt, 100, 200); got != nil {
+		t.Errorf("ownerOfRange(100,200) = %+v, want nil (no exact owner)", got)
 	}
-	if got.Source == nil || got.Source.NodeID != want.Source.NodeID {
-		t.Errorf("Move.Source = %+v, want NodeID %s", got.Source, want.Source.NodeID)
+	// An unreachable owner is still the owner (used by the Force-failover edge).
+	gt.Nodes["mr-cluster-0"].Reachable = false
+	if got := ownerOfRange(gt, 0, 8191); got == nil || got.NodeID != "L0" {
+		t.Errorf("ownerOfRange with unreachable owner = %+v, want NodeID L0", got)
 	}
-	if got.Dest == nil || got.Dest.NodeID != want.Dest.NodeID {
-		t.Errorf("Move.Dest = %+v, want NodeID %s", got.Dest, want.Dest.NodeID)
+}
+
+// TestIsLinkUpReplicaOf asserts the synced-replica gate: role replica, of the given master,
+// with link status "up". Anything else is not yet synced.
+func TestIsLinkUpReplicaOf(t *testing.T) {
+	tests := []struct {
+		name string
+		node *ClusterNodeState
+		want bool
+	}{
+		{"link-up replica of target", rReplicaUp("p", "R", "M"), true},
+		{"replica of target but link down", rReplica("p", "R", "M"), false},
+		{"link-up replica of a different master", rReplicaUp("p", "R", "OTHER"), false},
+		{"a master, not a replica", func() *ClusterNodeState { n := rMaster("p", "R"); n.LinkStatus = "up"; return n }(), false},
+		{"nil node", nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isLinkUpReplicaOf(tc.node, "M"); got != tc.want {
+				t.Errorf("isLinkUpReplicaOf = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

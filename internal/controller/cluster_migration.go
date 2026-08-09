@@ -337,30 +337,39 @@ func (r *LittleRedReconciler) executeMigrationPhase(
 			}
 		}
 
-	case redisclient.MigrationDraining:
-		if plan.Move != nil {
-			auditLog.Info("Migration Draining: moving shard range to its new master",
-				"range", fmt.Sprintf("%d-%d", plan.Move.Start, plan.Move.End),
-				"source", plan.Move.Source.PodName, "dest", plan.Move.Dest.PodName)
-			done, _, err := r.moveSlotRange(ctx, lr, gt, clusterClient, plan.Move)
-			if err != nil {
-				return ctrl.Result{}, true, err
-			}
-			if done {
-				auditLog.Info("Migration Draining: range fully drained onto its new master",
-					"range", fmt.Sprintf("%d-%d", plan.Move.Start, plan.Move.End), "dest", plan.Move.Dest.PodName)
-			}
-		}
-
-	case redisclient.MigrationReplicasAttached:
+	case redisclient.MigrationReplicate:
+		// Attach each new pod as a slot-less replica of the node currently owning its shard's
+		// range (legacy master pre-failover, {name}-shard-K-0 post-failover). It full-syncs; the
+		// pure plan only emits an attach the executing node already knows via gossip (else defers).
 		for _, ra := range plan.Replicates {
 			if ra.ReplicaAddr == "" {
 				continue
 			}
-			auditLog.Info("Migration ReplicasAttached: attaching new replica to its new master",
-				"replica", ra.ReplicaAddr, "master", ra.MasterID)
+			auditLog.Info("Migration Replicate: attaching new pod as a slot-less replica of its range owner",
+				"replica", ra.ReplicaAddr, "owner", ra.MasterID)
 			if err := clusterClient.ClusterReplicate(ctx, ra.ReplicaAddr, ra.MasterID); err != nil {
-				auditLog.Error(err, "Migration replica attach failed; will retry", "replica", ra.ReplicaAddr)
+				auditLog.Error(err, "Migration replicate failed; will retry", "replica", ra.ReplicaAddr)
+			}
+		}
+
+	case redisclient.MigrationFailover:
+		// Promote a synced {name}-shard-K-0 to own its range: a coordinated CLUSTER FAILOVER
+		// (atomic ownership flip; the legacy master demotes to a live replica), or a forced
+		// TAKEOVER only on the §7 edge (range owner unreachable + this replica confirmed synced).
+		for _, fo := range plan.Failovers {
+			if fo.Addr == "" {
+				continue
+			}
+			if fo.Force {
+				auditLog.Info("Migration Failover: forced TAKEOVER of synced new master (range owner unreachable)", "master", fo.Addr)
+				if err := clusterClient.ClusterFailoverTakeover(ctx, fo.Addr); err != nil {
+					auditLog.Error(err, "Migration forced failover (TAKEOVER) failed; will retry", "master", fo.Addr)
+				}
+				continue
+			}
+			auditLog.Info("Migration Failover: coordinated CLUSTER FAILOVER promoting synced new master", "master", fo.Addr)
+			if err := clusterClient.ClusterFailover(ctx, fo.Addr); err != nil {
+				auditLog.Error(err, "Migration coordinated failover failed; will retry", "master", fo.Addr)
 			}
 		}
 

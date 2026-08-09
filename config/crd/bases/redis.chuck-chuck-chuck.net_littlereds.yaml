@@ -2030,13 +2030,13 @@ spec:
                     properties:
                       phase:
                         description: |-
-                          Phase is the current migration phase: Standup, Meet, Draining, ReplicasAttached,
+                          Phase is the current migration phase: Standup, Meet, Replicate, Failover,
                           Decommission, or Complete.
                         type: string
                       shardsMoved:
                         description: |-
-                          ShardsMoved is the number of shard slot ranges already relocated onto their new
-                          per-shard masters.
+                          ShardsMoved is the number of shards whose new master {name}-shard-K-0 already owns
+                          range K (i.e. has failed over).
                         type: integer
                       startedAt:
                         description: StartedAt records when the operator first entered

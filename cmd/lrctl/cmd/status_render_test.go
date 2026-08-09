@@ -46,13 +46,13 @@ func clusterLR() *littleredv1alpha1.LittleRed {
 // an in-progress migration shows the banner line, and a non-migrating instance
 // must NOT (documented status output for non-migrating instances must not drift).
 func TestPrintStatus_MigrationBanner(t *testing.T) {
-	const wantLine = "Migration: Draining (2/4 shards moved) — legacy→per-shard in progress"
+	const wantLine = "Migration: Replicate (2/4 shards moved) — legacy→per-shard in progress"
 
 	t.Run("in-progress shows banner", func(t *testing.T) {
 		lr := clusterLR()
 		lr.Status.Cluster = &littleredv1alpha1.ClusterStatusInfo{
 			Migration: &littleredv1alpha1.ClusterMigrationStatus{
-				Phase:       string(redisclient.MigrationDraining),
+				Phase:       string(redisclient.MigrationReplicate),
 				ShardsMoved: 2,
 				TotalShards: 4,
 			},

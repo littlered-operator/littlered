@@ -14,13 +14,13 @@ func TestMigrationBanner(t *testing.T) {
 		want string
 	}{
 		{
-			name: "in-progress Draining renders the banner",
+			name: "in-progress Replicate renders the banner",
 			in: &littleredv1alpha1.ClusterMigrationStatus{
-				Phase:       string(redisclient.MigrationDraining),
+				Phase:       string(redisclient.MigrationReplicate),
 				ShardsMoved: 2,
 				TotalShards: 4,
 			},
-			want: "Migration: Draining (2/4 shards moved) — legacy→per-shard in progress",
+			want: "Migration: Replicate (2/4 shards moved) — legacy→per-shard in progress",
 		},
 		{
 			name: "in-progress Standup at zero renders the banner",

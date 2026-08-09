@@ -695,13 +695,13 @@ type ClusterStatusInfo struct {
 // legacy→per-shard migration (ADR-013). Re-derived from live cluster state every
 // reconcile; nothing here is load-bearing (ADR-006).
 type ClusterMigrationStatus struct {
-	// Phase is the current migration phase: Standup, Meet, Draining, ReplicasAttached,
+	// Phase is the current migration phase: Standup, Meet, Replicate, Failover,
 	// Decommission, or Complete.
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
-	// ShardsMoved is the number of shard slot ranges already relocated onto their new
-	// per-shard masters.
+	// ShardsMoved is the number of shards whose new master {name}-shard-K-0 already owns
+	// range K (i.e. has failed over).
 	// +optional
 	ShardsMoved int `json:"shardsMoved,omitempty"`
 

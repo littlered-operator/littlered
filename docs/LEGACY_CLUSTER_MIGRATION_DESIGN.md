@@ -123,10 +123,17 @@ replication before **any** failover, so every slot has ≥2 live copies before a
   on the unreachable-owner edge). `{name}-shard-K-0` is, by the Replicate gate, a synced replica of the
   legacy master owning K, so the coordinated failover is a lossless atomic ownership flip.
 - **Decommission** — every `{name}-shard-K-0` owns range K **and** every new replica `{name}-shard-K-M` (M≥1)
-  is a link-`up` replica of its own new master `{name}-shard-K-0` (the redundancy gate: a legacy node is only
-  removed once the shard replacing it is fully `(1+rps)`-replicated on new nodes). Emit `Forgets` for every
-  present legacy node ID (all slot-less demoted replicas by now); set `DeleteLegacy = true` once no legacy
-  node remains in `gt`.
+  is a link-`up` replica of its own new master `{name}-shard-K-0`. This is the **redundancy gate**, and it is
+  enforced *by the strict precedence itself*, not by a separate condition: after all failovers `ownerOfRange(range K)`
+  is `{name}-shard-K-0`, so a new replica that is not yet a link-`up` replica of its new master leaves the
+  `Replicate` phase unsatisfied (higher precedence) and the plan never reaches Decommission — a legacy node is
+  thus only removed once the shard replacing it is fully `(1+rps)`-replicated on new nodes. At Decommission emit
+  `Forgets` for every present legacy node ID (all slot-less demoted replicas by now); set
+  `DeleteLegacy = !anyLegacyOwnsSlots(gt)` — which, since reaching Decommission requires every `{name}-shard-K-0`
+  to own its range, is always true here, so the legacy STS + PDB delete fires. (An earlier draft keyed
+  `DeleteLegacy` on "no legacy node remains in `gt`" — a bug: that condition is `Complete`, which has strict
+  precedence over Decommission, so it would never hold *at* Decommission and the STS would never be deleted.
+  LR-025 as-built.)
 
 Helpers (pure, in `migration_plan.go`): `ownerOfRange(gt, start, end) *ClusterNodeState`;
 `isLinkUpReplicaOf(rep, masterNodeID) bool` (`rep.Role == roleReplica && rep.MasterNodeID == masterNodeID

@@ -32,11 +32,14 @@ const (
 	MigrationStandup MigrationPhase = "Standup"
 	// MigrationMeet: new pods have addresses but some are not yet in the cluster mesh.
 	MigrationMeet MigrationPhase = "Meet"
-	// MigrationDraining: some shard range is not yet owned by its new {name}-shard-K-0 master.
-	MigrationDraining MigrationPhase = "Draining"
-	// MigrationReplicasAttached: all ranges are on new masters, but some new replica is
-	// not yet replicating its shard master.
-	MigrationReplicasAttached MigrationPhase = "ReplicasAttached"
+	// MigrationReplicate (LR-025): every new pod is a cluster member, but some new pod is not
+	// yet a link-up replica of the node currently owning its shard's range (the legacy master
+	// pre-failover, {name}-shard-K-0 post-failover). The new nodes full-sync as slot-less replicas.
+	MigrationReplicate MigrationPhase = "Replicate"
+	// MigrationFailover (LR-025): every new pod is a synced (link-up) replica, but some
+	// {name}-shard-K-0 does not yet own its range. One coordinated CLUSTER FAILOVER per pass
+	// promotes the lowest such K, atomically flipping ownership to the already-synced new master.
+	MigrationFailover MigrationPhase = "Failover"
 	// MigrationDecommission: everything is on the new layout; FORGET the drained legacy
 	// nodes and delete the legacy StatefulSet.
 	MigrationDecommission MigrationPhase = "Decommission"
@@ -78,25 +81,46 @@ type LegacyFacts struct {
 // resumable from live state); Reason is a short human log line.
 type MigrationPlan struct {
 	Phase        MigrationPhase
-	Meets        []string        // new-pod addrs to MEET (via a legacy seed)
-	Move         *ReshardMove    // next range to move this pass (nil if none)
-	Replicates   []ReplicaAttach // {ReplicaAddr, MasterID} to attach
-	Forgets      []string        // legacy node IDs to FORGET (sorted)
-	DeleteLegacy bool            // decommission: delete {name}-cluster STS + PDB
+	Meets        []string         // new-pod addrs to MEET (via a legacy seed)
+	Replicates   []ReplicaAttach  // {ReplicaAddr, MasterID}: attach a new pod onto its shard's current range owner
+	Failovers    []FailoverAction // {name}-shard-K-0 to promote this pass (at most one, for determinism)
+	Forgets      []string         // legacy node IDs to FORGET (sorted)
+	DeleteLegacy bool             // decommission: delete {name}-cluster STS + PDB
 	ShardsMoved  int
 	TotalShards  int
 	Reason       string
 }
 
-// PlanClusterMigration derives the migration phase and the single action set for this
-// pass PURELY from live ground truth + LegacyFacts (ADR-013 §7). Phase is never read
-// back from status; the driver re-plans every reconcile. It emits one range Move per
-// pass (the lowest un-migrated shard, for determinism), defers a replica attach whose
-// target the replica does not yet NodeKnows, and only FORGETs/deletes legacy once every
-// legacy node owns zero slots.
+// FailoverAction promotes a synced new master {name}-shard-K-0 (LR-025). The failover is
+// a coordinated CLUSTER FAILOVER by default (an atomic ownership flip to an already-synced
+// replica; the current owner demotes to a live replica of it). Force (⇒ CLUSTER FAILOVER
+// TAKEOVER) is set ONLY on the legacy-master-died-mid-migration edge (§7): the range owner
+// is unreachable AND this replica is confirmed link-up/synced (it holds the data). A replica
+// that is not confirmed synced is never Force-promoted.
+type FailoverAction struct {
+	Addr  string // {name}-shard-K-0 dial addr (the replica to promote)
+	Force bool
+}
+
+// PlanClusterMigration derives the migration phase and the single action set for this pass
+// PURELY from live ground truth + LegacyFacts (ADR-013 §7, LR-025 replicate-then-failover).
+// Phase is never read back from status; the driver re-plans every reconcile. Derivation is
+// strict-precedence: it reports the LEAST-advanced phase that still has work and emits only
+// that phase's actions, so ALL replication finishes before ANY failover (every slot has ≥2
+// live copies before a single handoff).
 //
-// Exported so the package controller migration driver (cluster_migration.go) can drive it;
-// the logic stays a pure seam (no I/O).
+//	Complete     — no legacy nodes remain in gt.
+//	Standup/Meet  — some new pod is not yet a cluster member (MEET it via a legacy seed).
+//	Replicate     — every new pod is MET, but some is not yet a link-up replica of the node
+//	                currently owning its shard's range (legacy master pre-failover, K-0 post).
+//	                Defers (counts, does not emit) an attach the replica does not yet NodeKnows.
+//	Failover      — every new pod is a synced (link-up) replica, but some {name}-shard-K-0 does
+//	                not own its range; emit ONE coordinated CLUSTER FAILOVER for the lowest such K.
+//	Decommission  — every K-0 owns its range and every new replica is a link-up replica of its
+//	                own new master; FORGET all legacy nodes and delete the legacy STS.
+//
+// Exported so the controller migration driver (cluster_migration.go) can drive it; the logic
+// stays a pure seam (no I/O). No slot move is ever emitted (LR-025 removed the reshard path).
 func PlanClusterMigration(gt *ClusterGroundTruth, shards, replicasPerShard int, name string,
 	legacy LegacyFacts) MigrationPlan {
 	plan := MigrationPlan{TotalShards: shards}
@@ -105,11 +129,11 @@ func PlanClusterMigration(gt *ClusterGroundTruth, shards, replicasPerShard int, 
 		return plan
 	}
 	ranges := GenerateSlotRanges(shards)
+	plan.ShardsMoved = countShardsOnNewMasters(gt, name, ranges)
 
 	// Complete: no legacy nodes remain in the cluster.
 	if len(presentLegacyNodes(gt, legacy.LegacyNodeIDs)) == 0 {
 		plan.Phase = MigrationComplete
-		plan.ShardsMoved = countShardsOnNewMasters(gt, name, ranges)
 		plan.Reason = "no legacy nodes remain; migration complete"
 		return plan
 	}
@@ -119,35 +143,35 @@ func PlanClusterMigration(gt *ClusterGroundTruth, shards, replicasPerShard int, 
 		return planStandupOrMeet(plan, gt, name, shards, replicasPerShard, legacy)
 	}
 
-	// Draining: move the lowest un-migrated shard range onto its new master.
-	plan.ShardsMoved = countShardsOnNewMasters(gt, name, ranges)
-	if plan.ShardsMoved < shards {
-		plan.Phase = MigrationDraining
-		if move, k, ok := nextDrainMove(gt, name, ranges); ok {
-			plan.Move = move
-			plan.Reason = fmt.Sprintf("draining shard %d range %s to its new master",
-				k, FormatSlotRange(move.Start, move.End))
-		} else {
-			plan.Reason = "draining in progress; no clean range to move this pass"
-		}
-		return plan
-	}
-
-	// ReplicasAttached: attach new replicas to their new masters.
-	replicates, unattached, deferred := replicaAttaches(gt, name, shards, replicasPerShard, legacy.NewPodAddrs)
-	if unattached {
-		plan.Phase = MigrationReplicasAttached
+	// Replicate: some new pod is not yet a link-up replica of its shard's current range owner.
+	replicates, deferred, unsynced := planReplicates(gt, name, shards, replicasPerShard, ranges, legacy.NewPodAddrs)
+	if unsynced {
+		plan.Phase = MigrationReplicate
 		plan.Replicates = replicates
 		if deferred > 0 {
-			plan.Reason = fmt.Sprintf("attaching %d replica(s); %d deferred (target not yet known via gossip)",
+			plan.Reason = fmt.Sprintf("replicating %d new pod(s) onto their range owner; %d deferred (owner not yet known via gossip)",
 				len(replicates), deferred)
 		} else {
-			plan.Reason = fmt.Sprintf("attaching %d replica(s) to their new masters", len(replicates))
+			plan.Reason = fmt.Sprintf("replicating %d new pod(s) onto their range owner", len(replicates))
 		}
 		return plan
 	}
 
-	// Decommission: FORGET the drained legacy nodes and delete the legacy STS.
+	// Failover: all new pods synced, but some {name}-shard-K-0 does not yet own its range.
+	if fo, k, ok := nextFailover(gt, name, shards, ranges, legacy.NewPodAddrs); ok {
+		plan.Phase = MigrationFailover
+		plan.Failovers = []FailoverAction{fo}
+		mode := "coordinated"
+		if fo.Force {
+			mode = "forced TAKEOVER (range owner unreachable, replica synced)"
+		}
+		plan.Reason = fmt.Sprintf("promoting %s-shard-%d-0 to own range %s (%s)",
+			name, k, FormatSlotRange(ranges[k].Start, ranges[k].End), mode)
+		return plan
+	}
+
+	// Decommission: every new master owns its range and every new replica is a link-up replica
+	// of its new master (the redundancy gate) — FORGET the demoted legacy nodes and delete the STS.
 	plan.Phase = MigrationDecommission
 	plan.Forgets = presentLegacyIDsSorted(gt, legacy.LegacyNodeIDs)
 	plan.DeleteLegacy = !anyLegacyOwnsSlots(gt, legacy.LegacyNodeIDs)
@@ -222,6 +246,24 @@ func LegacyShapePreserved(gt *ClusterGroundTruth, shards, replicasPerShard int) 
 }
 
 // --- pure helpers ---
+
+// ownerOfRange returns the node that owns exactly the aligned range [start,end] (regardless
+// of reachability — the Force-failover edge needs an unreachable owner), or nil if none does.
+func ownerOfRange(gt *ClusterGroundTruth, start, end int) *ClusterNodeState {
+	for _, n := range gt.Nodes {
+		if nodeOwnsRange(n, start, end) {
+			return n
+		}
+	}
+	return nil
+}
+
+// isLinkUpReplicaOf is the LR-025 "synced" gate: rep is a replica of masterNodeID with its
+// replication link reported up. A replica whose link is still down is not yet synced, so it
+// is neither Failover-promotable nor a satisfied redundancy copy.
+func isLinkUpReplicaOf(rep *ClusterNodeState, masterNodeID string) bool {
+	return rep != nil && rep.Role == roleReplica && rep.MasterNodeID == masterNodeID && rep.LinkStatus == "up"
+}
 
 func newMasterPodName(name string, k int) string { return fmt.Sprintf("%s-shard-%d-0", name, k) }
 func newReplicaPodName(name string, k, m int) string {
@@ -301,68 +343,89 @@ func countShardsOnNewMasters(gt *ClusterGroundTruth, name string, ranges []struc
 	return count
 }
 
-// nextDrainMove returns the Move for the lowest shard K whose new master does not yet own
-// its range, sourced from whatever node currently owns that range (a legacy node). It
-// skips a shard whose range has no clean single owner this pass (mid-dance) so a later
-// pass resumes it; ok=false means no cleanly-movable range remains this pass.
-func nextDrainMove(gt *ClusterGroundTruth, name string,
-	ranges []struct{ Start, End int }) (*ReshardMove, int, bool) {
-	for k, r := range ranges {
-		destName := newMasterPodName(name, k)
-		dest := gt.Nodes[destName]
-		if dest != nil && nodeOwnsRange(dest, r.Start, r.End) {
-			continue // already migrated
-		}
-		source := nodeOwningRange(gt, r.Start, r.End, destName)
-		if source == nil || dest == nil {
-			continue // no clean owner this pass; resume later
-		}
-		return &ReshardMove{Start: r.Start, End: r.End, Source: source, Dest: dest}, k, true
-	}
-	return nil, 0, false
-}
-
-func nodeOwningRange(gt *ClusterGroundTruth, start, end int, excludePod string) *ClusterNodeState {
-	for _, n := range gt.Nodes {
-		if n.PodName == excludePod {
-			continue
-		}
-		if nodeOwnsRange(n, start, end) {
-			return n
-		}
-	}
-	return nil
-}
-
-// replicaAttaches returns the CLUSTER REPLICATE actions for new replicas not yet attached
-// to their shard master. A replica whose master the replica does not yet NodeKnows is
-// deferred (counted, not emitted) to avoid ERR Unknown node. unattached is true if any
-// new replica still needs attaching (emitted or deferred).
-func replicaAttaches(gt *ClusterGroundTruth, name string, shards, rps int,
-	addrs map[string]string) (replicates []ReplicaAttach, unattached bool, deferred int) {
+// planReplicates scans every new pod (master-to-be and its replicas) and, for those not yet a
+// link-up replica of the node currently owning their shard's range, emits a CLUSTER REPLICATE
+// (or defers it if the executing node does not yet NodeKnows the owner, avoiding ERR Unknown
+// node). unsynced is true if ANY new pod is not yet settled (⇒ stay in the Replicate phase).
+//
+// Per-pod "settled" means: a {name}-shard-K-0 that already owns range K (post-failover, done),
+// OR a link-up replica of ownerOfRange(range K). A pod already replicating the right owner but
+// with its link still down is NOT settled (keeps us in Replicate) yet is NOT re-emitted (that
+// would restart the in-flight full-sync).
+func planReplicates(gt *ClusterGroundTruth, name string, shards, rps int,
+	ranges []struct{ Start, End int }, addrs map[string]string) (replicates []ReplicaAttach, deferred int, unsynced bool) {
 	for k := range shards {
-		master := gt.Nodes[newMasterPodName(name, k)]
-		if master == nil {
-			continue
-		}
-		for m := 1; m <= rps; m++ {
-			repName := newReplicaPodName(name, k, m)
-			rep := gt.Nodes[repName]
-			if rep == nil {
+		r := ranges[k]
+		owner := ownerOfRange(gt, r.Start, r.End)
+		masterName := newMasterPodName(name, k)
+		for _, podName := range shardNewPods(name, k, rps) {
+			node := gt.Nodes[podName]
+			if node == nil {
+				continue // not MET (allNewPodsMet guards this; defensive)
+			}
+			// A K-0 that already owns its range is done, not a replicate target.
+			if podName == masterName && nodeOwnsRange(node, r.Start, r.End) {
 				continue
 			}
-			if rep.Role == roleReplica && rep.MasterNodeID == master.NodeID {
-				continue // already attached
+			if isLinkUpReplicaOf(node, ownerNodeID(owner)) {
+				continue // already a synced replica of the current owner
 			}
-			unattached = true
-			if !gt.NodeKnows(rep.NodeID, master.NodeID) {
+			unsynced = true
+			if owner == nil {
+				continue // no owner to attach to this pass; wait (cannot emit)
+			}
+			if node.Role == roleReplica && node.MasterNodeID == owner.NodeID {
+				continue // already replicating the owner, link just not up yet — do not re-issue
+			}
+			if !gt.NodeKnows(node.NodeID, owner.NodeID) {
 				deferred++
 				continue
 			}
-			replicates = append(replicates, ReplicaAttach{ReplicaAddr: addrs[repName], MasterID: master.NodeID})
+			replicates = append(replicates, ReplicaAttach{ReplicaAddr: addrs[podName], MasterID: owner.NodeID})
 		}
 	}
-	return replicates, unattached, deferred
+	return replicates, deferred, unsynced
+}
+
+// nextFailover returns the FailoverAction for the lowest shard K whose new master
+// {name}-shard-K-0 does not yet own range K. It is only called once planReplicates reports
+// fully synced, so that {name}-shard-K-0 is by construction a link-up replica of the range
+// owner — a coordinated CLUSTER FAILOVER is a lossless atomic ownership flip. Force (⇒
+// TAKEOVER) is set only on the §7 edge: the range owner is unreachable AND {name}-shard-K-0
+// is confirmed link-up/synced (it holds the data). ok=false means every K-0 owns its range.
+func nextFailover(gt *ClusterGroundTruth, name string, shards int,
+	ranges []struct{ Start, End int }, addrs map[string]string) (FailoverAction, int, bool) {
+	for k := range shards {
+		r := ranges[k]
+		masterName := newMasterPodName(name, k)
+		m0 := gt.Nodes[masterName]
+		if m0 != nil && nodeOwnsRange(m0, r.Start, r.End) {
+			continue // already owns its range
+		}
+		owner := ownerOfRange(gt, r.Start, r.End)
+		force := owner != nil && !owner.Reachable && isLinkUpReplicaOf(m0, owner.NodeID)
+		return FailoverAction{Addr: addrs[masterName], Force: force}, k, true
+	}
+	return FailoverAction{}, 0, false
+}
+
+// shardNewPods enumerates the new pod names of shard k: the master {name}-shard-k-0 first,
+// then its replicas 1..rps.
+func shardNewPods(name string, k, rps int) []string {
+	pods := []string{newMasterPodName(name, k)}
+	for m := 1; m <= rps; m++ {
+		pods = append(pods, newReplicaPodName(name, k, m))
+	}
+	return pods
+}
+
+// ownerNodeID returns owner.NodeID, or "" when owner is nil (so isLinkUpReplicaOf, which
+// requires a non-empty MasterNodeID match, cleanly reports "not settled").
+func ownerNodeID(owner *ClusterNodeState) string {
+	if owner == nil {
+		return ""
+	}
+	return owner.NodeID
 }
 
 func presentLegacyNodes(gt *ClusterGroundTruth, legacyIDs []string) []*ClusterNodeState {
