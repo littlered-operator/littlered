@@ -265,7 +265,7 @@ type ExporterSpec struct {
 	// Tag is the image version tag.
 	// Keep in sync with redis-exporter.Dockerfile (the source Dependabot bumps);
 	// kubebuilder markers must be string literals so this cannot reference the const.
-	// +kubebuilder:default="v1.85.0"
+	// +kubebuilder:default="v1.88.0"
 	// +optional
 	Tag string `json:"tag,omitempty"`
 

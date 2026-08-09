@@ -1180,7 +1180,8 @@ func TestBuildExporterContainer(t *testing.T) {
 	}
 
 	// Check image
-	expectedImage := "docker.io/oliver006/redis_exporter:v1.85.0"
+	expectedImage := littleredv1alpha1.DefaultRegistry + "/" +
+		littleredv1alpha1.DefaultExporterPath + ":" + littleredv1alpha1.DefaultExporterTag
 	if container.Image != expectedImage {
 		t.Errorf("Container image = %q, want %q", container.Image, expectedImage)
 	}

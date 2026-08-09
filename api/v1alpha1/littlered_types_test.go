@@ -95,13 +95,13 @@ func TestExporterSpec_FullImage(t *testing.T) {
 			name:         "all defaults with empty main registry",
 			spec:         ExporterSpec{},
 			mainRegistry: "",
-			expected:     "docker.io/oliver006/redis_exporter:v1.85.0",
+			expected:     DefaultRegistry + "/" + DefaultExporterPath + ":" + DefaultExporterTag,
 		},
 		{
 			name:         "inherit main registry",
 			spec:         ExporterSpec{},
 			mainRegistry: testRegistryGCR,
-			expected:     "gcr.io/oliver006/redis_exporter:v1.85.0",
+			expected:     testRegistryGCR + "/" + DefaultExporterPath + ":" + DefaultExporterTag,
 		},
 		{
 			name: "override main registry",
@@ -109,7 +109,7 @@ func TestExporterSpec_FullImage(t *testing.T) {
 				Registry: "quay.io",
 			},
 			mainRegistry: testRegistryGCR,
-			expected:     "quay.io/oliver006/redis_exporter:v1.85.0",
+			expected:     "quay.io/" + DefaultExporterPath + ":" + DefaultExporterTag,
 		},
 		{
 			name: "custom path and tag",
