@@ -5,6 +5,17 @@ Proposed (targets 0.3.x). Supersedes **ADR-007 §5** ("Upgrading a pre-0.3.0 clu
 not supported; it is a documented clean-slate migration") and the terminal-`Failed` posture of
 its `LegacyClusterTopology` guard. Implementation mechanics: `docs/LEGACY_CLUSTER_MIGRATION_DESIGN.md`.
 
+> **Amended 2026-08-09 (restart-safety redesign, LR-025).** The migration *mechanism* changed from
+> node-to-node slot **reshard** (native ASM, or the pre-8.4 MIGRATE "dance") to **replicate-then-failover**.
+> A live s1 run (dance path, Redis 7.4.0) showed the reshard mechanism both **deadlocks** and **loses data**
+> when a new per-shard master restarts mid-drain: the drain leaves that master owning slots on EmptyDir
+> **with no replica yet** (replicas attached only afterward), so a restart trips the startup STEP-3 guard
+> (LR-003 — no replica to `TAKEOVER` → `CrashLoopBackOff`) and the just-migrated keys, already deleted from
+> the source, are lost. The hole is latent in the ASM path too (Run A passed only because ASM's window is
+> ~8s). The fix is structural, not a patch (see Decision 4, the phases in Decision 7, and Alternatives):
+> keep the new nodes **slot-less** until an atomic, already-redundant handoff. Design mechanics for the
+> new mechanism: `docs/LEGACY_CLUSTER_MIGRATION_DESIGN.md` §10.
+
 > ADR number: 013, not 010–012. Those are claimed on sibling branches (010 ghost-replica prune,
 > 011 failover, 012 multi-site); 013 avoids an integration collision.
 
@@ -48,18 +59,29 @@ The only legacy-naming awareness required is a prefix check (`{name}-cluster` ST
 pods) to exempt legacy nodes from ghost-FORGET and to delete the old STS at the end — a handful of
 lines, not the ~350-line reconcile rewrite the split removed.
 
-The natural mechanism is exactly what Redis Cluster is built for: stand the new empty per-shard
-STSs up **alongside** the old single STS, `MEET` them into the same cluster, drain slots old→new
-online, attach the new replicas, then `FORGET` + delete the old STS. Data never leaves the cluster;
-it migrates node-to-node.
+The natural mechanism is exactly what Redis Cluster is built for. Because the move is 1:1 range-for-range
+(fact 3), migration is a **node-placement change, not a slot change** — range K is already range K, and all
+we do is replace *which node* owns it. Redis's canonical way to replace a node is replication + failover, so:
+stand the new empty per-shard STSs up **alongside** the old single STS, `MEET` them into the same cluster,
+make each new pod a **slot-less replica** of the legacy master that owns its range and let it full-sync,
+then promote `{name}-shard-K-0` with a coordinated `CLUSTER FAILOVER` (an atomic ownership flip to a node
+that is already caught up; the legacy master demotes to a live replica of it), and finally `FORGET` +
+delete the old STS. Data never leaves the cluster; the slots never logically move — only mastership does.
+
+> The **original** mechanism drained slots old→new node-to-node (native ASM / MIGRATE dance) and attached
+> the new replicas *afterward*. That is the LR-025 restart-safety hole (Status amendment above, and
+> Alternatives). Replicate-then-failover keeps every new node slot-less until the atomic handoff, so it is
+> restart-safe by construction — the reasoning below (identity-based data-plane, no striped decode) is
+> unchanged and, if anything, cleaner: with no slot move at all, even the transient split-ownership state
+> the repair loop had to be suspended for no longer arises during the transfer.
 
 ## Decision
 
 ### 1. Migration is the **default** resolution (opt-out), not opt-in
 On detecting a legacy `{name}-cluster` STS, the 0.3 operator **enters migration mode** instead of
 failing. "Unmanaged and terminal" is not an acceptable resting state, and — unlike a clean-slate
-rebuild — an in-cluster reshard is **data-safe by construction** (see Decision 4), so it needs no
-data-safety opt-in. `LegacyClusterTopology` is repurposed from a terminal `Failed` into the
+rebuild — an in-cluster replicate-then-failover migration is **data-safe by construction** (see
+Decision 4), so it needs no data-safety opt-in. `LegacyClusterTopology` is repurposed from a terminal `Failed` into the
 **in-progress** condition, carrying the migration phase; it becomes terminal-`Failed` again only if
 migration cannot safely proceed (e.g. a non-shape-preserving legacy topology, Decision 5).
 
@@ -77,14 +99,30 @@ proceed. The annotation is transient and self-documents as temporary — chosen 
 nothing is added to the CRD and removing the feature later is deleting a file plus re-tightening one
 guard. No other annotation value has meaning; `hold` is the only recognized value.
 
-### 4. Data-safe by construction — including the one delete
-The slot move is key-preserving (native ASM, or the incremental key-draining dance) — the same
-"a non-lossy reshard always exists, so no drop-keys opt-in is built" reasoning as ADR-006/LR-018.
-The operator's one departure from ADR-007's "never auto-delete the old STS": it **does** delete the
-legacy `{name}-cluster` STS + PDB at decommission — but only *after* every legacy node owns **zero
-slots**. In a pure in-memory cluster, cluster data ⟺ slot ownership (the LR-023 invariant), so a
-zero-slot node holds no data and deleting it loses nothing. ADR-007 refused to delete because it
-could not first drain; once we can drain, deleting an emptied STS is the safe, natural completion.
+### 4. Data-safe by construction — new nodes own slots only after an atomic, already-redundant handoff
+Migration replaces each shard's node placement by **replication + failover**, never by moving slots
+onto a bare new node (LR-025). For shard K the new pods first join as **slot-less replicas** of the
+node that currently owns range K (the legacy master), full-sync its data, and only then is
+`{name}-shard-K-0` promoted by a coordinated `CLUSTER FAILOVER` — an atomic ownership flip to a node
+that is already caught up, and whose old master demotes to a live replica of it. Consequences:
+
+- **A new node holds no slots for the entire data transfer**, so it never enters the one state that is
+  unsafe under EmptyDir + no-persistence (pillar 3.1): *owning slots with no synced replica*. That is
+  precisely the state that both deadlocks the startup STEP-3 guard (LR-003 — a restarted slot-owner with
+  no replica to `TAKEOVER` parks → `CrashLoopBackOff`) and loses the just-migrated, already-source-deleted
+  keys. It is the failure the reshard mechanism hit live on s1 (LR-025); replicate-then-failover removes
+  the state itself, so no startup-script change is needed (contrast the LR-023 recycle).
+- **Every slot has ≥2 live copies at every instant**: legacy master + new node(s) during sync; new master
+  + demoted-legacy master (+ new replicas) after failover. This holds independent of `replicasPerShard`,
+  **including `0`** — the demoted legacy master is the transient replica until decommission, so even a
+  no-replica cluster is restart-safe *throughout* the migration and returns to its single-copy contract
+  only at the final `FORGET`. (This is why LR-025 needs no rps=0 special case.)
+- **The one operator delete** (legacy `{name}-cluster` STS + PDB) still departs from ADR-007's "never
+  auto-delete", and is still gated on data-safety: a legacy node is `FORGET`-then-deleted only once the
+  shard replacing it is fully `(1+replicasPerShard)`-replicated on new nodes — so removing the legacy
+  copies never drops a shard below its target redundancy. In a pure in-memory cluster cluster data ⟺ slot
+  ownership (the LR-023 invariant); by decommission every legacy node is a slot-less demoted replica, so
+  deleting it loses nothing.
 
 ### 5. Shape-preserving only
 The first cut migrates `shards` masters + `replicasPerShard` replicas into the identically-shaped
@@ -97,11 +135,12 @@ completes.
 
 ### 6. The normal repair loop is suspended during migration
 Only the migration driver mutates topology while migration is in flight. The steady-state repair
-loop assumes the per-shard topology: its slot-alignment check (Step 3) would balk at the transient
-split of slots across legacy + new nodes, and its ghost-FORGET (Step 2) would try to evict the
-legacy nodes as unknown. Both are bypassed until migration reaches `Complete`; the driver owns all
-`MEET`/move/`REPLICATE`/`FORGET` in the interim. Ghost-FORGET, when it does run, is taught to
-exempt legacy-named nodes for the migration window.
+loop assumes the finished per-shard topology: during migration the cluster transiently carries the
+legacy nodes *plus* the new nodes as extra cross-STS replicas of the legacy masters, which its
+ghost-FORGET (Step 2) would try to evict as unknown and its shard-aware reattach / colocation checks
+(Step 4, LR-020) would try to "correct." Both are bypassed until migration reaches `Complete`; the
+driver owns all `MEET`/`REPLICATE`/`FAILOVER`/`FORGET` in the interim. Ghost-FORGET, when it does
+run, is taught to exempt legacy-named nodes for the migration window.
 
 ### 7. A pure decision seam
 The migration decision is a pure function `planClusterMigration(ground-truth, spec, legacy-facts)
@@ -112,20 +151,36 @@ whether the new STSs exist, whether the legacy STS still exists) — never read 
 nothing load-bearing is persisted. This keeps the whole decision unit-TDD-able (red-first) and the
 e2e a thin integration shell.
 
-### Migration phases
+### Migration phases (replicate-then-failover, LR-025)
 Re-derivable, idempotent, resumable from live state:
 
-`Standup` (create the empty `{name}-shard-K` STSs) → `Meet` (`MEET` every new pod into the cluster
-via a legacy seed) → `Draining` (one range-for-range move per reconcile, ASM or dance by capability)
-→ `ReplicasAttached` (`ClusterReplicate` each `{name}-shard-K-M` to `{name}-shard-K-0`) → `Decommission`
-(`FORGET` all legacy nodes, delete the `{name}-cluster` STS + PDB once they own zero slots) →
-`Complete` (legacy STS gone; the `LegacyClusterTopology` condition clears and the normal repair loop
-resumes; `lrctl verify` colocation passes).
+`Standup` (create the empty `{name}-shard-K` STSs) → `Meet` (`MEET` every new pod into the cluster via a
+legacy seed) → `Replicate` (`CLUSTER REPLICATE` **every** new pod — master-to-be *and* its replicas — onto
+the node that currently owns its shard's range, i.e. the legacy master for range K, and wait for each
+replication link to come `up`; the new nodes full-sync as slot-less replicas) → `Failover` (one coordinated
+`CLUSTER FAILOVER` per pass, issued on a synced `{name}-shard-K-0`, promoting it to own range K; the legacy
+master demotes to a replica of it and the shard's other new replicas reparent to the new master) →
+`Decommission` (`FORGET` all legacy nodes and delete the `{name}-cluster` STS + PDB, once every new master
+owns its range **and** every new replica is a link-`up` replica of its new master — so no shard is left
+below its `(1+replicasPerShard)` redundancy) → `Complete` (legacy STS gone; the `LegacyClusterTopology`
+condition clears and the normal repair loop resumes; `lrctl verify` colocation passes).
+
+The mechanism uses only Redis's most battle-tested primitives — `MEET`, `REPLICATE`, coordinated
+`FAILOVER`, `FORGET` — and **no slot move**: no native ASM, no MIGRATE dance, no `-ASK`/`-MOVED` churn
+during the transfer (new nodes are invisible replicas until their shard's single atomic failover). The
+reshard executor (`moveSlotRange`, ASM/dance capability probe) stays in the tree for LR-018 consolidated-
+shard recovery, but migration no longer calls it.
 
 ## Consequences
 - 0.2→0.3 becomes an **online, in-place, zero-copy-out** migration with no client-visible outage
-  beyond ordinary per-slot `-ASK`/`-MOVED` redirection — strictly better than the clean-slate
-  rebuild ADR-007 documented.
+  beyond one atomic `-MOVED` ownership flip per shard at its failover (the new nodes sync as invisible
+  replicas beforehand, so there is no per-slot redirection churn during the transfer) — strictly better
+  than the clean-slate rebuild ADR-007 documented.
+- **Restart-safe for all `replicasPerShard` (incl. 0)** and the **startup script is unchanged** (LR-025):
+  a new node reaches the slot-owning state only after a clean failover, at which point it always has a
+  synced replica (the demoted legacy master, then its own new replicas), so the existing STEP-3 `TAKEOVER`
+  breaker (LR-003) suffices — migration adds no startup-script special case (the LR-023 precedent). The
+  reshard mechanism it replaces was not restart-safe (Status amendment, Alternatives).
 - Upgrading the 0.3 operator over a legacy cluster **is** the migration trigger. This is an
   irreversible, production-affecting event (a one-way door on operator version: once slots live on
   per-shard nodes, only 0.3 understands them). Made **observable** (status phases) and **pausable**
@@ -138,6 +193,22 @@ resumes; `lrctl verify` colocation passes).
 - ADR-007 §5 and the `LegacyClusterTopology` / clean-slate USAGE notes are amended accordingly.
 
 ## Alternatives considered
+- **Node-to-node slot reshard (native ASM, or the pre-8.4 MIGRATE "dance") to move each range onto a
+  bare new master.** This was the *original* mechanism — reused wholesale from the LR-018 reshard executor,
+  which is what made ADR-013 cheap to propose — and is now **superseded** (restart-safety redesign, LR-025).
+  It leaves each new master owning slots on EmptyDir **with no replica** for the whole drain window (replicas
+  attached only in a later phase), so any restart of that master both deadlocks the startup STEP-3 guard (no
+  replica to `TAKEOVER` → `CrashLoopBackOff`) and loses the just-migrated, already-source-deleted keys — found
+  live on s1 (dance path; latent in ASM, whose ~8s atomic window merely made a restart unlikely). A minimal
+  patch — "attach a synced replica to each new master *before* draining into it" — would have closed the
+  window only for `replicasPerShard ≥ 1` and only down to the async-replication lag, and would still transit
+  the dangerous slot-owning state. Replicate-then-failover instead removes the unsafe state entirely: new
+  nodes stay slot-less until an atomic, already-redundant handoff, restart-safe for all `replicasPerShard`,
+  built from Redis's most-trusted primitives, and *simpler* in the migration path (no ASM-vs-dance capability
+  branch, no incremental key-batch draining, no `-ASK`/`-MOVED` churn). Its one cost — each new master
+  full-syncs from a live legacy master (a fork/CoW event) — is the ordinary replica-resync load the cluster's
+  sizing already tolerates in steady state (every EmptyDir replica restart triggers it), and it is paced one
+  shard per reconcile.
 - **Opt-in (annotation to start; refuse otherwise).** Rejected: leaves the default resting state
   unmanaged and terminal — the exact dead end this ADR removes. The annotation survives only as the
   `hold` opt-*out*.
