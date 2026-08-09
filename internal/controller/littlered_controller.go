@@ -35,7 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -91,7 +91,7 @@ func (e *SentinelError) Error() string {
 type LittleRedReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 
 	// Sentinel monitoring
 	sentinelEvents chan event.GenericEvent
@@ -107,7 +107,10 @@ func (r *LittleRedReconciler) event(lr *littleredv1alpha1.LittleRed, eventType, 
 	if r.Recorder == nil {
 		return
 	}
-	r.Recorder.Event(lr, eventType, reason, message)
+	// events/v1 API: (regarding, related, eventtype, reason, action, note, args).
+	// We have no distinct "related" object, and reuse reason as the machine-readable
+	// action. message is passed as a literal note (%s) so a stray % never formats.
+	r.Recorder.Eventf(lr, nil, eventType, reason, reason, "%s", message)
 }
 
 // +kubebuilder:rbac:groups=redis.chuck-chuck-chuck.net,resources=littlereds,verbs=get;list;watch;create;update;patch;delete
@@ -118,6 +121,7 @@ func (r *LittleRedReconciler) event(lr *littleredv1alpha1.LittleRed, eventType, 
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete

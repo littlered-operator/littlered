@@ -16,13 +16,6 @@
 - apiGroups:
   - ''
   resources:
-  - events
-  verbs:
-  - create
-  - patch
-- apiGroups:
-  - ''
-  resources:
   - pods
   verbs:
   - get
@@ -38,6 +31,14 @@
   - get
   - list
   - watch
+- apiGroups:
+  - ''
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
 - apiGroups:
   - apps
   resources:
