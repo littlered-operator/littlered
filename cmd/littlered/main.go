@@ -212,7 +212,7 @@ func main() {
 	if err := (&controller.LittleRedReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("littlered-controller"),
+		Recorder: mgr.GetEventRecorderFor("littlered-controller"), //nolint:staticcheck // migrate to events/v1 in 0.3.0
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LittleRed")
 		os.Exit(1)
