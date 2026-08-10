@@ -15,14 +15,19 @@ This guide shows how to deploy and use Redis instances with the LittleRed operat
 ### Option 1: Helm (Recommended)
 
 ```bash
-# Clone the repository
-git clone https://github.com/littlered-operator/littlered-operator.git
-cd littlered-operator
+# From the published OCI chart (recommended)
+helm upgrade --install littlered oci://ghcr.io/littlered-operator/charts/littlered \
+  -n littlered-system --create-namespace
 
-# Install the operator
-helm install littlered ./charts/littlered-operator \
-  -n littlered-system \
-  --create-namespace
+# For a pinned version, add: --version <version>
+```
+
+Or from a source checkout:
+
+```bash
+git clone https://github.com/littlered-operator/littlered-operator.git
+helm upgrade --install littlered ./littlered-operator/charts/littlered \
+  -n littlered-system --create-namespace
 ```
 
 #### Verify installation
@@ -45,8 +50,8 @@ Create a `values.yaml` file:
 
 ```yaml
 image:
-  repository: ghcr.io/littlered-operator/littlered-operator
-  tag: "0.1.0"
+  repository: ghcr.io/littlered-operator/littlered
+  # tag: ""   # defaults to the chart's appVersion — pin only to override
 
 resources:
   limits:
@@ -84,16 +89,15 @@ topologySpreadConstraints:
 Install with custom values:
 
 ```bash
-helm install littlered ./charts/littlered-operator \
-  -n littlered-system \
-  --create-namespace \
+helm upgrade --install littlered oci://ghcr.io/littlered-operator/charts/littlered \
+  -n littlered-system --create-namespace \
   -f values.yaml
 ```
 
 #### Upgrade
 
 ```bash
-helm upgrade littlered ./charts/littlered-operator -n littlered-system
+helm upgrade littlered oci://ghcr.io/littlered-operator/charts/littlered -n littlered-system
 ```
 
 **Important: Upgrading CRDs**
@@ -101,7 +105,7 @@ helm upgrade littlered ./charts/littlered-operator -n littlered-system
 Helm does not automatically update CRDs on `helm upgrade`. If the LittleRed CRD schema has changed (e.g., new fields like `spec.cluster`), you must apply the CRD manually:
 
 ```bash
-kubectl apply -f charts/littlered-operator/crds/redis.chuck-chuck-chuck.net_littlereds.yaml
+kubectl apply -f charts/littlered/crds/redis.chuck-chuck-chuck.net_littlereds.yaml
 ```
 
 #### Uninstall
@@ -113,31 +117,7 @@ helm uninstall littlered -n littlered-system
 kubectl delete crd littlereds.redis.chuck-chuck-chuck.net
 ```
 
-### Option 2: Kustomize
-
-```bash
-# Clone the repository
-git clone https://github.com/littlered-operator/littlered-operator.git
-cd littlered-operator
-
-# Install CRDs and operator
-kubectl apply -k config/default
-```
-
-#### Verify installation
-
-```bash
-kubectl get pods -n redis-operator-system
-kubectl get crd littlereds.redis.chuck-chuck-chuck.net
-```
-
-#### Uninstall
-
-```bash
-kubectl delete -k config/default
-```
-
-### Option 3: ArgoCD
+### Option 2: ArgoCD
 
 Create an ArgoCD Application:
 
@@ -151,12 +131,8 @@ spec:
   project: default
   source:
     repoURL: https://github.com/littlered-operator/littlered-operator.git
-    targetRevision: main
-    path: charts/littlered-operator
-    helm:
-      values: |
-        image:
-          tag: "0.1.0"
+    targetRevision: main          # or a release tag, e.g. v0.3.0
+    path: charts/littlered
   destination:
     server: https://kubernetes.default.svc
     namespace: littlered-system
@@ -203,9 +179,8 @@ Use it for a single-tenant or per-team operator ("this operator manages only the
 `team-a` namespace"), or to manage a specific set of namespaces:
 
 ```bash
-helm install littlered ./charts/littlered \
-  -n littlered-system \
-  --create-namespace \
+helm upgrade --install littlered oci://ghcr.io/littlered-operator/charts/littlered \
+  -n littlered-system --create-namespace \
   --set scope.watchNamespaces={team-a,team-b}
 ```
 
@@ -550,29 +525,67 @@ With 3 shards, slots are distributed as:
 
 ### Important notes
 
-- **Supported Topologies (V1 Release)**: To ensure absolute stability for the initial release, the operator specifically validates and supports **exactly 3 shards** with either **0 or 1 replica** per shard. While the API is architected for arbitrary cluster sizes, larger topologies are currently considered experimental and are rejected by the validation logic. We plan to expand this support to variable cluster sizes in upcoming minor versions.
+- **Supported topologies**: **3 or more shards** with **0 or more replicas per shard** (default: 3 shards, 1 replica). The minimum of 3 is a Redis Cluster requirement — it needs at least 3 masters. Both counts are validated (`shards ≥ 3`, `replicasPerShard ≥ 0`).
 - **In-memory mode**: No persistence. Data will be lost on full cluster restart. By default, 'noeviction' is used, so data is not forgotten when memory is full (Redis will return errors instead).
 - **No PVCs**: Cluster state stored in CR status, not nodes.conf.
-- **Minimum 3 shards**: Redis Cluster requires at least 3 masters.
-- **Scaling not yet supported**: Adding/removing shards requires manual intervention.
+- **Runtime scaling**: reducing `spec.cluster.shards` is refused (`ShardScaleDownRefused` — the operator never deletes data). Automated shard scale-up (resharding slots onto new shards) is not yet supported; treat the shard count as fixed after creation.
 
-### Upgrading to 0.3.0 (cluster mode)
+### Upgrading a pre-0.3 cluster
 
 0.3.0 restructures cluster mode from a single StatefulSet (`{name}-cluster`, pods
 `{name}-cluster-N`) into **one StatefulSet per shard** (`{name}-shard-K`, pods
-`{name}-shard-K-O` where `-K-0` is the shard master and `-K-1…-K-R` its replicas).
-This renames the workloads and every pod. Because cluster storage is in-memory
-(EmptyDir), there is nothing to carry over: this is a **clean-slate migration —
-cluster data is lost on upgrade**.
+`{name}-shard-K-M` where `-K-0` is the shard master and `-K-1…-K-R` its replicas), so
+each shard's master and replica(s) can be pinned to separate failure domains (see
+[shardAntiAffinity](#spreading-pods-across-nodes-and-failure-domains)).
 
-- The operator will **not** auto-delete the legacy `{name}-cluster` StatefulSet — it
-  never deletes data by default. Instead it surfaces a `LegacyClusterTopology`
-  status condition and waits until you remove the old workload manually
-  (`kubectl delete statefulset {name}-cluster`).
-- Once the legacy StatefulSet is gone, the operator creates the per-shard
-  StatefulSets and bootstraps a fresh cluster.
-- Reducing `spec.cluster.shards` is refused (`ShardScaleDownRefused`); shard count
-  can only be held or increased.
+**The migration is automatic, online, and data-safe — no action is required.** When the
+upgraded operator finds a legacy `{name}-cluster` StatefulSet, it migrates the instance
+in place to the per-shard layout, on the same running Redis Cluster:
+
+- Each new per-shard pod joins as a **slot-less replica** of the legacy master that owns
+  its range and full-syncs; then `{name}-shard-K-0` is promoted by a coordinated
+  `CLUSTER FAILOVER` (an atomic ownership flip). Slots are never moved, so every slot
+  keeps at least two live copies at every instant — **no data loss**, and no window where
+  a shard serves from a single copy.
+- **Client connection endpoints do not change.** The client Service `{name}` and the
+  headless Service `{name}-cluster` are shard-agnostic and keep fronting the pods
+  throughout, so applications are unaffected.
+- Progress is reported on `status.cluster.migration` (`phase`, `shardsMoved`,
+  `totalShards`) and a `Ready=False` / `MigrationInProgress` condition. The phases are
+  `Standup → Meet → Replicate → Failover → Decommission → Complete`. When it reaches
+  `Complete`, the operator removes the legacy `{name}-cluster` StatefulSet automatically
+  and the instance returns to steady state.
+
+What to keep in mind:
+
+- **Only the workload and pod names change** (`{name}-cluster-N` → `{name}-shard-K-M`).
+  Update anything that references them directly — scripts, dashboards, NetworkPolicies,
+  `kubectl exec` one-liners.
+- The migration is **shape-preserving**: it moves the *same* topology (same `shards`, same
+  `replicasPerShard`) onto the new layout. It begins only once the legacy cluster is
+  healthy (`cluster_state:ok`, all 16384 slots assigned, all legacy pods Ready, a reachable
+  master quorum), and a non-shape-preserving legacy cluster is refused
+  (`MigrationUnsupportedTopology`). Change `shards`/`replicasPerShard` only **after** the
+  migration completes.
+- Reducing `spec.cluster.shards` is always refused (`ShardScaleDownRefused`).
+
+**Pausing the migration (opt-out).** To hold a legacy cluster in its current shape — for a
+change-control window, say — set the annotation before (or during) the upgrade:
+
+```bash
+kubectl annotate littlered <instance> redis.chuck-chuck-chuck.net/migrate-legacy-sts=hold
+```
+
+While held, the operator makes **no changes** and surfaces a `MigrationHeld` condition.
+Note the trade-off: holding also **suspends the operator's repair loop** for that instance,
+so the legacy cluster keeps serving but is effectively **unmanaged** (no ghost-node healing,
+no failover assistance) until you remove the annotation:
+
+```bash
+kubectl annotate littlered <instance> redis.chuck-chuck-chuck.net/migrate-legacy-sts-
+```
+
+Removing it lets the migration proceed to `Complete`.
 
 ---
 
@@ -931,12 +944,20 @@ The `minReadySeconds` setting ensures:
 #### Trigger via kubectl
 
 ```bash
-# Restart all pods in the StatefulSet
-kubectl rollout restart statefulset <name>-cluster -n <namespace>
+# Standalone / sentinel: a single StatefulSet
+kubectl rollout restart statefulset <name> -n <namespace>
 
-# Example for a cluster named "my-cluster"
-kubectl rollout restart statefulset my-cluster-cluster -n default
+# Cluster mode is one StatefulSet PER SHARD ({name}-shard-K). Roll them one at a time,
+# waiting for each to settle, so you never restart two shard masters at once:
+kubectl rollout restart statefulset my-cluster-shard-0 -n default
+kubectl rollout status  statefulset my-cluster-shard-0 -n default
+# …then my-cluster-shard-1, my-cluster-shard-2, and so on.
 ```
+
+> **Prefer a CR update for cluster mode.** When a pod-template change arrives through the CR
+> (below), the operator rolls the shard StatefulSets **one at a time**, waiting for each to
+> settle before the next — so only one shard master restarts at a time. A manual
+> `kubectl rollout restart` of every shard StatefulSet at once bypasses that serialization.
 
 #### Trigger via CR Update
 
@@ -954,8 +975,8 @@ spec:
 #### Monitor Rollout Status
 
 ```bash
-# Watch rollout progress
-kubectl rollout status statefulset my-cluster-cluster -n default
+# Watch rollout progress (cluster mode: one StatefulSet per shard, check each)
+kubectl rollout status statefulset my-cluster-shard-0 -n default
 
 # Check pod restarts
 kubectl get pods -n default -l app.kubernetes.io/instance=my-cluster -w

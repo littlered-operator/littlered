@@ -4,43 +4,15 @@ A Kubernetes operator for deploying Redis/Valkey as a pure in-memory data store.
 
 LittleRed is built for workloads where persistence is explicitly disabled and never enabled—not even by accident. It provides a full reconciliation engine to manage node identities and cluster membership across restarts and failures: the class of problem where static Helm charts and startup scripts reach their limits.
 
-## Upgrading to v0.3.0 — Breaking Change (Cluster Mode)
+## Upgrading to v0.3.0 (Cluster Mode)
 
-> **WARNING:** v0.3.0 restructures **cluster mode** from a single StatefulSet (`{name}-cluster`) into **one StatefulSet per shard** (`{name}-shard-K`, with pods `{name}-shard-K-0` … `-K-R`). This renames the workloads and pods, and because LittleRed is pure in-memory (EmptyDir), a cluster instance's data does **not** survive the migration — it is a clean-slate rebuild. **`standalone` and `sentinel` instances are unaffected.**
+> v0.3.0 restructures **cluster mode** from a single StatefulSet (`{name}-cluster`) into **one StatefulSet per shard** (`{name}-shard-K`, with pods `{name}-shard-K-0` … `-K-R`), so each shard's master and replica(s) can be pinned to separate failure domains. **`standalone` and `sentinel` instances are unaffected.**
 >
-> LittleRed never deletes data on your behalf: the operator **refuses** to reconcile a cluster instance while the old `{name}-cluster` StatefulSet still exists (surfacing a `LegacyClusterTopology` status condition) rather than silently rebuilding it. To upgrade a cluster instance, delete it first, then re-create it after the operator is upgraded:
+> **Existing cluster instances migrate automatically — no action required.** When the upgraded operator finds a pre-0.3 `{name}-cluster` StatefulSet, it performs an **online, in-place, data-safe** migration to the per-shard layout: no delete-and-recreate, no data loss, and no change to client connection endpoints (the `{name}` client Service and the `{name}-cluster` headless Service are unchanged). It replicates each shard onto its new pods and hands ownership over with a coordinated failover, so every slot keeps at least two live copies throughout. Progress shows on `status.cluster.migration` and a `Ready=False` / `MigrationInProgress` condition until it reaches `Complete`.
 >
-> ```bash
-> # 1. Delete cluster-mode LittleRed resources (this WILL delete their data — in-memory only)
-> kubectl delete littlered <your-cluster-instance> -n <namespace>
->
-> # 2. Upgrade the operator (installs the new CRDs automatically)
-> helm upgrade littlered oci://ghcr.io/littlered-operator/charts/littlered -n littlered-system
->
-> # 3. Re-apply your cluster resources
-> kubectl apply -f my-cluster.yaml
-> ```
+> Only the **workload and pod names change** (`{name}-cluster-N` → `{name}-shard-K-M`) — update anything that references them directly (scripts, dashboards, NetworkPolicies). To pause the migration for a maintenance window, set the annotation `redis.chuck-chuck-chuck.net/migrate-legacy-sts: hold` before upgrading. See [Upgrading a pre-0.3 cluster](docs/USAGE.md#upgrading-a-pre-03-cluster).
 >
 > **New:** per-shard failure-domain isolation via `spec.placement.shardAntiAffinity` (spread each shard's master and replica(s) across nodes/zones). See [USAGE.md](docs/USAGE.md).
-
-## Upgrading to v0.2.0 — Breaking Change
-
-> **WARNING:** v0.2.0 migrates the API group from `chuck-chuck-chuck.net` to `redis.chuck-chuck-chuck.net`. CRDs are **not** upgraded in place. Before upgrading the operator, you must delete all existing LittleRed custom resources and CRDs, then re-create them after installing the new version.
->
-> ```bash
-> # 1. Delete all LittleRed resources (this WILL delete the underlying Redis pods)
-> kubectl delete littlered --all --all-namespaces
->
-> # 2. Delete the old CRDs
-> kubectl delete crd littlereds.chuck-chuck-chuck.net
->
-> # 3. Upgrade the operator (this installs the new CRDs automatically)
-> helm upgrade littlered oci://ghcr.io/littlered-operator/charts/littlered \
->   -n littlered-system
->
-> # 4. Re-apply your LittleRed resources (using the new apiVersion: redis.chuck-chuck-chuck.net/v1alpha1)
-> kubectl apply -f my-store.yaml
-> ```
 
 ## Quick Start
 
