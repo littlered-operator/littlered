@@ -426,3 +426,28 @@ reshard mechanism (memory/fork, client churn, primitives, code): ADR-013 Alterna
   needs, since the migration caller that motivated the `done` flag is gone.)
 - `MigrationPlan.Move *ReshardMove` → replaced by `Replicates []ReplicaAttach` (already present) + new
   `Failovers []FailoverAction`.
+
+### 10.1 Chaos follow-up — the self-replicate deadlock (found live on scm-s2, 2026-08-10)
+
+The restart-during-migration chaos tier surfaced a **second, distinct** failure mode of the replicate-then-
+failover mechanism — unrelated to the §10 draining hole it replaced. Crash (B) crashed the intended new master
+`{name}-shard-0-0` while it owned its slot range; while it was down, **Redis natively failed the range over to
+the new *replica* pod `{name}-shard-0-1`**, promoting it to master. The `Replicate` planner then resolved "the
+current owner of shard 0's range" to `{name}-shard-0-1` **itself** and emitted `CLUSTER REPLICATE <self>`, which
+Redis rejects (`ERR Can't replicate myself`); the phase is a hard gate before `Failover`, so the driver retried
+the impossible attach every reconcile and the migration hung at `Replicate (2/3)` for 14m+. No data loss (all
+16384 slots stayed served) — a pre-`Failover` correctness stall. Env/timing-sensitive: not seen on s1 (fast
+dead-IP RST narrows the native-failover window), seen on scm-s2 (blackholing widens it, so the new *replica* won
+the election rather than the restarted intended master).
+
+**Fix.** In `planReplicates` (`internal/redis/migration_plan.go`), the exemption "a new pod that already owns its
+shard's range is settled, not a replicate target" was generalized from *just* `{name}-shard-K-0` to **any** new
+pod (`nodeOwnsRange(node, …)`). A node is never its own range owner, so `REPLICATE <self>` can no longer be
+emitted; the crashed-and-restarted `{name}-shard-K-0` is attached onto the current new-side owner instead, and
+the `Failover` phase then reconciles which `{name}-shard-K-0` is master (roles are fluid in cluster mode — a
+coordinated `CLUSTER FAILOVER` promotes the intended K-0 and demotes the transiently-promoted replica). A
+belt-and-suspenders self-skip in the driver (`executeMigrationPhase`) drops any REPLICATE whose target NodeID
+equals the executing pod's own NodeID, so a future plan regression cannot re-wedge the loop. Guarded red-first by
+`TestPlanReplicateNeverTargetsSelf` and a "replicate CHAOS" `TestPlanClusterMigration` table case (both observed
+red against the pre-fix planner); the e2e chaos tier's existing `waitMigrationComplete` is the opportunistic
+integration guard. Changelog: LR-025 addendum.

@@ -175,6 +175,29 @@ func TestPlanClusterMigration(t *testing.T) {
 			},
 		},
 		{
+			// Chaos regression (MIGRATION_CHAOS_SELF_REPLICATE_DEADLOCK): a restart-during-migration
+			// crash of the intended new master mr-shard-0-0 let Redis natively fail shard 0's range
+			// over to the *new replica* pod mr-shard-0-1 (N01), which now OWNS 0-8191. The Replicate
+			// planner must recognise N01 as already on the new side (a node can't replicate itself)
+			// and must NOT emit REPLICATE <self>; it attaches the crashed-and-restarted mr-shard-0-0
+			// (N00) onto the new owner instead and stays in Replicate. Pre-fix it also emitted
+			// {10.1.0.2 -> N01} (ERR Can't replicate myself) and deadlocked forever.
+			name: "replicate CHAOS: native failover promoted a new replica to own the range (no REPLICATE self)",
+			gt: knows(mgt(
+				rMaster("mr-shard-0-1", "N01", "0-8191"), // promoted by native failover; owns range 0
+				rEmpty("mr-shard-0-0", "N00"),            // intended master, crashed+restarted, re-MET
+				rMaster("mr-cluster-1", "L1", "8192-16383"),
+				rReplicaUp("mr-shard-1-0", "N10", "L1"),
+				rReplicaUp("mr-shard-1-1", "N11", "L1")),
+				map[string][]string{"N00": {"N01"}, "N01": {"N01"}}), // N01 knows itself (gossip includes self)
+			facts: mFacts(),
+			want: MigrationPlan{
+				Phase:       MigrationReplicate, // stay in Replicate: attach N00 onto the new owner N01
+				Replicates:  []ReplicaAttach{{ReplicaAddr: "10.1.0.1:6379", MasterID: "N01"}},
+				TotalShards: 2,
+			},
+		},
+		{
 			name: "INVARIANT (i): K-0 not a link-up replica of owner must NOT emit a Failover",
 			gt: knows(mgt(
 				rMaster("mr-cluster-0", "L0", "0-8191"),
@@ -454,6 +477,63 @@ func TestIsLinkUpReplicaOf(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := isLinkUpReplicaOf(tc.node, "M"); got != tc.want {
 				t.Errorf("isLinkUpReplicaOf = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPlanReplicateNeverTargetsSelf encodes the hard invariant from the chaos deadlock
+// (MIGRATION_CHAOS_SELF_REPLICATE_DEADLOCK): PlanClusterMigration must NEVER emit a CLUSTER
+// REPLICATE whose target master NodeID is the replica pod's OWN NodeID (ERR Can't replicate
+// myself). A mid-migration native failover can promote any new-side pod to own its shard's
+// range; the planner must treat that pod as settled, not try to make it replicate itself.
+func TestPlanReplicateNeverTargetsSelf(t *testing.T) {
+	const name, shards, rps = "mr", 2, 1
+	facts := mFacts()
+
+	// Two chaos shapes: the promoted owner is the new replica pod (N01), and — same class —
+	// the promoted owner is the intended new master pod itself before it owns via the normal path.
+	fixtures := []struct {
+		name string
+		gt   *ClusterGroundTruth
+	}{
+		{
+			name: "native failover promoted new replica mr-shard-0-1 to own range 0",
+			gt: knows(mgt(
+				rMaster("mr-shard-0-1", "N01", "0-8191"),
+				rEmpty("mr-shard-0-0", "N00"),
+				rMaster("mr-cluster-1", "L1", "8192-16383"),
+				rReplicaUp("mr-shard-1-0", "N10", "L1"),
+				rReplicaUp("mr-shard-1-1", "N11", "L1")),
+				map[string][]string{"N00": {"N01"}, "N01": {"N01"}}),
+		},
+		{
+			name: "new replica mr-shard-1-1 owns range 1 while its shard is otherwise un-synced",
+			gt: knows(mgt(
+				rMaster("mr-shard-0-0", "N00", "0-8191"),
+				rReplicaUp("mr-shard-0-1", "N01", "N00"),
+				rEmpty("mr-shard-1-0", "N10"),                // intended master, not owner
+				rMaster("mr-shard-1-1", "N11", "8192-16383"), // promoted to own range 1
+				rEmpty("mr-cluster-1", "L1")),                // a lingering (demoted) legacy node (keeps us pre-Complete)
+				map[string][]string{"N10": {"N11"}, "N11": {"N11"}}),
+		},
+	}
+
+	for _, f := range fixtures {
+		t.Run(f.name, func(t *testing.T) {
+			plan := PlanClusterMigration(f.gt, shards, rps, name, facts)
+
+			addrToID := map[string]string{}
+			for podName, addr := range facts.NewPodAddrs {
+				if n := f.gt.Nodes[podName]; n != nil {
+					addrToID[addr] = n.NodeID
+				}
+			}
+			for _, ra := range plan.Replicates {
+				if selfID, ok := addrToID[ra.ReplicaAddr]; ok && selfID == ra.MasterID {
+					t.Fatalf("plan emitted REPLICATE self: replica %s (node %s) -> master %s (phase %s)",
+						ra.ReplicaAddr, selfID, ra.MasterID, plan.Phase)
+				}
 			}
 		})
 	}

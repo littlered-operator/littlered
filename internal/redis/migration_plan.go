@@ -357,14 +357,19 @@ func planReplicates(gt *ClusterGroundTruth, name string, shards, rps int,
 	for k := range shards {
 		r := ranges[k]
 		owner := ownerOfRange(gt, r.Start, r.End)
-		masterName := newMasterPodName(name, k)
 		for _, podName := range shardNewPods(name, k, rps) {
 			node := gt.Nodes[podName]
 			if node == nil {
 				continue // not MET (allNewPodsMet guards this; defensive)
 			}
-			// A K-0 that already owns its range is done, not a replicate target.
-			if podName == masterName && nodeOwnsRange(node, r.Start, r.End) {
+			// A new pod that already owns this shard's range is on the new side and settled for
+			// Replicate: it can't (and needn't) replicate itself — a node is never its own owner.
+			// Normally that's {name}-shard-K-0 after its coordinated failover; a restart-during-
+			// migration native failover can instead promote a new *replica* pod (e.g. K-1) to own
+			// the range (MIGRATION_CHAOS_SELF_REPLICATE_DEADLOCK). Either way, never emit REPLICATE
+			// <self> (ERR Can't replicate myself). The Failover phase then reconciles which K-0 is
+			// master; roles are fluid in cluster mode.
+			if nodeOwnsRange(node, r.Start, r.End) {
 				continue
 			}
 			if isLinkUpReplicaOf(node, ownerNodeID(owner)) {

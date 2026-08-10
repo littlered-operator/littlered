@@ -341,8 +341,24 @@ func (r *LittleRedReconciler) executeMigrationPhase(
 		// Attach each new pod as a slot-less replica of the node currently owning its shard's
 		// range (legacy master pre-failover, {name}-shard-K-0 post-failover). It full-syncs; the
 		// pure plan only emits an attach the executing node already knows via gossip (else defers).
+		//
+		// Defensive (belt-and-suspenders, MIGRATION_CHAOS_SELF_REPLICATE_DEADLOCK): a REPLICATE
+		// whose target is the pod's OWN NodeID is rejected by Redis (ERR Can't replicate myself)
+		// and, retried every pass, would wedge the migration forever. The pure planner already
+		// refuses to emit one; this guard keeps a future plan regression from deadlocking.
+		selfID := map[string]string{} // dial addr -> that node's own NodeID
+		for _, n := range gt.Nodes {
+			if n.PodIP != "" {
+				selfID[addrOf(n.PodIP)] = n.NodeID
+			}
+		}
 		for _, ra := range plan.Replicates {
 			if ra.ReplicaAddr == "" {
+				continue
+			}
+			if selfID[ra.ReplicaAddr] == ra.MasterID {
+				auditLog.Info("Migration Replicate: skipping REPLICATE self (node already owns its shard's range)",
+					"replica", ra.ReplicaAddr, "owner", ra.MasterID)
 				continue
 			}
 			auditLog.Info("Migration Replicate: attaching new pod as a slot-less replica of its range owner",

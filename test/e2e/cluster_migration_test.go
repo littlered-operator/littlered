@@ -267,6 +267,16 @@ var _ = Describe("Cluster Legacy→Per-Shard In-Place Migration (ADR-013)", Labe
 	// (the demoted legacy master, then its own new replicas) for STEP-3's TAKEOVER breaker to
 	// promote — no deadlock, no loss. Run against redis:7.4.0 (E2E_REDIS_IMAGE) for fidelity to
 	// the version that first exposed the hole on s1.
+	//
+	// SECOND REGRESSION GUARDED HERE (MIGRATION_CHAOS_SELF_REPLICATE_DEADLOCK): crash (B) can let
+	// Redis natively fail shard K's range over to the NEW REPLICA pod {name}-shard-K-1 instead of
+	// back to K-0, so a new-side pod ends up OWNING its range mid-migration. The Replicate planner
+	// used to compute "replicate the current range owner" for that pod and emit REPLICATE <self>
+	// (ERR Can't replicate myself) forever — waitMigrationComplete below would time out. It is now
+	// fixed in the pure planner (a node that already owns its range is settled, never a replicate
+	// target) and guarded deterministically by internal/redis unit tests (TestPlanReplicateNever-
+	// TargetsSelf + the "replicate CHAOS" table case). This e2e reproduces it only opportunistically
+	// (the native-failover-to-K-1 window is timing/env-sensitive: seen on scm-s2, not on s1).
 	Context("restart during migration must not deadlock or lose data (LR-025)", Ordered, func() {
 		var crName string
 		var dataset map[string]string
