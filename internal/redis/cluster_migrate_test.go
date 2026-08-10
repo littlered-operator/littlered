@@ -24,26 +24,26 @@ import "testing"
 func TestParseMigrationTasks(t *testing.T) {
 	// RESP2: outer array of tasks, each an array of alternating field/value.
 	resp2 := []any{
-		[]any{"id", "abc123", "state", "in_progress", "last_error", ""},
-		[]any{"id", "def456", "state", "completed", "last_error", ""},
+		[]any{"id", "abc123", fieldState, migrationStateInProgress, fieldLastError, ""},
+		[]any{"id", "def456", fieldState, migrationStateCompleted, fieldLastError, ""},
 	}
 	tasks := parseMigrationTasks(resp2)
 	if len(tasks) != 2 {
 		t.Fatalf("RESP2: expected 2 tasks, got %d", len(tasks))
 	}
-	if tasks[0].ID != "abc123" || tasks[0].State != "in_progress" {
+	if tasks[0].ID != "abc123" || tasks[0].State != migrationStateInProgress {
 		t.Errorf("RESP2: task0 = %+v", tasks[0])
 	}
-	if tasks[1].State != "completed" {
+	if tasks[1].State != migrationStateCompleted {
 		t.Errorf("RESP2: task1 state = %q, want completed", tasks[1].State)
 	}
 
 	// RESP3: outer array of tasks, each a map.
 	resp3 := []any{
-		map[any]any{"id": "z9", "state": "failed", "last_error": "boom"},
+		map[any]any{"id": "z9", fieldState: migrationStateFailed, fieldLastError: "boom"},
 	}
 	tasks = parseMigrationTasks(resp3)
-	if len(tasks) != 1 || tasks[0].State != "failed" || tasks[0].LastError != "boom" {
+	if len(tasks) != 1 || tasks[0].State != migrationStateFailed || tasks[0].LastError != "boom" {
 		t.Fatalf("RESP3: got %+v", tasks)
 	}
 

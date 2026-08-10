@@ -26,6 +26,14 @@ import (
 
 // --- builders -------------------------------------------------------------
 
+const (
+	ipPod0    = "10.0.0.1"
+	ipPod1    = "10.0.0.2"
+	ipPod2    = "10.0.0.3"
+	ipTest    = "1.1.1.1"
+	roleSlave = "slave"
+)
+
 type snSpec struct {
 	reachable  bool
 	monitoring bool
@@ -105,7 +113,7 @@ func TestPlanLeaderlessRecovery(t *testing.T) {
 		{
 			name:       "gate: within cooldown -> wait (even with a data holder present)",
 			sentinels:  bareQuorum(),
-			redis:      []rnSpec{{ip: "10.0.0.1", reachable: true, keys: 5, role: "slave"}},
+			redis:      []rnSpec{{ip: ipPod0, reachable: true, keys: 5, role: roleSlave}},
 			since:      fresh(),
 			wantAction: recoveryWait,
 		},
@@ -119,7 +127,7 @@ func TestPlanLeaderlessRecovery(t *testing.T) {
 		{
 			name:        "gate: >=2 holders, opt-in OFF -> refuse (no elect)",
 			sentinels:   bareQuorum(),
-			redis:       []rnSpec{{ip: "10.0.0.1", reachable: true, keys: 5, role: "slave"}, {ip: "10.0.0.2", reachable: true, keys: 9, role: "slave"}},
+			redis:       []rnSpec{{ip: ipPod0, reachable: true, keys: 5, role: roleSlave}, {ip: ipPod1, reachable: true, keys: 9, role: roleSlave}},
 			allowUnsafe: false,
 			since:       elapsed(),
 			wantAction:  recoveryRefuse,
@@ -130,42 +138,42 @@ func TestPlanLeaderlessRecovery(t *testing.T) {
 		{
 			name:         "0 holders + candidate -> seed redis-0",
 			sentinels:    bareQuorum(),
-			redis:        []rnSpec{{ip: "10.0.0.1", reachable: false}, {ip: "10.0.0.2", reachable: false}},
-			bootstrapIP:  "10.0.0.1",
+			redis:        []rnSpec{{ip: ipPod0, reachable: false}, {ip: ipPod1, reachable: false}},
+			bootstrapIP:  ipPod0,
 			since:        elapsed(),
 			wantAction:   recoverySeedNoData,
-			wantMasterIP: "10.0.0.1",
+			wantMasterIP: ipPod0,
 		},
 		{
 			name:         "1 holder -> promote it, no opt-in needed",
 			sentinels:    bareQuorum(),
-			redis:        []rnSpec{{ip: "10.0.0.1", reachable: true, keys: 42, role: "slave"}, {ip: "10.0.0.2", reachable: true, keys: 0}, {ip: "10.0.0.3", reachable: false}},
+			redis:        []rnSpec{{ip: ipPod0, reachable: true, keys: 42, role: roleSlave}, {ip: ipPod1, reachable: true, keys: 0}, {ip: ipPod2, reachable: false}},
 			allowUnsafe:  false, // deliberately off: single holder must still recover
-			bootstrapIP:  "10.0.0.2",
+			bootstrapIP:  ipPod1,
 			since:        elapsed(),
 			wantAction:   recoveryPromoteSurvivor,
-			wantMasterIP: "10.0.0.1",
+			wantMasterIP: ipPod0,
 			wantHolders:  1,
 		},
 		{
 			name:         ">=2 holders + opt-in ON -> elect highest offset",
 			sentinels:    bareQuorum(),
-			redis:        []rnSpec{{ip: "10.0.0.1", reachable: true, keys: 500, offset: 100, replid: "A", role: "slave"}, {ip: "10.0.0.2", reachable: true, keys: 10, offset: 900, replid: "A", role: "slave"}},
+			redis:        []rnSpec{{ip: ipPod0, reachable: true, keys: 500, offset: 100, replid: "A", role: roleSlave}, {ip: ipPod1, reachable: true, keys: 10, offset: 900, replid: "A", role: roleSlave}},
 			allowUnsafe:  true,
 			since:        elapsed(),
 			wantAction:   recoveryUnsafeElect,
-			wantMasterIP: "10.0.0.2",
+			wantMasterIP: ipPod1,
 			wantDiverged: false,
 			wantHolders:  2,
 		},
 		{
 			name:         ">=2 holders divergent + opt-in ON -> elect + diverged flag",
 			sentinels:    bareQuorum(),
-			redis:        []rnSpec{{ip: "10.0.0.1", reachable: true, keys: 10, offset: 100, replid: "A", role: "slave"}, {ip: "10.0.0.2", reachable: true, keys: 10, offset: 200, replid: "B", role: "slave"}},
+			redis:        []rnSpec{{ip: ipPod0, reachable: true, keys: 10, offset: 100, replid: "A", role: roleSlave}, {ip: ipPod1, reachable: true, keys: 10, offset: 200, replid: "B", role: roleSlave}},
 			allowUnsafe:  true,
 			since:        elapsed(),
 			wantAction:   recoveryUnsafeElect,
-			wantMasterIP: "10.0.0.2",
+			wantMasterIP: ipPod1,
 			wantDiverged: true,
 			wantHolders:  2,
 		},
@@ -199,18 +207,18 @@ func TestNeedsPromotion(t *testing.T) {
 		node *redisclient.RedisNodeState
 		want bool
 	}{
-		{"reachable replica -> promote", &redisclient.RedisNodeState{IP: "1.1.1.1", Reachable: true, Role: "slave"}, true},
-		{"reachable master -> no", &redisclient.RedisNodeState{IP: "1.1.1.1", Reachable: true, Role: RoleMaster}, false},
-		{"unreachable -> no (starts fresh via startup script)", &redisclient.RedisNodeState{IP: "1.1.1.1", Reachable: false, Role: "slave"}, false},
+		{"reachable replica -> promote", &redisclient.RedisNodeState{IP: ipTest, Reachable: true, Role: roleSlave}, true},
+		{"reachable master -> no", &redisclient.RedisNodeState{IP: ipTest, Reachable: true, Role: RoleMaster}, false},
+		{"unreachable -> no (starts fresh via startup script)", &redisclient.RedisNodeState{IP: ipTest, Reachable: false, Role: roleSlave}, false},
 		{"absent -> no", nil, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := redisclient.NewSentinelClusterState()
 			if tt.node != nil {
-				s.RedisNodes["1.1.1.1"] = tt.node
+				s.RedisNodes[ipTest] = tt.node
 			}
-			if got := needsPromotion(s, "1.1.1.1"); got != tt.want {
+			if got := needsPromotion(s, ipTest); got != tt.want {
 				t.Errorf("needsPromotion() = %v, want %v", got, tt.want)
 			}
 		})
@@ -231,13 +239,13 @@ func TestPickBootstrapMasterIP(t *testing.T) {
 	}{
 		{
 			name:     "prefers redis-0",
-			redisMap: map[string]string{"10.0.0.2": "store-redis-1", "10.0.0.1": "store-redis-0", "10.0.0.3": "store-redis-2"},
-			want:     "10.0.0.1",
+			redisMap: map[string]string{ipPod1: "store-redis-1", ipPod0: "store-redis-0", ipPod2: "store-redis-2"},
+			want:     ipPod0,
 		},
 		{
 			name:     "redis-0 absent falls back to lowest-ordinal name",
-			redisMap: map[string]string{"10.0.0.3": "store-redis-2", "10.0.0.2": "store-redis-1"},
-			want:     "10.0.0.2",
+			redisMap: map[string]string{ipPod2: "store-redis-2", ipPod1: "store-redis-1"},
+			want:     ipPod1,
 		},
 		{
 			name:     "no pods yields empty",

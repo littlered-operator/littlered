@@ -128,7 +128,7 @@ repl_backlog_histlen:1234
 			name:     "field with similar prefix",
 			info:     "master_host:10.0.0.1\nmaster_host_port:1234",
 			field:    "master_host",
-			expected: "10.0.0.1",
+			expected: masterIP,
 		},
 		{
 			name:     "windows line endings",

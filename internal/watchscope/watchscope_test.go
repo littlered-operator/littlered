@@ -23,6 +23,11 @@ import (
 	"github.com/littlered-operator/littlered-operator/internal/watchscope"
 )
 
+const (
+	nsTeamA   = "team-a"
+	nsStaging = "staging"
+)
+
 func TestParse(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -49,27 +54,27 @@ func TestParse(t *testing.T) {
 		},
 		{
 			name:     "allow single namespace",
-			watch:    "team-a",
+			watch:    nsTeamA,
 			wantMode: watchscope.ModeAllow,
-			wantNS:   []string{"team-a"},
+			wantNS:   []string{nsTeamA},
 		},
 		{
 			name:     "allow multi namespace sorted and deduped",
 			watch:    "team-b, team-a ,team-b,,team-c",
 			wantMode: watchscope.ModeAllow,
-			wantNS:   []string{"team-a", "team-b", "team-c"},
+			wantNS:   []string{nsTeamA, "team-b", "team-c"},
 		},
 		{
 			name:     "deny single namespace",
-			ignore:   "staging",
+			ignore:   nsStaging,
 			wantMode: watchscope.ModeDeny,
-			wantNS:   []string{"staging"},
+			wantNS:   []string{nsStaging},
 		},
 		{
 			name:     "deny multi namespace sorted and deduped",
 			ignore:   " prod ,staging,prod",
 			wantMode: watchscope.ModeDeny,
-			wantNS:   []string{"prod", "staging"},
+			wantNS:   []string{"prod", nsStaging},
 		},
 		{
 			name:            "whitespace-only collapses to none",
@@ -168,7 +173,7 @@ func TestCacheOptions_Allow(t *testing.T) {
 	if len(opts.DefaultNamespaces) != 2 {
 		t.Fatalf("DefaultNamespaces = %#v, want 2 entries", opts.DefaultNamespaces)
 	}
-	for _, ns := range []string{"team-a", "team-b"} {
+	for _, ns := range []string{nsTeamA, "team-b"} {
 		if _, ok := opts.DefaultNamespaces[ns]; !ok {
 			t.Errorf("DefaultNamespaces missing %q", ns)
 		}

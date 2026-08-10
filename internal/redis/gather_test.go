@@ -121,20 +121,24 @@ func twoMasterOneReplicaGossip() []ClusterNodeInfo {
 }
 
 const (
-	ipPod0 = "10.0.0.1"
-	ipPod1 = "10.0.0.2"
+	ipPod0   = "10.0.0.1"
+	ipPod1   = "10.0.0.2"
+	ipPod2   = "10.0.0.3"
+	namePod0 = "pod-0"
+	namePod1 = "pod-1"
+	namePod2 = "pod-2"
 )
 
 func TestGatherClusterGroundTruth_TopologyAndGhost(t *testing.T) {
 	g := &fakeGatherer{
-		nodeID: map[string]string{ipPod0: "m1", ipPod1: "m2", "10.0.0.3": "r1"},
+		nodeID: map[string]string{ipPod0: "m1", ipPod1: "m2", ipPod2: "r1"},
 		dead:   map[string]bool{},
 		gossip: twoMasterOneReplicaGossip(),
 	}
 	clusterPods := map[string]string{
-		ipPod0:     "pod-0",
-		ipPod1:     "pod-1",
-		"10.0.0.3": "pod-2",
+		ipPod0: namePod0,
+		ipPod1: namePod1,
+		ipPod2: namePod2,
 	}
 
 	gt := GatherClusterGroundTruth(context.Background(), g, clusterPods)
@@ -150,16 +154,16 @@ func TestGatherClusterGroundTruth_TopologyAndGhost(t *testing.T) {
 	}
 
 	// Roles propagated from gossip onto the backing pods.
-	if got := gt.Nodes["pod-0"].Role; got != roleMaster {
+	if got := gt.Nodes[namePod0].Role; got != roleMaster {
 		t.Errorf("pod-0 role = %q, want master", got)
 	}
-	if got := gt.Nodes["pod-2"].Role; got != roleReplica {
+	if got := gt.Nodes[namePod2].Role; got != roleReplica {
 		t.Errorf("pod-2 role = %q, want replica", got)
 	}
-	if got := gt.Nodes["pod-2"].MasterNodeID; got != "m1" {
+	if got := gt.Nodes[namePod2].MasterNodeID; got != "m1" {
 		t.Errorf("pod-2 masterNodeID = %q, want m1", got)
 	}
-	if got := gt.Nodes["pod-0"].LinkStatus; got != "up" {
+	if got := gt.Nodes[namePod0].LinkStatus; got != "up" {
 		t.Errorf("pod-0 linkStatus = %q, want up", got)
 	}
 
@@ -181,20 +185,20 @@ func TestGatherClusterGroundTruth_DeadIPMarkedUnreachable(t *testing.T) {
 		gossip: twoMasterOneReplicaGossip(),
 	}
 	clusterPods := map[string]string{
-		ipPod0:     "pod-0",
-		ipPod1:     "pod-1",
-		"10.0.0.9": "pod-2", // cache handed us a dead IP for pod-2
+		ipPod0:     namePod0,
+		ipPod1:     namePod1,
+		"10.0.0.9": namePod2, // cache handed us a dead IP for pod-2
 	}
 
 	gt := GatherClusterGroundTruth(context.Background(), g, clusterPods)
 
-	if gt.Nodes["pod-2"].Reachable {
+	if gt.Nodes[namePod2].Reachable {
 		t.Errorf("pod-2 (dead IP) should be marked unreachable")
 	}
-	if gt.Nodes["pod-2"].NodeID != "" {
-		t.Errorf("pod-2 (dead IP) should have no NodeID, got %q", gt.Nodes["pod-2"].NodeID)
+	if gt.Nodes[namePod2].NodeID != "" {
+		t.Errorf("pod-2 (dead IP) should have no NodeID, got %q", gt.Nodes[namePod2].NodeID)
 	}
-	if !gt.Nodes["pod-0"].Reachable || !gt.Nodes["pod-1"].Reachable {
+	if !gt.Nodes[namePod0].Reachable || !gt.Nodes[namePod1].Reachable {
 		t.Errorf("live pods should be reachable")
 	}
 }
@@ -244,9 +248,9 @@ func TestGatherClusterState_ProbesRunConcurrently(t *testing.T) {
 	const delay = 120 * time.Millisecond
 
 	redisPods := map[string]string{
-		"10.0.0.1": "redis-0",
-		"10.0.0.2": "redis-1",
-		"10.0.0.3": "redis-2",
+		ipPod0: "redis-0",
+		ipPod1: "redis-1",
+		ipPod2: "redis-2",
 	}
 	sentinelPods := map[string]string{
 		"10.0.1.1": "sentinel-0",

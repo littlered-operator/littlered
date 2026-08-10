@@ -23,6 +23,8 @@ const (
 	replicaIP  = "10.0.0.2"
 	ghostRepIP = "10.0.0.99" // an IP with no living pod
 	flagSlave  = "slave"
+	sentIP0    = "10.0.0.10"
+	sentIP1    = "10.0.0.11"
 )
 
 // healthySentinelState builds a steady-state sentinel view: a living master, one
@@ -36,8 +38,8 @@ func healthySentinelState() *SentinelClusterState {
 	s.RealMasterIP = masterIP
 	s.RedisNodes[masterIP] = &RedisNodeState{IP: masterIP, Role: roleMaster, Reachable: true}
 	s.RedisNodes[replicaIP] = &RedisNodeState{IP: replicaIP, Role: flagSlave, Reachable: true}
-	s.SentinelNodes["10.0.0.10"] = &SentinelNodeState{
-		IP: "10.0.0.10", Reachable: true, Monitoring: true, MasterIP: masterIP,
+	s.SentinelNodes[sentIP0] = &SentinelNodeState{
+		IP: sentIP0, Reachable: true, Monitoring: true, MasterIP: masterIP,
 		Replicas: []ReplicaInfo{
 			{IP: replicaIP, Flags: flagSlave},
 			{IP: ghostRepIP, Flags: "slave,s_down"},
@@ -99,7 +101,7 @@ func TestGhostReplicaResetSafe(t *testing.T) {
 			name: "no healthy replica known to sentinel -> would strand RESET",
 			mutate: func(s *SentinelClusterState) {
 				// Only the ghost replica remains known; the healthy one is gone.
-				s.SentinelNodes["10.0.0.10"].Replicas = []ReplicaInfo{
+				s.SentinelNodes[sentIP0].Replicas = []ReplicaInfo{
 					{IP: ghostRepIP, Flags: "slave,s_down"},
 				}
 			},
@@ -130,7 +132,7 @@ func TestHasHealthyKnownReplica(t *testing.T) {
 	}
 
 	// An unreachable sentinel's replica list must not count.
-	s.SentinelNodes["10.0.0.10"].Reachable = false
+	s.SentinelNodes[sentIP0].Reachable = false
 	if s.HasHealthyKnownReplica() {
 		t.Errorf("unreachable sentinel's replicas should not count as healthy")
 	}
@@ -146,8 +148,8 @@ func TestAllSentinelsBare(t *testing.T) {
 		{
 			name: "all reachable, none monitoring -> bare deadlock",
 			sentinels: []*SentinelNodeState{
-				{IP: "10.0.0.10", Reachable: true, Monitoring: false},
-				{IP: "10.0.0.11", Reachable: true, Monitoring: false},
+				{IP: sentIP0, Reachable: true, Monitoring: false},
+				{IP: sentIP1, Reachable: true, Monitoring: false},
 				{IP: "10.0.0.12", Reachable: true, Monitoring: false},
 			},
 			wantBare:      true,
@@ -156,8 +158,8 @@ func TestAllSentinelsBare(t *testing.T) {
 		{
 			name: "one sentinel monitoring -> not bare",
 			sentinels: []*SentinelNodeState{
-				{IP: "10.0.0.10", Reachable: true, Monitoring: true, MasterIP: masterIP},
-				{IP: "10.0.0.11", Reachable: true, Monitoring: false},
+				{IP: sentIP0, Reachable: true, Monitoring: true, MasterIP: masterIP},
+				{IP: sentIP1, Reachable: true, Monitoring: false},
 			},
 			wantBare:      false,
 			wantReachable: 2,
@@ -165,15 +167,15 @@ func TestAllSentinelsBare(t *testing.T) {
 		{
 			name: "unreachable sentinels do not count",
 			sentinels: []*SentinelNodeState{
-				{IP: "10.0.0.10", Reachable: true, Monitoring: false},
-				{IP: "10.0.0.11", Reachable: false},
+				{IP: sentIP0, Reachable: true, Monitoring: false},
+				{IP: sentIP1, Reachable: false},
 			},
 			wantBare:      true,
 			wantReachable: 1,
 		},
 		{
 			name:          "no reachable sentinels -> not bare",
-			sentinels:     []*SentinelNodeState{{IP: "10.0.0.10", Reachable: false}},
+			sentinels:     []*SentinelNodeState{{IP: sentIP0, Reachable: false}},
 			wantBare:      false,
 			wantReachable: 0,
 		},
@@ -196,8 +198,8 @@ func TestAllSentinelsBare(t *testing.T) {
 func TestDataHoldersAndBestDataHolder(t *testing.T) {
 	t.Run("no data holders", func(t *testing.T) {
 		s := NewSentinelClusterState()
-		s.RedisNodes["10.0.0.1"] = &RedisNodeState{IP: "10.0.0.1", Reachable: true, Keys: 0}
-		s.RedisNodes["10.0.0.2"] = &RedisNodeState{IP: "10.0.0.2", Reachable: false, Keys: 100}
+		s.RedisNodes[masterIP] = &RedisNodeState{IP: masterIP, Reachable: true, Keys: 0}
+		s.RedisNodes[replicaIP] = &RedisNodeState{IP: replicaIP, Reachable: false, Keys: 100}
 		if got := s.DataHolders(); len(got) != 0 {
 			t.Errorf("DataHolders() = %d holders, want 0 (empty pod + unreachable pod)", len(got))
 		}
@@ -213,28 +215,28 @@ func TestDataHoldersAndBestDataHolder(t *testing.T) {
 		// in-memory). DataHolders must be size 1 so recovery elects it without the
 		// unsafe flag.
 		s := NewSentinelClusterState()
-		s.RedisNodes["10.0.0.1"] = &RedisNodeState{IP: "10.0.0.1", Reachable: true, Keys: 42, Offset: 500, Role: flagSlave}
-		s.RedisNodes["10.0.0.2"] = &RedisNodeState{IP: "10.0.0.2", Reachable: true, Keys: 0}
-		s.RedisNodes["10.0.0.3"] = &RedisNodeState{IP: "10.0.0.3", Reachable: false, Keys: 0}
+		s.RedisNodes[masterIP] = &RedisNodeState{IP: masterIP, Reachable: true, Keys: 42, Offset: 500, Role: flagSlave}
+		s.RedisNodes[replicaIP] = &RedisNodeState{IP: replicaIP, Reachable: true, Keys: 0}
+		s.RedisNodes[ipPod2] = &RedisNodeState{IP: ipPod2, Reachable: false, Keys: 0}
 		holders := s.DataHolders()
 		if len(holders) != 1 {
 			t.Fatalf("DataHolders() = %d, want 1 (sole reachable data holder)", len(holders))
 		}
 		best, diverged := s.BestDataHolder()
-		if best == nil || best.IP != "10.0.0.1" || diverged {
+		if best == nil || best.IP != masterIP || diverged {
 			t.Errorf("BestDataHolder() = (%v, diverged=%v), want (10.0.0.1, false)", best, diverged)
 		}
 	})
 
 	t.Run("highest offset wins", func(t *testing.T) {
 		s := NewSentinelClusterState()
-		s.RedisNodes["10.0.0.1"] = &RedisNodeState{IP: "10.0.0.1", Reachable: true, Keys: 500, Offset: 100, Replid: "A"}
-		s.RedisNodes["10.0.0.2"] = &RedisNodeState{IP: "10.0.0.2", Reachable: true, Keys: 10, Offset: 900, Replid: "A"}
+		s.RedisNodes[masterIP] = &RedisNodeState{IP: masterIP, Reachable: true, Keys: 500, Offset: 100, Replid: "A"}
+		s.RedisNodes[replicaIP] = &RedisNodeState{IP: replicaIP, Reachable: true, Keys: 10, Offset: 900, Replid: "A"}
 		if got := s.DataHolders(); len(got) != 2 {
 			t.Fatalf("DataHolders() = %d, want 2", len(got))
 		}
 		best, diverged := s.BestDataHolder()
-		if best == nil || best.IP != "10.0.0.2" {
+		if best == nil || best.IP != replicaIP {
 			t.Errorf("BestDataHolder() picked %v, want 10.0.0.2 (higher offset despite fewer keys)", best)
 		}
 		if diverged {
@@ -244,20 +246,20 @@ func TestDataHoldersAndBestDataHolder(t *testing.T) {
 
 	t.Run("tiebreak on keys then IP", func(t *testing.T) {
 		s := NewSentinelClusterState()
-		s.RedisNodes["10.0.0.3"] = &RedisNodeState{IP: "10.0.0.3", Reachable: true, Keys: 50, Offset: 100, Replid: "A"}
-		s.RedisNodes["10.0.0.1"] = &RedisNodeState{IP: "10.0.0.1", Reachable: true, Keys: 50, Offset: 100, Replid: "A"}
+		s.RedisNodes[ipPod2] = &RedisNodeState{IP: ipPod2, Reachable: true, Keys: 50, Offset: 100, Replid: "A"}
+		s.RedisNodes[masterIP] = &RedisNodeState{IP: masterIP, Reachable: true, Keys: 50, Offset: 100, Replid: "A"}
 		best, _ := s.BestDataHolder()
-		if best == nil || best.IP != "10.0.0.1" {
+		if best == nil || best.IP != masterIP {
 			t.Errorf("BestDataHolder() picked %v, want 10.0.0.1 (equal offset+keys, lowest IP)", best)
 		}
 	})
 
 	t.Run("divergent lineages flagged", func(t *testing.T) {
 		s := NewSentinelClusterState()
-		s.RedisNodes["10.0.0.1"] = &RedisNodeState{IP: "10.0.0.1", Reachable: true, Keys: 10, Offset: 100, Replid: "A"}
-		s.RedisNodes["10.0.0.2"] = &RedisNodeState{IP: "10.0.0.2", Reachable: true, Keys: 10, Offset: 200, Replid: "B"}
+		s.RedisNodes[masterIP] = &RedisNodeState{IP: masterIP, Reachable: true, Keys: 10, Offset: 100, Replid: "A"}
+		s.RedisNodes[replicaIP] = &RedisNodeState{IP: replicaIP, Reachable: true, Keys: 10, Offset: 200, Replid: "B"}
 		best, diverged := s.BestDataHolder()
-		if best == nil || best.IP != "10.0.0.2" {
+		if best == nil || best.IP != replicaIP {
 			t.Errorf("BestDataHolder() picked %v, want 10.0.0.2", best)
 		}
 		if !diverged {

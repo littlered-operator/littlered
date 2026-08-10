@@ -138,6 +138,10 @@ const (
 	mountPathDataDir   = "/data"
 	serviceClusterNone = "None"
 	binRedisCli        = "redis-cli"
+	// bootstrapGuardScript short-circuits a probe with success while the
+	// bootstrap-in-progress marker exists, so K8s does not kill a pod before
+	// operator authorization completes.
+	bootstrapGuardScript = "if [ -f /data/bootstrap-in-progress ]; then exit 0; fi;"
 )
 
 // computeConfigHash computes a SHA256 hash of the ConfigMap data
@@ -565,7 +569,7 @@ func buildLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 	// While the bootstrap-in-progress file exists, we report success to avoid being killed
 	// by K8s before authorization is complete.
 	cmd := []string{
-		"if [ -f /data/bootstrap-in-progress ]; then exit 0; fi;",
+		bootstrapGuardScript,
 		binRedisCli,
 	}
 	if lr.Spec.Auth.Enabled {
@@ -643,7 +647,7 @@ func buildSentinelLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 	// parked in the startup wait-loop); report success so k8s does not kill it before Sentinel
 	// authorizes a master.
 	cmd := []string{
-		"if [ -f /data/bootstrap-in-progress ]; then exit 0; fi;",
+		bootstrapGuardScript,
 		binRedisCli,
 	}
 	if lr.Spec.Auth.Enabled {
@@ -2293,7 +2297,7 @@ func buildClusterVolumes(lr *littleredv1alpha1.LittleRed) []corev1.Volume {
 // buildClusterLivenessProbe creates the liveness probe for cluster mode
 func buildClusterLivenessProbe(lr *littleredv1alpha1.LittleRed) *corev1.Probe {
 	cmd := []string{
-		"if [ -f /data/bootstrap-in-progress ]; then exit 0; fi;",
+		bootstrapGuardScript,
 		binRedisCli,
 	}
 	if lr.Spec.Auth.Enabled {

@@ -37,6 +37,17 @@ import (
 // moved range shows up in CLUSTER NODES). These calls only drive/inspect the migration.
 // See docs/CLUSTER_CONSOLIDATED_SHARD_RECOVERY.md §7.2.
 
+// Migration task states as reported by CLUSTER MIGRATION STATUS.
+const (
+	migrationStateInProgress = "in_progress"
+	migrationStateCompleted  = "completed"
+	migrationStateFailed     = "failed"
+
+	// fieldState / fieldLastError are CLUSTER MIGRATION STATUS task field names.
+	fieldState     = "state"
+	fieldLastError = "last_error"
+)
+
 // -----------------------------------------------------------------------------
 // Baseline dance
 // -----------------------------------------------------------------------------
@@ -225,7 +236,8 @@ func (c *ClusterClient) ClusterMigrationImport(ctx context.Context, destAddr str
 	client := c.getClient(destAddr)
 	defer func() { _ = client.Close() }()
 
-	args := []any{"CLUSTER", "MIGRATION", "IMPORT"}
+	args := make([]any, 0, 3+2*len(ranges))
+	args = append(args, "CLUSTER", "MIGRATION", "IMPORT")
 	for _, r := range ranges {
 		args = append(args, r[0], r[1])
 	}
@@ -265,7 +277,7 @@ func (c *ClusterClient) ClusterMigrationInFlight(ctx context.Context, addr strin
 
 func migrationTerminal(state string) bool {
 	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "completed", "cancelled", "canceled", "failed", "":
+	case migrationStateCompleted, "cancelled", "canceled", migrationStateFailed, "":
 		return true
 	default:
 		return false
@@ -288,8 +300,8 @@ func parseMigrationTasks(reply any) []MigrationTask {
 		}
 		tasks = append(tasks, MigrationTask{
 			ID:        fields["id"],
-			State:     fields["state"],
-			LastError: fields["last_error"],
+			State:     fields[fieldState],
+			LastError: fields[fieldLastError],
 		})
 	}
 	return tasks

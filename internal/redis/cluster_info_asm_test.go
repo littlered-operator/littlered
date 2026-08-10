@@ -75,7 +75,7 @@ func (g *asmGatherer) GetClusterInfo(_ context.Context, _, ip string) (*ClusterI
 // TestGatherClusterGroundTruth_ASMVerdict: gt.AtomicSlotMigration is true only when
 // EVERY reachable node reports support (safe for rolling upgrades).
 func TestGatherClusterGroundTruth_ASMVerdict(t *testing.T) {
-	clusterPods := map[string]string{ipPod0: "pod-0", ipPod1: "pod-1"}
+	clusterPods := map[string]string{ipPod0: namePod0, ipPod1: namePod1}
 	nodeID := map[string]string{ipPod0: "m1", ipPod1: "m2"}
 
 	t.Run("all nodes support ASM", func(t *testing.T) {
