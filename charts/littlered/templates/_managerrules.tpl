@@ -18,6 +18,7 @@
   resources:
   - pods
   verbs:
+  - delete
   - get
   - list
   - patch
