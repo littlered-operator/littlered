@@ -26,6 +26,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
+// Mode values for LittleRedSpec.Mode.
+const (
+	ModeCluster = "cluster"
+)
+
 // Default values
 const (
 	DefaultMode            = "standalone"
@@ -166,7 +171,7 @@ func (r *LittleRed) SetDefaults() {
 	}
 
 	// Cluster defaults (only if cluster mode)
-	if spec.Mode == "cluster" && spec.Cluster == nil {
+	if spec.Mode == ModeCluster && spec.Cluster == nil {
 		spec.Cluster = &ClusterSpec{}
 	}
 	if spec.Cluster != nil {

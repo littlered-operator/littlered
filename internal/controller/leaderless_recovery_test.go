@@ -26,14 +26,6 @@ import (
 
 // --- builders -------------------------------------------------------------
 
-const (
-	ipPod0    = "10.0.0.1"
-	ipPod1    = "10.0.0.2"
-	ipPod2    = "10.0.0.3"
-	ipTest    = "1.1.1.1"
-	roleSlave = "slave"
-)
-
 type snSpec struct {
 	reachable  bool
 	monitoring bool
@@ -114,7 +106,7 @@ func TestPlanLeaderlessRecovery(t *testing.T) {
 		{
 			name:       "gate: within cooldown -> wait (even with a data holder present)",
 			sentinels:  bareQuorum(),
-			redis:      []rnSpec{{ip: ipPod0, reachable: true, keys: 5, role: roleSlave}},
+			redis:      []rnSpec{{ip: ipMaster, reachable: true, keys: 5, role: roleSlave}},
 			since:      fresh(),
 			wantAction: recoveryWait,
 		},
@@ -128,7 +120,7 @@ func TestPlanLeaderlessRecovery(t *testing.T) {
 		{
 			name:        "gate: >=2 holders, opt-in OFF -> refuse (no elect)",
 			sentinels:   bareQuorum(),
-			redis:       []rnSpec{{ip: ipPod0, reachable: true, keys: 5, role: roleSlave}, {ip: ipPod1, reachable: true, keys: 9, role: roleSlave}},
+			redis:       []rnSpec{{ip: ipMaster, reachable: true, keys: 5, role: roleSlave}, {ip: ipReplica, reachable: true, keys: 9, role: roleSlave}},
 			allowUnsafe: false,
 			since:       elapsed(),
 			wantAction:  recoveryRefuse,
@@ -139,42 +131,42 @@ func TestPlanLeaderlessRecovery(t *testing.T) {
 		{
 			name:         "0 holders + candidate -> seed redis-0",
 			sentinels:    bareQuorum(),
-			redis:        []rnSpec{{ip: ipPod0, reachable: false}, {ip: ipPod1, reachable: false}},
-			bootstrapIP:  ipPod0,
+			redis:        []rnSpec{{ip: ipMaster, reachable: false}, {ip: ipReplica, reachable: false}},
+			bootstrapIP:  ipMaster,
 			since:        elapsed(),
 			wantAction:   recoverySeedNoData,
-			wantMasterIP: ipPod0,
+			wantMasterIP: ipMaster,
 		},
 		{
 			name:         "1 holder -> promote it, no opt-in needed",
 			sentinels:    bareQuorum(),
-			redis:        []rnSpec{{ip: ipPod0, reachable: true, keys: 42, role: roleSlave}, {ip: ipPod1, reachable: true, keys: 0}, {ip: ipPod2, reachable: false}},
+			redis:        []rnSpec{{ip: ipMaster, reachable: true, keys: 42, role: roleSlave}, {ip: ipReplica, reachable: true, keys: 0}, {ip: ipNode3, reachable: false}},
 			allowUnsafe:  false, // deliberately off: single holder must still recover
-			bootstrapIP:  ipPod1,
+			bootstrapIP:  ipReplica,
 			since:        elapsed(),
 			wantAction:   recoveryPromoteSurvivor,
-			wantMasterIP: ipPod0,
+			wantMasterIP: ipMaster,
 			wantHolders:  1,
 		},
 		{
 			name:         ">=2 holders + opt-in ON -> elect highest offset",
 			sentinels:    bareQuorum(),
-			redis:        []rnSpec{{ip: ipPod0, reachable: true, keys: 500, offset: 100, replid: "A", role: roleSlave}, {ip: ipPod1, reachable: true, keys: 10, offset: 900, replid: "A", role: roleSlave}},
+			redis:        []rnSpec{{ip: ipMaster, reachable: true, keys: 500, offset: 100, replid: "A", role: roleSlave}, {ip: ipReplica, reachable: true, keys: 10, offset: 900, replid: "A", role: roleSlave}},
 			allowUnsafe:  true,
 			since:        elapsed(),
 			wantAction:   recoveryUnsafeElect,
-			wantMasterIP: ipPod1,
+			wantMasterIP: ipReplica,
 			wantDiverged: false,
 			wantHolders:  2,
 		},
 		{
 			name:         ">=2 holders divergent + opt-in ON -> elect + diverged flag",
 			sentinels:    bareQuorum(),
-			redis:        []rnSpec{{ip: ipPod0, reachable: true, keys: 10, offset: 100, replid: "A", role: roleSlave}, {ip: ipPod1, reachable: true, keys: 10, offset: 200, replid: "B", role: roleSlave}},
+			redis:        []rnSpec{{ip: ipMaster, reachable: true, keys: 10, offset: 100, replid: "A", role: roleSlave}, {ip: ipReplica, reachable: true, keys: 10, offset: 200, replid: "B", role: roleSlave}},
 			allowUnsafe:  true,
 			since:        elapsed(),
 			wantAction:   recoveryUnsafeElect,
-			wantMasterIP: ipPod1,
+			wantMasterIP: ipReplica,
 			wantDiverged: true,
 			wantHolders:  2,
 		},
@@ -240,13 +232,13 @@ func TestPickBootstrapMasterIP(t *testing.T) {
 	}{
 		{
 			name:     "prefers redis-0",
-			redisMap: map[string]string{ipPod1: "store-redis-1", ipPod0: "store-redis-0", ipPod2: "store-redis-2"},
-			want:     ipPod0,
+			redisMap: map[string]string{ipReplica: "store-redis-1", ipMaster: "store-redis-0", ipNode3: "store-redis-2"},
+			want:     ipMaster,
 		},
 		{
 			name:     "redis-0 absent falls back to lowest-ordinal name",
-			redisMap: map[string]string{ipPod2: "store-redis-2", ipPod1: "store-redis-1"},
-			want:     ipPod1,
+			redisMap: map[string]string{ipNode3: "store-redis-2", ipReplica: "store-redis-1"},
+			want:     ipReplica,
 		},
 		{
 			name:     "no pods yields empty",

@@ -1033,7 +1033,7 @@ func TestStatefulSetBuildersPropagatePodTemplateScheduling(t *testing.T) {
 	priorityClass := "high-priority"
 	tsc := []corev1.TopologySpreadConstraint{{
 		MaxSkew:           1,
-		TopologyKey:       "kubernetes.io/hostname",
+		TopologyKey:       corev1.LabelHostname,
 		WhenUnsatisfiable: corev1.DoNotSchedule,
 		LabelSelector: &metav1.LabelSelector{
 			MatchLabels: map[string]string{labelAppInstance: testLRName},
@@ -1643,7 +1643,7 @@ func TestClusterShardStatefulSetMergesShardSpread(t *testing.T) {
 	lr.Spec.PodTemplate.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{userTSC}
 	lr.Spec.Placement = &littleredv1alpha1.PlacementSpec{
 		ShardAntiAffinity: &littleredv1alpha1.ShardAntiAffinitySpec{
-			TopologyKey:       "kubernetes.io/hostname",
+			TopologyKey:       corev1.LabelHostname,
 			WhenUnsatisfiable: corev1.DoNotSchedule,
 		},
 	}
@@ -1656,7 +1656,7 @@ func TestClusterShardStatefulSetMergesShardSpread(t *testing.T) {
 	if !reflect.DeepEqual(tsc[0], userTSC) {
 		t.Errorf("first constraint should be the user's, got %+v", tsc[0])
 	}
-	if tsc[1].TopologyKey != "kubernetes.io/hostname" || tsc[1].LabelSelector.MatchLabels[LabelShard] != "1" {
+	if tsc[1].TopologyKey != corev1.LabelHostname || tsc[1].LabelSelector.MatchLabels[LabelShard] != "1" {
 		t.Errorf("second constraint should be the operator's shard-1 spread, got %+v", tsc[1])
 	}
 	// The user's spec slice must not be mutated by the merge.

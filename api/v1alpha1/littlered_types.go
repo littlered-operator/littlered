@@ -769,7 +769,7 @@ func (r *LittleRed) Validate() error {
 	// Sentinel mode: validated for 3 sentinels and 3 redis (1+2).
 	// Since we don't expose sentinel count yet, we just check replicas.
 
-	if r.Spec.Mode == "cluster" {
+	if r.Spec.Mode == ModeCluster {
 		if r.Spec.Cluster != nil {
 			if r.Spec.Cluster.Shards < 3 {
 				return fmt.Errorf("cluster mode requires at least 3 shards (found %d)", r.Spec.Cluster.Shards)

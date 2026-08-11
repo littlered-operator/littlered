@@ -24,14 +24,14 @@ import (
 
 func TestPlacementSetDefaults(t *testing.T) {
 	// nil placement stays nil (never auto-created).
-	lr := &LittleRed{Spec: LittleRedSpec{Mode: "cluster"}}
+	lr := &LittleRed{Spec: LittleRedSpec{Mode: ModeCluster}}
 	lr.SetDefaults()
 	if lr.Spec.Placement != nil {
 		t.Error("nil placement should stay nil after SetDefaults")
 	}
 
 	// shardAntiAffinity with empty fields → documented defaults filled.
-	lr = &LittleRed{Spec: LittleRedSpec{Mode: "cluster",
+	lr = &LittleRed{Spec: LittleRedSpec{Mode: ModeCluster,
 		Placement: &PlacementSpec{ShardAntiAffinity: &ShardAntiAffinitySpec{}}}}
 	lr.SetDefaults()
 	saa := lr.Spec.Placement.ShardAntiAffinity
@@ -43,7 +43,7 @@ func TestPlacementSetDefaults(t *testing.T) {
 	}
 
 	// Explicit values are preserved.
-	lr = &LittleRed{Spec: LittleRedSpec{Mode: "cluster",
+	lr = &LittleRed{Spec: LittleRedSpec{Mode: ModeCluster,
 		Placement: &PlacementSpec{ShardAntiAffinity: &ShardAntiAffinitySpec{
 			TopologyKey: "topology.kubernetes.io/zone", WhenUnsatisfiable: corev1.DoNotSchedule}}}}
 	lr.SetDefaults()

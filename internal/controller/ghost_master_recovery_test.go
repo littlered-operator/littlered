@@ -81,8 +81,8 @@ func TestSentinelsMonitorGhostMaster(t *testing.T) {
 		{name: "all bare -> false", sentinels: []ghostSnSpec{{reachable: true}, {reachable: true}, {reachable: true}}, want: false},
 		{
 			name:      "majority monitor a live master -> false",
-			sentinels: []ghostSnSpec{{reachable: true, masterIP: "10.0.0.5"}, {reachable: true, masterIP: "10.0.0.5"}, {reachable: true, masterIP: "10.0.0.5"}},
-			redis:     []rnSpec{{ip: "10.0.0.5", reachable: true, role: "master"}},
+			sentinels: []ghostSnSpec{{reachable: true, masterIP: ipNode5}, {reachable: true, masterIP: ipNode5}, {reachable: true, masterIP: ipNode5}},
+			redis:     []rnSpec{{ip: ipNode5, reachable: true, role: RoleMaster}},
 			want:      false,
 		},
 		{name: "majority monitor a ghost master -> true", sentinels: ghostQuorum(), want: true},
@@ -120,8 +120,8 @@ func TestPlanGhostMasterRecovery(t *testing.T) {
 
 	// a healthy (live, non-s_down) replica known to a Sentinel -> Sentinel can still fail
 	// over on its own; we must NOT intervene.
-	healthyReplica := []redisclient.ReplicaInfo{{IP: "10.0.0.20", Flags: "slave"}}
-	healthyRedis := []rnSpec{{ip: "10.0.0.20", reachable: true, keys: 3, offset: 5, replid: "A", role: "slave"}}
+	healthyReplica := []redisclient.ReplicaInfo{{IP: "10.0.0.20", Flags: roleSlave}}
+	healthyRedis := []rnSpec{{ip: "10.0.0.20", reachable: true, keys: 3, offset: 5, replid: "A", role: roleSlave}}
 
 	tests := []struct {
 		name         string
@@ -164,7 +164,7 @@ func TestPlanGhostMasterRecovery(t *testing.T) {
 		{
 			name:       "gate: within cooldown -> wait (even with a survivor present)",
 			sentinels:  ghostQuorum(),
-			redis:      []rnSpec{{ip: "10.0.0.1", reachable: true, keys: 5, role: "slave", replid: "A"}},
+			redis:      []rnSpec{{ip: ipMaster, reachable: true, keys: 5, role: roleSlave, replid: "A"}},
 			since:      fresh(),
 			wantAction: recoveryWait,
 		},
@@ -180,7 +180,7 @@ func TestPlanGhostMasterRecovery(t *testing.T) {
 		{
 			name:         "func: 0 holders, bootstrap IP set -> seed it",
 			sentinels:    ghostQuorum(),
-			redis:        []rnSpec{{ip: "10.0.0.1", reachable: true, keys: 0, role: "slave"}},
+			redis:        []rnSpec{{ip: ipMaster, reachable: true, keys: 0, role: roleSlave}},
 			bootstrapIP:  "10.0.0.7",
 			since:        elapsed(),
 			wantAction:   recoverySeedNoData,
@@ -189,22 +189,22 @@ func TestPlanGhostMasterRecovery(t *testing.T) {
 		{
 			name:         "func: exactly 1 survivor with data -> elect it, no opt-in",
 			sentinels:    ghostQuorum(),
-			redis:        []rnSpec{{ip: "10.0.0.1", reachable: true, keys: 5, offset: 100, replid: "A", role: "slave"}},
+			redis:        []rnSpec{{ip: ipMaster, reachable: true, keys: 5, offset: 100, replid: "A", role: roleSlave}},
 			since:        elapsed(),
 			wantAction:   recoveryPromoteSurvivor,
-			wantMasterIP: "10.0.0.1",
+			wantMasterIP: ipMaster,
 			wantHolders:  1,
 		},
 		{
 			name:      "func: 2 survivors SAME lineage -> elect highest-offset, NO opt-in (key difference from Rule L)",
 			sentinels: ghostQuorum(),
 			redis: []rnSpec{
-				{ip: "10.0.0.1", reachable: true, keys: 5, offset: 100, replid: "A", role: "slave"},
-				{ip: "10.0.0.2", reachable: true, keys: 5, offset: 250, replid: "A", role: "slave"},
+				{ip: ipMaster, reachable: true, keys: 5, offset: 100, replid: "A", role: roleSlave},
+				{ip: ipReplica, reachable: true, keys: 5, offset: 250, replid: "A", role: roleSlave},
 			},
 			since:        elapsed(),
 			wantAction:   recoveryPromoteSurvivor,
-			wantMasterIP: "10.0.0.2",
+			wantMasterIP: ipReplica,
 			wantDiverged: false,
 			wantHolders:  2,
 		},
@@ -212,8 +212,8 @@ func TestPlanGhostMasterRecovery(t *testing.T) {
 			name:      "func: 2 survivors DIVERGED lineage, opt-in OFF -> refuse",
 			sentinels: ghostQuorum(),
 			redis: []rnSpec{
-				{ip: "10.0.0.1", reachable: true, keys: 5, offset: 100, replid: "A", role: "slave"},
-				{ip: "10.0.0.2", reachable: true, keys: 9, offset: 90, replid: "B", role: "slave"},
+				{ip: ipMaster, reachable: true, keys: 5, offset: 100, replid: "A", role: roleSlave},
+				{ip: ipReplica, reachable: true, keys: 9, offset: 90, replid: "B", role: roleSlave},
 			},
 			allowUnsafe: false,
 			since:       elapsed(),
@@ -224,13 +224,13 @@ func TestPlanGhostMasterRecovery(t *testing.T) {
 			name:      "func: 2 survivors DIVERGED lineage, opt-in ON -> unsafe-elect best",
 			sentinels: ghostQuorum(),
 			redis: []rnSpec{
-				{ip: "10.0.0.1", reachable: true, keys: 5, offset: 300, replid: "A", role: "slave"},
-				{ip: "10.0.0.2", reachable: true, keys: 9, offset: 90, replid: "B", role: "slave"},
+				{ip: ipMaster, reachable: true, keys: 5, offset: 300, replid: "A", role: roleSlave},
+				{ip: ipReplica, reachable: true, keys: 9, offset: 90, replid: "B", role: roleSlave},
 			},
 			allowUnsafe:  true,
 			since:        elapsed(),
 			wantAction:   recoveryUnsafeElect,
-			wantMasterIP: "10.0.0.1",
+			wantMasterIP: ipMaster,
 			wantDiverged: true,
 			wantHolders:  2,
 		},
@@ -240,12 +240,12 @@ func TestPlanGhostMasterRecovery(t *testing.T) {
 			name:      "func: survivor was promoted (replid rotated to replid2) -> SAME lineage, elect, no opt-in",
 			sentinels: ghostQuorum(),
 			redis: []rnSpec{
-				{ip: "10.0.0.1", reachable: true, keys: 5, offset: 100, replid: "716d42", role: "slave"},
-				{ip: "10.0.0.2", reachable: true, keys: 5, offset: 250, replid: "1cc4b7", replid2: "716d42", role: "master"},
+				{ip: ipMaster, reachable: true, keys: 5, offset: 100, replid: testReplid0, role: roleSlave},
+				{ip: ipReplica, reachable: true, keys: 5, offset: 250, replid: "1cc4b7", replid2: testReplid0, role: RoleMaster},
 			},
 			since:        elapsed(),
 			wantAction:   recoveryPromoteSurvivor,
-			wantMasterIP: "10.0.0.2",
+			wantMasterIP: ipReplica,
 			wantDiverged: false,
 			wantHolders:  2,
 		},
@@ -253,13 +253,13 @@ func TestPlanGhostMasterRecovery(t *testing.T) {
 			name:      "func: 3-node promotion chain (the real graceful->crash state) -> one lineage, elect highest offset",
 			sentinels: ghostQuorum(),
 			redis: []rnSpec{
-				{ip: "10.0.0.1", reachable: true, keys: 1, offset: 100, replid: "716d42", role: "slave"},
-				{ip: "10.0.0.2", reachable: true, keys: 1, offset: 100, replid: "716d42", replid2: "7df3f8", role: "slave"},
-				{ip: "10.0.0.3", reachable: true, keys: 1, offset: 120, replid: "1cc4b7", replid2: "716d42", role: "master"},
+				{ip: ipMaster, reachable: true, keys: 1, offset: 100, replid: testReplid0, role: roleSlave},
+				{ip: ipReplica, reachable: true, keys: 1, offset: 100, replid: testReplid0, replid2: "7df3f8", role: roleSlave},
+				{ip: ipNode3, reachable: true, keys: 1, offset: 120, replid: "1cc4b7", replid2: testReplid0, role: RoleMaster},
 			},
 			since:        elapsed(),
 			wantAction:   recoveryPromoteSurvivor,
-			wantMasterIP: "10.0.0.3",
+			wantMasterIP: ipNode3,
 			wantDiverged: false,
 			wantHolders:  3,
 		},
@@ -267,8 +267,8 @@ func TestPlanGhostMasterRecovery(t *testing.T) {
 			name:      "func: genuinely independent lineages (no shared replid history) -> diverged, refuse",
 			sentinels: ghostQuorum(),
 			redis: []rnSpec{
-				{ip: "10.0.0.1", reachable: true, keys: 5, offset: 100, replid: "AAA", replid2: "PPP", role: "master"},
-				{ip: "10.0.0.2", reachable: true, keys: 5, offset: 90, replid: "BBB", replid2: "QQQ", role: "master"},
+				{ip: ipMaster, reachable: true, keys: 5, offset: 100, replid: "AAA", replid2: "PPP", role: RoleMaster},
+				{ip: ipReplica, reachable: true, keys: 5, offset: 90, replid: "BBB", replid2: "QQQ", role: RoleMaster},
 			},
 			allowUnsafe: false,
 			since:       elapsed(),

@@ -19,6 +19,7 @@ const (
 	roleMaster         = "master"
 	redisCliBin        = "redis-cli"
 	infoSubcommand     = "info"
+	clusterSubcommand  = "cluster"
 	sentinelMasterName = "mymaster"
 )
 

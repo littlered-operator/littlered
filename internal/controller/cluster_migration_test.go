@@ -38,9 +38,9 @@ func TestIsLegacyClusterPod(t *testing.T) {
 		pod, name string
 		want      bool
 	}{
-		{"mr-cluster-0", "mr", true},
+		{stsMrCluster0, "mr", true},
 		{"mr-cluster-5", "mr", true},
-		{"mr-shard-0-0", "mr", false},
+		{stsMrShard00, "mr", false},
 		{"mr-shard-1-2", "mr", false},
 		{"mr-cluster-x", "mr", false},    // non-integer ordinal
 		{"mr-cluster-", "mr", false},     // missing ordinal
@@ -59,9 +59,9 @@ func TestIsNewShardPod(t *testing.T) {
 		pod, name string
 		want      bool
 	}{
-		{"mr-shard-0-0", "mr", true},
+		{stsMrShard00, "mr", true},
 		{"mr-shard-1-2", "mr", true},
-		{"mr-cluster-0", "mr", false},
+		{stsMrCluster0, "mr", false},
 		{"mr-shard-0", "mr", false},      // missing ordinal
 		{"mr-shard-a-0", "mr", false},    // non-integer shard
 		{"mr-shard-0-b", "mr", false},    // non-integer ordinal
@@ -83,30 +83,30 @@ func TestAllLegacyPodsReady(t *testing.T) {
 		{
 			name: "all legacy ready",
 			pods: []migPodFact{
-				{Name: "mr-cluster-0", RedisReady: true},
-				{Name: "mr-cluster-1", RedisReady: true},
+				{Name: stsMrCluster0, RedisReady: true},
+				{Name: stsMrCluster1, RedisReady: true},
 			},
 			want: true,
 		},
 		{
 			name: "one legacy not ready",
 			pods: []migPodFact{
-				{Name: "mr-cluster-0", RedisReady: true},
-				{Name: "mr-cluster-1", RedisReady: false},
+				{Name: stsMrCluster0, RedisReady: true},
+				{Name: stsMrCluster1, RedisReady: false},
 			},
 			want: false,
 		},
 		{
 			name: "new pods ignored; legacy all ready",
 			pods: []migPodFact{
-				{Name: "mr-cluster-0", RedisReady: true},
-				{Name: "mr-shard-0-0", RedisReady: false}, // new pod not counted
+				{Name: stsMrCluster0, RedisReady: true},
+				{Name: stsMrShard00, RedisReady: false}, // new pod not counted
 			},
 			want: true,
 		},
 		{
 			name: "no legacy pods -> not ready",
-			pods: []migPodFact{{Name: "mr-shard-0-0", RedisReady: true}},
+			pods: []migPodFact{{Name: stsMrShard00, RedisReady: true}},
 			want: false,
 		},
 	}
@@ -125,18 +125,18 @@ func TestBuildLegacyFactsFromPods(t *testing.T) {
 	add := func(pod, id, ip string, reachable bool) {
 		gt.Nodes[pod] = &redisclient.ClusterNodeState{PodName: pod, NodeID: id, PodIP: ip, Reachable: reachable}
 	}
-	add("mr-cluster-0", "L0", "10.0.0.1", true)
-	add("mr-cluster-1", "L1", "10.0.0.2", true)
-	add("mr-cluster-2", "L2", "10.0.0.3", true)
+	add(stsMrCluster0, "L0", ipMaster, true)
+	add(stsMrCluster1, "L1", ipReplica, true)
+	add("mr-cluster-2", "L2", ipNode3, true)
 	add("mr-cluster-3", "L3", "10.0.0.4", true)
 
 	pods := []migPodFact{
-		{Name: "mr-cluster-0", IP: "10.0.0.1", RedisReady: true},
-		{Name: "mr-cluster-1", IP: "10.0.0.2", RedisReady: true},
-		{Name: "mr-cluster-2", IP: "10.0.0.3", RedisReady: true},
+		{Name: stsMrCluster0, IP: ipMaster, RedisReady: true},
+		{Name: stsMrCluster1, IP: ipReplica, RedisReady: true},
+		{Name: "mr-cluster-2", IP: ipNode3, RedisReady: true},
 		{Name: "mr-cluster-3", IP: "10.0.0.4", RedisReady: true},
 		// new pods up (have IPs) but not yet MET (absent from gt.Nodes)
-		{Name: "mr-shard-0-0", IP: "10.1.0.1", RedisReady: true},
+		{Name: stsMrShard00, IP: "10.1.0.1", RedisReady: true},
 		{Name: "mr-shard-0-1", IP: "10.1.0.2", RedisReady: true},
 		{Name: "mr-shard-1-0", IP: "", RedisReady: false}, // not up yet (no IP)
 	}
@@ -159,7 +159,7 @@ func TestBuildLegacyFactsFromPods(t *testing.T) {
 
 	// NewPodAddrs: only new pods with an IP, keyed by pod name.
 	wantAddrs := map[string]string{
-		"mr-shard-0-0": "10.1.0.1:6379",
+		stsMrShard00:   "10.1.0.1:6379",
 		"mr-shard-0-1": "10.1.0.2:6379",
 	}
 	if !reflect.DeepEqual(facts.NewPodAddrs, wantAddrs) {
@@ -177,8 +177,8 @@ func TestBuildLegacyFactsFromPods(t *testing.T) {
 
 func TestBuildLegacyFactsFromPods_NoNewPods(t *testing.T) {
 	gt := redisclient.NewClusterGroundTruth()
-	gt.Nodes["mr-cluster-0"] = &redisclient.ClusterNodeState{PodName: "mr-cluster-0", NodeID: "L0", PodIP: "10.0.0.1", Reachable: true}
-	pods := []migPodFact{{Name: "mr-cluster-0", IP: "10.0.0.1", RedisReady: true}}
+	gt.Nodes[stsMrCluster0] = &redisclient.ClusterNodeState{PodName: stsMrCluster0, NodeID: "L0", PodIP: ipMaster, Reachable: true}
+	pods := []migPodFact{{Name: stsMrCluster0, IP: ipMaster, RedisReady: true}}
 
 	_, _, newExist := buildLegacyFactsFromPods(pods, gt, "mr")
 	if newExist {
@@ -191,9 +191,9 @@ func TestRestrictToLegacyMesh(t *testing.T) {
 	add := func(pod, id string) {
 		gt.Nodes[pod] = &redisclient.ClusterNodeState{PodName: pod, NodeID: id, Reachable: true}
 	}
-	add("mr-cluster-0", "L0")
-	add("mr-cluster-1", "L1")
-	add("mr-shard-0-0", "N00") // MET: in legacy partition
+	add(stsMrCluster0, "L0")
+	add(stsMrCluster1, "L1")
+	add(stsMrShard00, "N00")   // MET: in legacy partition
 	add("mr-shard-1-0", "N10") // un-MET: its own partition
 
 	// Legacy cluster + the MET new node form one partition; the un-MET node is alone.
@@ -207,17 +207,17 @@ func TestRestrictToLegacyMesh(t *testing.T) {
 	if _, ok := gt.Nodes["mr-shard-1-0"]; ok {
 		t.Errorf("un-MET new pod mr-shard-1-0 should have been removed from gt.Nodes")
 	}
-	if _, ok := gt.Nodes["mr-shard-0-0"]; !ok {
+	if _, ok := gt.Nodes[stsMrShard00]; !ok {
 		t.Errorf("MET new pod mr-shard-0-0 must be retained")
 	}
-	if _, ok := gt.Nodes["mr-cluster-0"]; !ok {
+	if _, ok := gt.Nodes[stsMrCluster0]; !ok {
 		t.Errorf("legacy pod mr-cluster-0 must never be removed")
 	}
 }
 
 func TestRestrictToLegacyMesh_NoNewPods(t *testing.T) {
 	gt := redisclient.NewClusterGroundTruth()
-	gt.Nodes["mr-cluster-0"] = &redisclient.ClusterNodeState{PodName: "mr-cluster-0", NodeID: "L0", Reachable: true}
+	gt.Nodes[stsMrCluster0] = &redisclient.ClusterNodeState{PodName: stsMrCluster0, NodeID: "L0", Reachable: true}
 	gt.Partitions = [][]string{{"L0"}}
 	restrictToLegacyMesh(gt, []string{"L0"}, "mr")
 	if len(gt.Nodes) != 1 {

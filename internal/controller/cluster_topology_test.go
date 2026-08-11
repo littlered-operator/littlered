@@ -51,8 +51,8 @@ func TestClusterPodRefs(t *testing.T) {
 			shards:           3,
 			replicasPerShard: 0,
 			want: []ClusterPodRef{
-				{Name: "c-shard-0-0", ShardIdx: 0, Ordinal: 0, IsMaster: true},
-				{Name: "c-shard-1-0", ShardIdx: 1, Ordinal: 0, IsMaster: true},
+				{Name: stsCShard00, ShardIdx: 0, Ordinal: 0, IsMaster: true},
+				{Name: stsCShard10, ShardIdx: 1, Ordinal: 0, IsMaster: true},
 				{Name: "c-shard-2-0", ShardIdx: 2, Ordinal: 0, IsMaster: true},
 			},
 		},
@@ -92,18 +92,18 @@ func TestClusterPodRefs(t *testing.T) {
 // debug-artifacts-20260730 (shard-K-1 was wrongly welded to a different shard's master).
 func TestChooseReattachTarget(t *testing.T) {
 	master := func(pod, id, slots string) *redisclient.ClusterNodeState {
-		return &redisclient.ClusterNodeState{PodName: pod, NodeID: id, Role: "master", Slots: []string{slots}}
+		return &redisclient.ClusterNodeState{PodName: pod, NodeID: id, Role: RoleMaster, Slots: []string{slots}}
 	}
 	nodes := []*redisclient.ClusterNodeState{
-		master("c-shard-0-0", "id0", "0-5461"),
-		master("c-shard-1-0", "id1", "5462-10922"),
+		master(stsCShard00, testNodeID0, "0-5461"),
+		master(stsCShard10, "id1", "5462-10922"),
 		master("c-shard-2-0", "id2", "10923-16383"),
 	}
 	noReplicas := map[string][]string{}
 
 	// Same-shard preference: each empty replica pod must pick its own shard's master.
 	wantByPod := map[string]string{
-		"c-shard-0-1": "id0",
+		"c-shard-0-1": testNodeID0,
 		"c-shard-1-1": "id1",
 		"c-shard-2-1": "id2",
 	}
@@ -115,13 +115,13 @@ func TestChooseReattachTarget(t *testing.T) {
 	}
 
 	// Already-satisfied master is skipped even if same-shard.
-	full := map[string][]string{"id0": {"someReplica"}}
-	if got := chooseReattachTarget("c-shard-0-1", nodes, full, 1); got == nil || got.NodeID == "id0" {
+	full := map[string][]string{testNodeID0: {"someReplica"}}
+	if got := chooseReattachTarget("c-shard-0-1", nodes, full, 1); got == nil || got.NodeID == testNodeID0 {
 		t.Errorf("expected shard-0 master skipped (already has its replica), got %v", got)
 	}
 
 	// Fallback: no same-shard master → lowest-PodName under-replicated master, deterministically.
-	if got := chooseReattachTarget("c-shard-9-1", nodes, noReplicas, 1); got == nil || got.NodeID != "id0" {
+	if got := chooseReattachTarget("c-shard-9-1", nodes, noReplicas, 1); got == nil || got.NodeID != testNodeID0 {
 		t.Errorf("fallback: got %v, want lowest-PodName master id0", got)
 	}
 }

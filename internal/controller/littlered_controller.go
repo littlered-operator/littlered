@@ -957,7 +957,7 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 		// If the pod thinks it's a master, or is following the wrong master.
 		// We DON'T trigger on LinkStatus == "down" alone, because that could be a
 		// transient state during a handshake, and re-issuing SLAVEOF would interrupt it.
-		if rn.Role == "master" || rn.MasterHost != state.RealMasterIP {
+		if rn.Role == RoleMaster || rn.MasterHost != state.RealMasterIP {
 			auditLog.Info("Redis pod is not following the consensus master, issuing SLAVEOF",
 				"pod", rn.PodName, "current_role", rn.Role, "target_master", state.RealMasterIP)
 			if err := redisclient.SlaveOf(ctx, fmt.Sprintf("%s:%d", ip, littleredv1alpha1.RedisPort), password, state.RealMasterIP, fmt.Sprintf("%d", littleredv1alpha1.RedisPort), littleRed.Spec.TLS.Enabled); err != nil {

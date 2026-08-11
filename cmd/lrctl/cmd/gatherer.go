@@ -204,7 +204,7 @@ func (g *cliGatherer) GetClusterID(ctx context.Context, podName, ip string) (str
 }
 
 func (g *cliGatherer) GetClusterInfo(ctx context.Context, podName, ip string) (*redisclient.ClusterInfo, error) {
-	cmd := []string{redisCliBin, "cluster", infoSubcommand}
+	cmd := []string{redisCliBin, clusterSubcommand, infoSubcommand}
 	stdout, _, err := k8s.Exec(ctx, g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.RedisContainer, cmd)
 	if err != nil {
 		return nil, err
@@ -213,7 +213,7 @@ func (g *cliGatherer) GetClusterInfo(ctx context.Context, podName, ip string) (*
 }
 
 func (g *cliGatherer) GetClusterNodes(ctx context.Context, podName, ip string) ([]redisclient.ClusterNodeInfo, error) {
-	cmd := []string{redisCliBin, "cluster", "nodes"}
+	cmd := []string{redisCliBin, clusterSubcommand, "nodes"}
 	stdout, _, err := k8s.Exec(ctx, g.coreClient, g.config, g.cCtx.Namespace, podName, g.cCtx.RedisContainer, cmd)
 	if err != nil {
 		return nil, err

@@ -36,7 +36,7 @@ func clusterLR() *littleredv1alpha1.LittleRed {
 	lr := &littleredv1alpha1.LittleRed{}
 	lr.Name = "demo"
 	lr.Namespace = "default"
-	lr.Spec.Mode = "cluster"
+	lr.Spec.Mode = modeCluster
 	lr.Status.Phase = "Initializing"
 	lr.Status.Redis = littleredv1alpha1.RedisStatus{Ready: 6, Total: 6}
 	return lr

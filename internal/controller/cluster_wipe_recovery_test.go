@@ -28,10 +28,10 @@ func TestPlanClusterWipeRecovery(t *testing.T) {
 	within := now.Add(-30 * time.Second)   // marker 30s ago: still in cooldown
 	elapsed := now.Add(-120 * time.Second) // marker 120s ago: cooldown passed
 
-	ready := clusterPodHealth{Name: "c-shard-0-0", RedisReady: true, Restarted: false}
+	ready := clusterPodHealth{Name: stsCShard00, RedisReady: true, Restarted: false}
 	readyButRestarted := clusterPodHealth{Name: "c-shard-0-1", RedisReady: true, Restarted: true}
-	stuck0 := clusterPodHealth{Name: "c-shard-0-0", RedisReady: false, Restarted: true}
-	stuck1 := clusterPodHealth{Name: "c-shard-1-0", RedisReady: false, Restarted: true}
+	stuck0 := clusterPodHealth{Name: stsCShard00, RedisReady: false, Restarted: true}
+	stuck1 := clusterPodHealth{Name: stsCShard10, RedisReady: false, Restarted: true}
 	notReadyNoRestart := clusterPodHealth{Name: "c-shard-2-0", RedisReady: false, Restarted: false}
 	oom := clusterPodHealth{Name: "c-shard-2-1", RedisReady: false, Restarted: true, OOMKilled: true}
 
@@ -89,14 +89,14 @@ func TestPlanClusterWipeRecovery(t *testing.T) {
 			pods:        []clusterPodHealth{stuck0, stuck1, ready, oom},
 			since:       &elapsed,
 			wantAction:  wipeRecycle,
-			wantRecycle: []string{"c-shard-0-0", "c-shard-1-0"},
+			wantRecycle: []string{stsCShard00, stsCShard10},
 		},
 		{
 			name:        "total wipe past cooldown -> recycle every stuck pod",
 			pods:        []clusterPodHealth{stuck0, stuck1},
 			since:       &elapsed,
 			wantAction:  wipeRecycle,
-			wantRecycle: []string{"c-shard-0-0", "c-shard-1-0"},
+			wantRecycle: []string{stsCShard00, stsCShard10},
 		},
 	}
 
