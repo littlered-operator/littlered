@@ -13,7 +13,6 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "littlered.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
-{{- end }}
 {{- /*
 Allow-list scoping (ADR-014): bind the per-namespace manager Role (role.yaml) to
 the operator's ServiceAccount (which lives in the operator's own namespace) in
