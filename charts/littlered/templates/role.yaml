@@ -37,7 +37,6 @@ rules:
     verbs:
       - create
       - patch
-{{- end }}
 {{- /*
 Allow-list scoping (ADR-014): render a namespaced manager Role carrying the
 operator's reconcile rules in EACH watched namespace, in place of the
