@@ -10,6 +10,21 @@ cut a release (`scripts/prepare-release.sh`).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Helm chart did not parse** — `helm install`/`helm upgrade` failed with
+  `parse error at (littlered/templates/rolebinding.yaml:16): unexpected {{end}}`
+  for **every** chart version from 0.2.2 on. Making leader election
+  non-configurable removed the `{{- if .Values.leaderElection.enabled }}` guard
+  from `role.yaml` and `rolebinding.yaml`, but the namespace-scoping change
+  (ADR-014) was integrated with the guard's closing `{{- end }}` left behind in
+  both files, closing nothing. `values.yaml` likewise carried a duplicated
+  `scope:` block. Charts 0.2.2 and 0.3.0 have been republished with the fix.
+- **CI now lints and renders the chart** (`make helm-lint`, run on every push and
+  again before the release job pushes to the registry) in the default,
+  allow-list and deny-list scoping modes. A chart template error is invisible to
+  the Go linter and previously only surfaced on the user's cluster.
+
 ## [0.3.0] - 2026-08-11
 
 Everything below has landed since `v0.2.2`. The headline is a restructure of

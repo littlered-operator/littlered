@@ -21,3 +21,18 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
+
+  chart:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v7
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      # A template-syntax error in the chart is invisible to the Go linter and
+      # only surfaces at `helm install` time on the user's cluster.
+      - name: Lint and render the chart
+        run: make helm-lint

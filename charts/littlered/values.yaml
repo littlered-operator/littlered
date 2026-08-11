@@ -47,19 +47,6 @@ scope:
   # keeps the ClusterRole and sets IGNORE_NAMESPACE on the operator.
   ignoreNamespaces: []
 
-# Namespace scoping (ADR-014). By default the operator is cluster-scoped: it
-# watches every LittleRed CR in every namespace and ships cluster-wide RBAC
-# (ClusterRole + ClusterRoleBinding). Set AT MOST ONE of the two lists below.
-scope:
-  # Allow-list. Watch only these namespaces. Renders least-privilege NAMESPACED
-  # RBAC (a Role + RoleBinding in each listed namespace) instead of the
-  # ClusterRole, and sets WATCH_NAMESPACE on the operator. Mutually exclusive
-  # with ignoreNamespaces (setting both fails the render).
-  watchNamespaces: []
-  # Deny-list. Watch all namespaces EXCEPT these. Inherently cluster-wide, so it
-  # keeps the ClusterRole and sets IGNORE_NAMESPACE on the operator.
-  ignoreNamespaces: []
-
 metrics:
   # Enable the operator metrics endpoint (HTTP on the specified port).
   # When enabled, a Service is created and --metrics-bind-address is set on the manager.

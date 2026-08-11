@@ -237,6 +237,20 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	"$(GOLANGCI_LINT)" config verify
 
+.PHONY: helm-lint
+helm-lint: ## Lint the Helm chart and render it in every scoping mode.
+	$(HELM) lint charts/littlered
+	$(HELM) template littlered charts/littlered > /dev/null
+	$(HELM) template littlered charts/littlered \
+		--set 'scope.watchNamespaces={ns-a,ns-b}' > /dev/null
+	$(HELM) template littlered charts/littlered \
+		--set 'scope.ignoreNamespaces={kube-system}' > /dev/null
+	$(HELM) template littlered charts/littlered \
+		--set metrics.enabled=true \
+		--set metrics.serviceMonitor.enabled=true \
+		--set networkPolicy.enabled=true > /dev/null
+	@echo "Helm chart lints and renders in all scoping modes."
+
 ##@ Build
 
 .PHONY: build

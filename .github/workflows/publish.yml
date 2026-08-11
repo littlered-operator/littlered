@@ -171,6 +171,11 @@ jobs:
             exit 1
           fi
 
+      # Never push a chart that does not parse: a template-syntax error only
+      # surfaces at `helm install` time, i.e. on the user's cluster.
+      - name: Lint and render the chart
+        run: make helm-lint
+
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username ${{ github.actor }} --password-stdin
 
