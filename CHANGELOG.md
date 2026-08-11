@@ -10,6 +10,8 @@ cut a release (`scripts/prepare-release.sh`).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-11
+
 Everything below has landed since `v0.2.1`.
 
 ### Added
