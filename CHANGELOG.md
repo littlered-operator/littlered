@@ -10,6 +10,210 @@ cut a release (`scripts/prepare-release.sh`).
 
 ## [Unreleased]
 
+Everything below has landed since `v0.2.2`. The headline is a restructure of
+cluster mode — one StatefulSet per shard instead of a single striped one — which
+unlocks per-shard failure-domain isolation. **Existing cluster instances migrate
+automatically, online and without data loss; no action is required.** The
+external contract is unchanged: same CRD API, same Services, service names,
+ports and selectors, so client connection endpoints keep working untouched.
+Standalone and sentinel mode are unaffected by the restructure.
+
+### Added
+
+- **Automatic in-place migration of pre-0.3 cluster instances** (ADR-013,
+  LR-025). Instead of refusing to manage a legacy `{name}-cluster` StatefulSet,
+  the operator migrates it to the per-shard layout online, on the same running
+  Redis Cluster, without data loss and without changing client connection
+  endpoints. The mechanism is **replicate-then-failover**: the new per-shard pods
+  join as slot-less replicas of the legacy master owning their range, full-sync,
+  and only then is `{name}-shard-K-0` promoted by a coordinated `CLUSTER
+  FAILOVER` — an atomic handoff after which the legacy master demotes to a live
+  replica. A new node therefore never owns slots without a redundant copy
+  existing, which makes the migration restart-safe for every
+  `replicasPerShard`, including `0`.
+  - Phases, re-derived from live cluster state every reconcile (nothing
+    load-bearing is persisted): `Standup` → `Meet` → `Replicate` → `Failover` →
+    `Decommission` → `Complete`. The steady-state repair loop is suspended while
+    a migration is in flight.
+  - Entry is health-gated (`cluster_state:ok`, all 16384 slots assigned, all
+    legacy pods `Ready`, master quorum) and **shape-preserving only** — the same
+    `shards × (1 + replicasPerShard)`, which is what makes the 1:1
+    range-for-range mapping valid. An unhealthy legacy cluster simply waits and
+    migrates once it recovers. A legacy topology that does *not* match the
+    declared shape is refused rather than guessed at: the instance reports
+    `Phase=Failed` with a `LegacyClusterTopology` condition and needs operator
+    attention. The legacy workload is never deleted in that case — with EmptyDir
+    storage, deleting it would destroy data.
+  - The legacy StatefulSet and its PDB are deleted only once no legacy node owns
+    a single slot — i.e. provably holds no data.
+  - Opt out per-CR with the annotation
+    `redis.chuck-chuck-chuck.net/migrate-legacy-sts: hold`, which parks a
+    non-mutating holding state for a maintenance window. Note the trade-off:
+    while held, the repair loop stays suspended, so the instance is unmanaged.
+  - Progress is observable via `status.cluster.migration`
+    (`phase`, `shardsMoved`, `totalShards`, `startedAt`), and `lrctl status` /
+    `lrctl verify` print a one-line migration banner while it is underway.
+    Non-migrating output is unchanged, and `lrctl` remains read-only.
+  - Legacy detection is deliberately narrow: a StatefulSet qualifies only if it
+    is named `{name}-cluster`, carries `component=cluster`, **lacks** the
+    per-shard label, is sized exactly `shards × (1 + replicasPerShard)`, and is
+    controller-owned by this CR. A stray, mis-sized or half-formed StatefulSet
+    never triggers a migration.
+
+  Verified end-to-end on a live cluster for the Redis 8.4+ atomic-slot-migration
+  engine and for the pre-8.4 path, including a restart-during-migration chaos
+  tier.
+
+- **`spec.placement.shardAntiAffinity` — per-shard failure-domain isolation as a
+  one-line setting** (LR-022). The operator injects a `topologySpreadConstraint`
+  (`maxSkew: 1`, selector scoped to that shard's pods) into each shard
+  StatefulSet, appended after anything in
+  `spec.podTemplate.topologySpreadConstraints`. Users could not write this
+  themselves, because it has to select on the operator-owned shard label.
+  Defaults are `topologyKey: kubernetes.io/hostname` and
+  `whenUnsatisfiable: ScheduleAnyway` (soft, matching CloudNativePG/Strimzi
+  convention); hard `DoNotSchedule` is opt-in. Cluster mode only. Enabling it
+  triggers one serialized rollout that re-places the pods.
+
+- **Cluster mode: recovery from a total-/partial-wipe deadlock** (LR-023,
+  ADR-008) — the cluster analog of the sentinel leaderless deadlock. A mass
+  container crash (`kill -9`, OOM) leaves `nodes.conf` on the EmptyDir, so every
+  restarted master parks in the startup yield loop with no live replica to take
+  over, lands in `CrashLoopBackOff`, and never becomes `Ready` — which meant the
+  operator, gated on all pods being ready, never gathered state or acted. It now
+  recycles exactly the stuck pods (redis container not ready, crash-looping, not
+  `OOMKilled`) after a 120s cooldown tracked in
+  `status.cluster.wipeDeadlockSince`, and their StatefulSets reschedule them
+  fresh into the normal self-heal path. Data-safe by construction: the gate is
+  the kubelet's *local* readiness probe rather than a remote dial, and a
+  not-ready pod in a pure in-memory cluster holds no data. A `Ready` pod — a
+  possible data holder — is never recycled, so a partial wipe keeps its
+  survivor. Requires `delete` on pods (granted by the chart).
+
+- **Sentinel mode: operator-led recovery from the ghost-master failover
+  deadlock** (LR-024). A graceful failover followed by a crash could leave every
+  Sentinel pinned to a dead master with an empty replica list —
+  `-failover-abort-no-good-slave` forever, data safe but the instance never
+  serving. Neither existing rule could help: ghost-master correction needs a
+  living consensus master (every pod was a slave of the ghost) and Rule L needs
+  bare Sentinels (these monitor the ghost). The operator now elects the
+  most-complete survivor via `SENTINEL REMOVE` + `MONITOR` (+ `REPLICAOF NO
+  ONE`), gated on `!HasHealthyKnownReplica` and a 30s cooldown
+  (`status.ghostMasterStuckSince`) so a legitimate in-progress failover is never
+  stolen. The safety gate keys on replication **lineage**, not holder count:
+  same-lineage survivors are elected with no opt-in, while genuinely divergent
+  histories still require `sentinel.allowUnsafeRebootstrapOnDeadlock`.
+
+- **`lrctl verify`: shard-colocation checking and a `[DEGRADED]` tier**
+  (LR-020). `verify` previously green-lit a cluster whose Redis shards were
+  scrambled across StatefulSets, because it only checked Redis health. It now
+  fails on any cross-StatefulSet master/replica pairing, and reports a new
+  `[DEGRADED]` warning tier (exit 0) when a replica's replication link is down —
+  reduced redundancy is not "healthy and consistent", but it is usually a
+  transient resync, so it warns rather than fails.
+
+### Changed
+
+- **Cluster mode: one StatefulSet per shard** (LR-020, ADR-007). The
+  single striped `{name}-cluster` StatefulSet is replaced by `{name}-shard-K`
+  (one per shard, each sized `1 + replicasPerShard`), carrying a stable
+  `redis.chuck-chuck-chuck.net/shard` label; shard K's intended master is pod
+  `{name}-shard-K-0`, and each redundant shard gets its own
+  `{name}-shard-K-pdb`. Pod enumeration and master identity now come from a
+  single source of truth instead of the old `(i - shards) % shards` striping.
+  The shared headless Service `{name}-cluster` is retained and governs every
+  shard StatefulSet, so peer discovery, pod DNS and **client connection
+  endpoints are unchanged**.
+
+  This is what makes single-domain-loss survivability possible at all: a shard's
+  master and replicas can only be placed in different failure domains if they
+  live in separate StatefulSets. Because OSS Redis/Valkey Cluster has no
+  failure-domain awareness, the operator is now the sole topology authority — an
+  empty pod is reattached to the under-replicated master **in its own shard**
+  (cross-shard only as a logged fallback), and
+  `cluster-allow-replica-migration no` stops Redis from autonomously re-pairing
+  replicas across shards.
+
+  Two never-delete-data guards: the operator refuses to stand up per-shard
+  StatefulSets beside a lingering legacy one (without deleting it), and refuses a
+  decrease of `spec.cluster.shards` that would orphan high-index shards.
+
+  **Upgrade note — no action required.** Existing instances are migrated
+  automatically and online by the migration described under *Added*: no
+  delete-and-recreate, no data loss, and no change to the client-facing contract
+  (CRD API, Services, ports and selectors are all unchanged). The one visible
+  difference is that **workload and pod names change**
+  (`{name}-cluster-N` → `{name}-shard-K-M`, and `{name}-cluster-pdb` →
+  `{name}-shard-K-pdb`), so anything referencing them *directly* — scripts,
+  dashboards, NetworkPolicies, `kubectl rollout restart` invocations — needs
+  updating. While a migration runs, the instance reports `Ready=False` with
+  reason `MigrationInProgress` until it reaches `Complete`, which is worth
+  knowing for anything that gates on readiness (CI checks, Argo CD health).
+
+- **Rolling updates are serialized across shard StatefulSets** (LR-021).
+  Splitting into per-shard StatefulSets lost the global one-pod-at-a-time
+  restart ordering that a single StatefulSet provided for free: an
+  operator-driven pod-template change rolled every shard in parallel and
+  restarted all masters in one wave (the chaos e2e measured ~24% failed
+  operations, no data loss). The operator now rolls one shard at a time,
+  deferring the next until the current one has fully settled, detecting changes
+  via a new `redis.chuck-chuck-chuck.net/pod-spec-hash` annotation on the
+  operator-authored pod template. Creating missing shards stays immediate and
+  parallel, so a fresh bootstrap is not slowed down. This governs
+  operator-triggered rollouts only — a manual `kubectl rollout restart` bypasses
+  the operator. On first upgrade, existing shard StatefulSets acquire the hash
+  through one serialized, availability-safe roll.
+
+- Event recording migrated to the `events.k8s.io/v1` API, replacing the
+  deprecated core-`v1` recorder (`SA1019`, which 0.2.2 silenced with a scoped
+  `//nolint`). The new broadcaster requires `events.k8s.io` `create`/`patch`
+  permissions, added to the generated RBAC and to the shared chart RBAC helper
+  used by both the cluster- and namespace-scoped roles.
+
+- Upgrade and install documentation corrected. The cluster-mode upgrade note
+  still described the superseded clean-slate, delete-and-recreate behavior,
+  which would have led upgrading users to destroy data for an upgrade that is
+  now seamless; it now documents the automatic migration, its phases and the
+  `hold` opt-out with its trade-off. Also fixed: a false "exactly 3 shards /
+  0 or 1 replica" claim (validation allows 3+ shards and 0+ replicas),
+  rolling-restart commands that still targeted the no-longer-existing
+  `{name}-cluster` StatefulSet, and a stale install section (OCI chart install,
+  correct image/CRD paths; the Kustomize option is gone, since Helm is the
+  distribution).
+
+- `golangci-lint` is pinned to v2.12.2 via the `go.mod` tool directive, matching
+  what CI runs, so local `make lint` and CI now surface the same findings. All 56
+  newly-surfaced findings were resolved by introducing or reusing constants — no
+  value or logic changes.
+
+- Topology-aware master balancing (spreading *masters* across failure domains)
+  is explicitly **declined** and recorded as a contestable decision with revisit
+  conditions in ADR-009: reads commonly go to replicas so load is already
+  spread, `replicasPerShard: 1` leaves no balancing freedom, there is no
+  schedule-time master label to spread on, and active balancing would only add
+  failover churn without improving uptime.
+
+### Fixed
+
+- **Sentinel seeding could silently no-op against a stale master.** The
+  idempotency guard skipped any Sentinel that already knew *some* master, which
+  during a ghost-master deadlock is the ghost — and a bare `SENTINEL MONITOR` is
+  rejected while a same-named master is still configured, so the repoint did
+  nothing and recovery oscillated. It now skips only Sentinels already
+  monitoring the *target* master (preserving no-churn idempotency) and otherwise
+  issues `SENTINEL REMOVE` before `MONITOR`, so the repoint actually reaches a
+  ghost-pinned Sentinel. Bootstrap and leaderless seeding are unaffected.
+
+- **A normal promotion chain was misread as divergent data.** When a node is
+  promoted and its peers resync, Redis rotates `master_replid` and shifts the
+  previous value into `master_replid2`. Divergence was computed from
+  `master_replid` alone, so the survivors of a graceful-then-crash sequence
+  looked like independent lineages and recovery refused to elect any of them.
+  The gather now also captures `master_replid2`, and divergence is computed over
+  each holder's `{replid, replid2}` with union-find, so holders connected through
+  a shared replication id count as one lineage. Only genuinely independent
+  histories are reported as divergent and still require the unsafe opt-in.
+
 ## [0.2.2] - 2026-08-11
 
 Everything below has landed since `v0.2.1`.
