@@ -10,6 +10,8 @@ cut a release (`scripts/prepare-release.sh`).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-11
+
 Everything below has landed since `v0.2.2`. The headline is a restructure of
 cluster mode — one StatefulSet per shard instead of a single striped one — which
 unlocks per-shard failure-domain isolation. **Existing cluster instances migrate
