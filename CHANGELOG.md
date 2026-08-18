@@ -10,6 +10,11 @@ cut a release (`scripts/prepare-release.sh`).
 
 ## [Unreleased]
 
+### Changed
+
+- Default `redis_exporter` sidecar image is now **v1.89.0** (from v1.88.0). Instances
+  that do not pin `metrics.exporter.tag` pick the new tag up when the CRD is applied.
+
 ### Fixed
 
 - **The Helm chart did not parse** — `helm install`/`helm upgrade` failed with
