@@ -15,6 +15,9 @@ cut a release (`scripts/prepare-release.sh`).
 - Default `redis_exporter` sidecar image is now **v1.89.0** (from v1.88.0). Instances
   that do not pin `metrics.exporter.tag` pick the new tag up when the CRD is applied.
 
+- Dependency updates: prometheus-operator apis 0.93.1 and Ginkgo 2.32.1. CI-only:
+  the lint workflow now uses `azure/setup-helm@v5`.
+
 ### Fixed
 
 - **The Helm chart did not parse** — `helm install`/`helm upgrade` failed with
