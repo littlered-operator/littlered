@@ -30,6 +30,12 @@ cut a release (`scripts/prepare-release.sh`).
   minor and major updates — patch-level security fixes stay automatic, while moving
   the Go line stays a deliberate change made together with the `go` directive.
 
+- **Dependabot was watching a Helm chart directory that does not exist.** The `helm`
+  update entry pointed at `/charts/littlered-operator`; the chart lives in
+  `/charts/littlered`, so the entry could never resolve a chart. No chart currently
+  declares `dependencies:`, so nothing was missed in practice — the fix makes the
+  entry effective if one ever does.
+
 - **The Helm chart did not parse** — `helm install`/`helm upgrade` failed with
   `parse error at (littlered/templates/rolebinding.yaml:16): unexpected {{end}}`
   for **every** chart version from 0.2.2 on. Making leader election
