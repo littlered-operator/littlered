@@ -40,6 +40,6 @@ updates:
           - "version-update:semver-minor"
 
   - package-ecosystem: helm
-    directory: /charts/littlered-operator
+    directory: /charts/littlered
     schedule:
       interval: weekly
