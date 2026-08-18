@@ -20,6 +20,16 @@ cut a release (`scripts/prepare-release.sh`).
 
 ### Fixed
 
+- **Both container images were being built by a Go release candidate.** The
+  Dependabot `golang` group moved the operator and chaos-client builders from
+  `golang:1.26.5` to `golang:1.27rc2`: a Docker tag like `1.27rc2` has no semver
+  pre-release separator, so it ranks above the stable line instead of being skipped.
+  `go.mod` still declared `go 1.26.0`, so the language version never moved, but the
+  published images were compiled by a pre-release toolchain. Both builders are pinned
+  to `golang:1.26.6` (the current stable patch), and the `golang` group now ignores
+  minor and major updates — patch-level security fixes stay automatic, while moving
+  the Go line stays a deliberate change made together with the `go` directive.
+
 - **The Helm chart did not parse** — `helm install`/`helm upgrade` failed with
   `parse error at (littlered/templates/rolebinding.yaml:16): unexpected {{end}}`
   for **every** chart version from 0.2.2 on. Making leader election
