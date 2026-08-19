@@ -30,6 +30,15 @@ cut a release (`scripts/prepare-release.sh`).
   minor and major updates — patch-level security fixes stay automatic, while moving
   the Go line stays a deliberate change made together with the `go` directive.
 
+- **The golangci-lint version can no longer drift between local and CI.** `make lint`
+  resolves the version from the `go.mod` tool pin, while `.github/workflows/lint.yml`
+  states it a second time — they agreed only by coincidence, so a Dependabot bump of the
+  tool directive would move local lint while CI stayed pinned, reinstating the skew #90
+  and #93 closed (inverted: findings that only reproduce in one place). A guard test
+  (`test/tooling`) now fails if the two disagree, in either direction. Completes
+  [#98](https://github.com/littlered-operator/littlered/issues/98); the version alignment
+  itself shipped in 0.3.0.
+
 - **Dependabot was watching a Helm chart directory that does not exist.** The `helm`
   update entry pointed at `/charts/littlered-operator`; the chart lives in
   `/charts/littlered`, so the entry could never resolve a chart. No chart currently
