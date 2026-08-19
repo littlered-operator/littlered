@@ -71,6 +71,9 @@ const (
 	ClusterBusPortOffset       = 10000
 	ClusterBusPort             = RedisPort + ClusterBusPortOffset // 16379
 
+	// DefaultAppName is the default app.kubernetes.io/name value for owned resources.
+	DefaultAppName = "littlered"
+
 	// Placement defaults (cluster-mode shard anti-affinity)
 	DefaultShardTopologyKey       = "kubernetes.io/hostname"
 	DefaultShardWhenUnsatisfiable = corev1.ScheduleAnyway
@@ -132,6 +135,12 @@ func (r *LittleRed) SetDefaults() {
 	// Mode
 	if spec.Mode == "" {
 		spec.Mode = DefaultMode
+	}
+
+	// AppName — the app.kubernetes.io/name value, and part of every selector, so it
+	// must never end up empty.
+	if spec.AppName == "" {
+		spec.AppName = DefaultAppName
 	}
 
 	// Image

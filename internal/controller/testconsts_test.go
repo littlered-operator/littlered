@@ -35,4 +35,15 @@ const (
 
 	testNodeID0 = "id0"
 	testReplid0 = "716d42"
+
+	// Metadata-inheritance tests (ADR-015).
+	metaTeamKey     = "team"
+	metaTeamValue   = "payments"
+	metaOwnerKey    = "owner"
+	metaOwnerValue  = "team-a"
+	metaKeepKey     = "keep"
+	metaKeepValue   = "me"
+	metaHijackValue = "hijack"
+	metaStaleTag    = "9.9.9"
+	metaCustomApp   = "redis"
 )
