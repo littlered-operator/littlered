@@ -13,14 +13,14 @@ import (
 )
 
 const (
-	modeStandalone     = "standalone"
-	modeCluster        = "cluster"
-	modeSentinel       = "sentinel"
-	roleMaster         = "master"
-	redisCliBin        = "redis-cli"
-	infoSubcommand     = "info"
-	clusterSubcommand  = "cluster"
-	sentinelMasterName = "mymaster"
+	modeStandalone    = "standalone"
+	modeCluster       = "cluster"
+	modeSentinel      = "sentinel"
+	roleMaster        = "master"
+	roleSlave         = "slave" // Redis wire term, as reported by INFO / SENTINEL replies
+	redisCliBin       = "redis-cli"
+	infoSubcommand    = "info"
+	clusterSubcommand = "cluster"
 )
 
 var (

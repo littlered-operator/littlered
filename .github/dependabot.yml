@@ -28,8 +28,18 @@ updates:
       golang:
         patterns:
           - "golang"
+    # The builder image must not drift off the Go line that go.mod declares.
+    # Docker tags like `1.27rc2` carry no semver pre-release separator, so
+    # Dependabot ranks them above the stable line and proposed one; patch bumps
+    # (security fixes) stay automatic, minor/major is a deliberate change made
+    # together with the `go` directive in go.mod.
+    ignore:
+      - dependency-name: "golang"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
 
   - package-ecosystem: helm
-    directory: /charts/littlered-operator
+    directory: /charts/littlered
     schedule:
       interval: weekly

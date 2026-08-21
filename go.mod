@@ -4,9 +4,9 @@ go 1.26.0
 
 require (
 	github.com/go-logr/logr v1.4.4
-	github.com/onsi/ginkgo/v2 v2.32.0
+	github.com/onsi/ginkgo/v2 v2.32.1
 	github.com/onsi/gomega v1.42.1
-	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.93.0
+	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.93.1
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/spf13/cobra v1.10.2
 	k8s.io/api v0.36.3

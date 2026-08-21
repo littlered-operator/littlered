@@ -10,7 +10,31 @@ cut a release (`scripts/prepare-release.sh`).
 
 ## [Unreleased]
 
+### Changed
+
+- Default `redis_exporter` sidecar image is now **v1.89.0** (from v1.88.0). Instances
+  that do not pin `metrics.exporter.tag` pick the new tag up when the CRD is applied.
+
+- Dependency updates: prometheus-operator apis 0.93.1 and Ginkgo 2.32.1. CI-only:
+  the lint workflow now uses `azure/setup-helm@v5`.
+
 ### Fixed
+
+- **Both container images were being built by a Go release candidate.** The
+  Dependabot `golang` group moved the operator and chaos-client builders from
+  `golang:1.26.5` to `golang:1.27rc2`: a Docker tag like `1.27rc2` has no semver
+  pre-release separator, so it ranks above the stable line instead of being skipped.
+  `go.mod` still declared `go 1.26.0`, so the language version never moved, but the
+  published images were compiled by a pre-release toolchain. Both builders are pinned
+  to `golang:1.26.6` (the current stable patch), and the `golang` group now ignores
+  minor and major updates — patch-level security fixes stay automatic, while moving
+  the Go line stays a deliberate change made together with the `go` directive.
+
+- **Dependabot was watching a Helm chart directory that does not exist.** The `helm`
+  update entry pointed at `/charts/littlered-operator`; the chart lives in
+  `/charts/littlered`, so the entry could never resolve a chart. No chart currently
+  declares `dependencies:`, so nothing was missed in practice — the fix makes the
+  entry effective if one ever does.
 
 - **The Helm chart did not parse** — `helm install`/`helm upgrade` failed with
   `parse error at (littlered/templates/rolebinding.yaml:16): unexpected {{end}}`

@@ -28,6 +28,9 @@ import (
 type operatorGatherer struct {
 	password   string
 	tlsEnabled bool
+	// masterName is the instance's Sentinel master name. Sentinel-mode paths must
+	// set it; cluster-mode gatherers never reach GetSentinelState and leave it empty.
+	masterName string
 }
 
 func (g *operatorGatherer) GetRedisState(ctx context.Context, podName, ip string) (*redisclient.RedisNodeState, error) {
@@ -59,7 +62,7 @@ func (g *operatorGatherer) GetSentinelState(ctx context.Context, podName, ip str
 	podAddr := fmt.Sprintf("%s:%d", ip, littleredv1alpha1.SentinelPort)
 	sc := redisclient.NewSentinelClient([]string{podAddr}, g.password, g.tlsEnabled)
 
-	masterInfo, err := sc.GetMasterState(ctx, redisclient.SentinelMasterName)
+	masterInfo, err := sc.GetMasterState(ctx, g.masterName)
 	if err != nil {
 		if strings.Contains(err.Error(), "ERR No such master") || strings.Contains(err.Error(), "redis: nil") {
 			return &redisclient.SentinelNodeState{
@@ -73,15 +76,18 @@ func (g *operatorGatherer) GetSentinelState(ctx context.Context, podName, ip str
 	}
 
 	state := &redisclient.SentinelNodeState{
-		PodName:        podName,
-		IP:             ip,
-		Monitoring:     true,
-		MasterIP:       masterInfo.IP,
-		FailoverStatus: masterInfo.FailoverStatus,
-		Reachable:      true,
+		PodName:           podName,
+		IP:                ip,
+		Monitoring:        true,
+		MasterIP:          masterInfo.IP,
+		MasterFlags:       masterInfo.Flags,
+		FailoverStatus:    masterInfo.FailoverStatus,
+		NumOtherSentinels: masterInfo.NumOtherSentinels,
+		NumSlaves:         masterInfo.NumSlaves,
+		Reachable:         true,
 	}
 
-	if reps, err := sc.GetReplicas(ctx, redisclient.SentinelMasterName); err == nil {
+	if reps, err := sc.GetReplicas(ctx, g.masterName); err == nil {
 		state.Replicas = reps
 	}
 
