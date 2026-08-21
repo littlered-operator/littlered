@@ -71,6 +71,9 @@ var verifyCmd = &cobra.Command{
 				case modeCluster:
 					jsonResults = append(jsonResults,
 						verifyClusterJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace))
+				case modeFailover:
+					jsonResults = append(jsonResults,
+						verifyFailoverJSON(ctx, coreClient, config, cCtx, key.Name, key.Namespace))
 				default:
 					fmt.Fprintf(os.Stderr,
 						"error: %s/%s: JSON output for mode %q not yet implemented\n",
@@ -104,6 +107,8 @@ var verifyCmd = &cobra.Command{
 				verifyErr = verifySentinel(ctx, coreClient, config, cCtx)
 			case modeCluster:
 				verifyErr = verifyCluster(ctx, coreClient, config, cCtx)
+			case modeFailover:
+				verifyErr = verifyFailover(ctx, coreClient, config, cCtx)
 			default:
 				fmt.Printf("Verification for mode %q not yet fully implemented\n", cCtx.Mode)
 			}
@@ -263,7 +268,7 @@ func verifySentinel(
 
 	fmt.Println("Gathering Cluster Ground Truth...")
 	g := &cliGatherer{coreClient: coreClient, config: config, cCtx: cCtx}
-	state := redisclient.GatherClusterState(ctx, g, redisMap, sentinelMap)
+	state := redisclient.GatherReplicationState(ctx, g, redisMap, sentinelMap)
 
 	fmt.Println("\nSentinel Status:")
 	for _, sn := range state.SentinelNodes {
@@ -272,7 +277,7 @@ func verifySentinel(
 			status = fmt.Sprintf("monitoring %s", sn.MasterIP)
 		}
 		if !sn.Reachable {
-			status = "unreachable"
+			status = statusUnreachable
 		}
 		fmt.Printf("  - Sentinel %s: %s\n", sn.PodName, status)
 	}
@@ -285,7 +290,7 @@ func verifySentinel(
 		}
 		status += fmt.Sprintf(", keys:%d", rn.Keys)
 		if !rn.Reachable {
-			status = "unreachable"
+			status = statusUnreachable
 		}
 		fmt.Printf("  - Redis %s: %s\n", rn.PodName, status)
 	}
@@ -347,7 +352,7 @@ func verifySentinelJSON(
 		}
 	}
 	g := &cliGatherer{coreClient: coreClient, config: config, cCtx: cCtx}
-	state := redisclient.GatherClusterState(ctx, g, redisMap, sentinelMap)
+	state := redisclient.GatherReplicationState(ctx, g, redisMap, sentinelMap)
 	return buildSentinelVerifyJSON(name, namespace, redisMap, state, masterNameOf(cCtx),
 		len(cCtx.SentinelPods), max(len(cCtx.RedisPods)-1, 0))
 }

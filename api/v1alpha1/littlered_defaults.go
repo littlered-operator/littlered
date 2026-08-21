@@ -28,7 +28,8 @@ import (
 
 // Mode values for LittleRedSpec.Mode.
 const (
-	ModeCluster = "cluster"
+	ModeCluster  = "cluster"
+	ModeFailover = "failover"
 )
 
 // Default values
@@ -70,6 +71,17 @@ const (
 	DefaultFailoverGracePeriod = 15
 	ClusterBusPortOffset       = 10000
 	ClusterBusPort             = RedisPort + ClusterBusPortOffset // 16379
+
+	// Failover-mode defaults (experimental; see ADR-011)
+	DefaultFailoverDownAfterMs       = 5000
+	DefaultFailoverReplicas    int32 = 2
+	// DefaultFailoverMinReplicasToWrite is 1 (LR-038): with the default 2 replicas
+	// this is the "master plus one replica" durable pair, and it is what lets an
+	// isolated master fence ITSELF during a partition — the one case operator-side
+	// fencing cannot reach. Cost at replicas >= 2 over 10 passes: free at the
+	// median, ~45 extra refused writes in a ~20% tail. Set 0 explicitly at
+	// replicas: 1.
+	DefaultFailoverMinReplicasToWrite = 1
 
 	// Placement defaults (cluster-mode shard anti-affinity)
 	DefaultShardTopologyKey       = "kubernetes.io/hostname"
@@ -178,6 +190,14 @@ func (r *LittleRed) SetDefaults() {
 		spec.Cluster.SetDefaults()
 	}
 
+	// Failover defaults (only if failover mode)
+	if spec.Mode == ModeFailover && spec.Failover == nil {
+		spec.Failover = &FailoverSpec{}
+	}
+	if spec.Failover != nil {
+		spec.Failover.SetDefaults()
+	}
+
 	// Placement defaults (only when the block is present; not mode-gated / never auto-created)
 	if spec.Placement != nil {
 		spec.Placement.SetDefaults()
@@ -282,6 +302,24 @@ func (c *ClusterSpec) SetDefaults() {
 	}
 	if c.FailoverGracePeriod == 0 {
 		c.FailoverGracePeriod = DefaultFailoverGracePeriod
+	}
+}
+
+// SetDefaults applies default values to FailoverSpec
+func (f *FailoverSpec) SetDefaults() {
+	if f.Replicas == nil {
+		f.Replicas = new(DefaultFailoverReplicas)
+	}
+	if f.DownAfterMilliseconds == 0 {
+		f.DownAfterMilliseconds = DefaultFailoverDownAfterMs
+	}
+	// MinReplicasToWrite defaults to 1 (LR-038). Settable here only because the
+	// field is a POINTER: with a bare int, "unset" and "explicitly 0" are the same
+	// value, so defaulting would override a user's deliberate "off". nil is
+	// unambiguous, so the Go-side and CRD-side defaults finally agree instead of
+	// depending on which path created the object.
+	if f.MinReplicasToWrite == nil {
+		f.MinReplicasToWrite = new(DefaultFailoverMinReplicasToWrite)
 	}
 }
 

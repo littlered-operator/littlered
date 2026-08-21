@@ -44,6 +44,24 @@ const (
 	AnnotationDisablePolling          = "redis.chuck-chuck-chuck.net/disable-polling"
 	AnnotationDisableEventMonitoring  = "redis.chuck-chuck-chuck.net/disable-event-monitoring"
 	AnnotationDebugSkipSlotAssignment = "redis.chuck-chuck-chuck.net/debug-skip-slot-assignment"
+
+	// Failover-mode assignment channel (ADR-011 §3): the operator stamps these
+	// annotations on each data pod; the pod reads them back through a
+	// downward-API volume and starts redis-server only on a fresh assignment.
+	AnnotationAssignedRole     = "redis.chuck-chuck-chuck.net/assigned-role"
+	AnnotationAssignedMasterIP = "redis.chuck-chuck-chuck.net/assigned-master-ip"
+	AnnotationAssignmentEpoch  = "redis.chuck-chuck-chuck.net/assignment-epoch"
+	// AnnotationMasterStartAuthorizedEpoch is the operator's explicit permission
+	// for a pod to *start* a fresh Redis process as master (LR-038). It is
+	// deliberately separate from AnnotationAssignedRole, which conflates two jobs:
+	// a boot instruction ("start as master") and a standing intent record ("you
+	// are the master"). For a pod that has died those must not be the same thing —
+	// an in-place promotion advances the assignment epoch without changing the
+	// process incarnation, so a restarted pod cannot tell a pre-death instruction
+	// from a fresh one by ordering alone. The operator stamps this ONLY after it
+	// has observed the restart and decided no data is at risk, so it cannot exist
+	// before the death it refers to.
+	AnnotationMasterStartAuthorizedEpoch = "redis.chuck-chuck-chuck.net/master-start-authorized-epoch"
 )
 
 // Resource name helpers
@@ -109,6 +127,7 @@ const (
 	ModeStandalone        = "standalone"
 	ModeSentinel          = "sentinel"
 	ModeCluster           = "cluster"
+	ModeFailover          = "failover"
 	RoleMaster            = "master"
 	RoleReplica           = "replica"
 	RoleOrphan            = "orphan"

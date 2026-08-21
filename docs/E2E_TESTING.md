@@ -86,8 +86,12 @@ make test-e2e FOCUS="Sentinel"
 # Only cluster tests
 make test-e2e FOCUS="Cluster Mode"
 
-# Only failover tests
-make test-e2e FOCUS="Failover"
+# Only sentinel advanced-failover tests (sentinel mode; FOCUS="Failover" would
+# be ambiguous — it also matches the failover-mode suite)
+make test-e2e FOCUS="Sentinel Advanced Failover"
+
+# Only failover-mode tests (mode: failover) — use the Ginkgo label
+make test-e2e LABEL_FILTER='failover-mode'
 
 # Only kill-9 / crash tests
 make test-e2e FOCUS="Kill-9"
@@ -149,13 +153,21 @@ make test-e2e ARGS="-timeout 90m"
 | File | Describe block | What it covers |
 |------|---------------|----------------|
 | `littlered_test.go` | LittleRed | Standalone CRUD, sentinel deployment, rolling updates (standalone + sentinel), sentinel failover |
-| `failover_test.go` | Sentinel Advanced Failover | Event-driven labels, polling-only recovery, hybrid (graceful + crash), sentinel pod resilience |
+| `sentinel_advanced_failover_test.go` | Sentinel Advanced Failover | Event-driven labels, polling-only recovery, hybrid (graceful + crash), sentinel pod resilience |
 | `kill9_chaos_test.go` | Kill-9 In-Pod Process Crash | Standalone smoke, sentinel master crash, cluster master crash |
 | `cluster_functional_test.go` | Cluster Mode Functional Testing | Cluster formation, data routing, 0-replica healing, failover recovery, custom config, cleanup |
 | `cluster_rolling_test.go` | Cluster Mode Rolling Update | Rolling update correctness, data preservation, status after update |
 | `cluster_chaos_test.go` | Cluster Mode Chaos Testing | Stability baseline, master/replica failure under load, rolling restart, continuous multi-pod failure |
 | `sentinel_standalone_chaos_test.go` | Sentinel and Standalone Chaos Testing | Sentinel rapid double failover under load (graceful + crash), standalone pod restart |
 | `security_test.go` | LittleRed Security Features | Password authentication enforcement, TLS encryption enforcement |
+| `failover_mode_test.go` | Failover Mode / Failover Mode Deadlock Recovery | `mode: failover` (ADR-011): functional (resources, assignment annotations, experimental event), graceful+crash failover (UID-asserted), event-path (<15s) and polling-only tiers, hybrid double-failover (the graduation scenario), kill-9 epoch-gate yield under chaos load, deadlock tiers (total-loss / single-survivor / multi-holder same-lineage), rolling update. Label: `failover-mode` |
+
+> Naming caveat: `sentinel_advanced_failover_test.go` (Describe: *Sentinel Advanced
+> Failover*, formerly `failover_test.go`) tests **sentinel-mode** label mechanics and
+> predates the failover mode. The failover-**mode** suite lives in
+> `failover_mode_test.go` (helpers in `failover_utils_test.go`, ground truth via
+> `INFO replication` — `verifyFailoverTopologySync`). Run it alone with
+> `LABEL_FILTER='failover-mode'`.
 
 ---
 
@@ -269,7 +281,7 @@ kubectl delete pod <master-cluster-pod> --grace-period=0 --force
 - Rapid double kill (graceful then crash before the cluster settles)
 
 **Recovery criteria:**
-- **Sentinel**: cluster stabilizes, chaos client shows 0 data corruptions, `{name}-master` service routes to new master
+- **Sentinel**: cluster stabilizes, chaos client shows 0 data corruptions, `{name}` service routes to new master
 - **Cluster**: all 16384 slots covered, 0 data corruptions, `cluster_state:ok`
 
 ### Observe with lrctl

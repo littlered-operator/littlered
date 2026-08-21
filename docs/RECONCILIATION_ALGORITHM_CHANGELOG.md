@@ -233,6 +233,14 @@ This document tracks significant changes to the LittleRed reconciliation logic. 
 - **Regresses:** None. The recovery only *adds* an action in a no-living-master state Sentinel cannot resolve itself (`no-good-slave`), gated on `!HasHealthyKnownReplica` + a 30s cooldown so a legitimate in-progress failover is never preempted; the lineage gate preserves data (a genuinely-divergent set still refuses without the opt-in). Rule D is untouched (prevention deferred). Rule L (LR-015) shares `BestDataHolder`; the lineage-aware `holdersDiverged` only *relaxes* false divergence (promotion chains) and never calls independent lineages the same.
 - **Impacts:** CLAUDE.md pillar 3.10 (ghost-master variant) + §9; prospective ADR-010 (deferred — bundles the Rule D prune-policy decision). Completes the LR-013 deferred follow-up.
 
+## [ADR-011] Failover Mode — New Reconciliation Algorithm (Cross-Reference)
+- **Date:** 2026-08-01
+- **Commit:** 380af0d..8e68272 (`feat/failover-mode`, five commits: pure seams, API, resources/startup protocol, reconcile flow, master watcher)
+- **Scope note:** this is a **new mode**, not a fix to an existing algorithm, so it gets a cross-reference rather than a full entry — the algorithm itself is specified in ADR-011 and `docs/RECONCILIATION_LOOP_FAILOVER.md`, and future fixes *to* it will land here as normal LR entries. Recorded because the changelog is the regression ledger for reconciliation logic, and reviewers should know the boundary of what this change can regress.
+- **What:** `mode: failover` (experimental) — operator-managed HA without Sentinel. One decision table (`planFailover`) replaces the sentinel-mode rule family (bootstrap, Rule L/LR-015, LR-024) for this topology; failure detection is the pure `planMasterDeath` (kubelet-authoritative immediate + corroborated probe evidence); pod roles are assigned via operator-stamped annotations read back through a downward-API volume, epoch-fenced against the ADR-001 kill-9 hazard.
+- **Regresses:** None expected by construction — the mode lives in new files (`failover_{plan,intent,reconcile,monitor}.go`, `resources_failover.go`); the shared touchpoints are the mode dispatch, the `bootstrapRequired` initialization (now also armed for `mode: failover`), and the shared monitor-event channel. Sentinel/cluster/standalone reconcile paths are untouched.
+- **Verification:** the pure-seam unit tables (`failover_plan_test.go`, `failover_intent_test.go`, `failover_monitor_test.go`) are green; envtest reconcile coverage lives in `failover_controller_test.go`. **e2e-verified 16/16 on a real 3-node cluster (scm-s2, 2026-08-01)** — `test/e2e/failover_mode_test.go` (label `failover-mode`): functional, graceful/crash failover, <15s event path (4.96s measured), hybrid double-failover (the LR-007/LR-008/LR-024 class does not reproduce), kill-9 epoch-yield (chaos corruptions 0, write availability 96.5%), deadlock tiers, rolling update. No operator-code fixes were needed by the run. The ADR-011 §8 graduation-gate remainder (chaos/soak, managed-cloud dogfooding) stays open.
+
 ## [LR-025] Legacy→Per-Shard Migration Restart-Safety — Replicate-then-Failover (supersedes the reshard mechanism)
 - **Problem (found live on s1, dance path, redis 7.4.0):** the ADR-013 in-place legacy→per-shard migration first drained slots node-to-node (native ASM / MIGRATE dance) from a `Draining` phase and attached the new replicas *afterward* (`ReplicasAttached`). This is not restart-safe: during `Draining` each new per-shard master `{name}-shard-K-0` owns slots on EmptyDir (pillar 3.1) **with no replica yet**, so it is a single point of failure for the whole drain window. A restart mid-drain (observed on s1) both **deadlocks** — the startup STEP-3 guard (LR-003) sees the node still owns slots, finds no replica to `TAKEOVER`, parks → `CrashLoopBackOff` — and **loses data**: the migrated keys were already `MIGRATE`-deleted from the legacy source and lived only in that master's RAM. A design gap, not a bug; latent in the ASM path too (its ~8s atomic window merely made a restart unlikely).
 - **Fix — mechanism redesign, replicate-then-failover:** migration no longer moves slots. Each new pod joins as a **slot-less replica** of the legacy master owning its range, full-syncs, then `{name}-shard-K-0` is promoted by a **coordinated `CLUSTER FAILOVER`** (atomic ownership flip; the legacy master demotes to a live replica of it). New nodes reach the slot-owning state only *after* an already-redundant handoff, so the unsafe "owns slots, no synced replica" state never exists. Phases `Standup → Meet → Draining → ReplicasAttached` become `Standup → Meet → Replicate → Failover → Decommission → Complete`. Uses only Redis's most-trusted primitives (`MEET`/`REPLICATE`/coordinated `FAILOVER`/`FORGET`, all already in `cluster_client.go`); the LR-018 reshard executor stays in the tree but migration no longer calls it. **The startup script is unchanged** — at the slot-owning instant a new master always has a synced replica (the demoted legacy master, then its own new replicas), so STEP-3's existing `TAKEOVER` breaker suffices.
@@ -247,11 +255,242 @@ This document tracks significant changes to the LittleRed reconciliation logic. 
 - **Tests / validation:** red-first unit guards in `TestPlanClusterMigration` (new "replicate CHAOS" table case — a native failover promoted a new replica to own the range) and a dedicated `TestPlanReplicateNeverTargetsSelf` (invariant: the plan never emits a REPLICATE whose target is the replica pod's own NodeID), both observed **red** against the pre-fix planner (emitted `{10.1.0.2 → N01}` self) and green after. The e2e chaos tier's existing `waitMigrationComplete` assertion is the integration guard (it is what timed out in the field); reproduction there stays opportunistic (the native-failover-to-K-1 window is env-sensitive), with the deterministic guard in the unit tests per the tier-3 test discipline.
 - **Regresses:** None. The generalized exemption is strictly broader than the old `{name}-shard-K-0`-only check and identical on the normal path (no new pod owns a range until failover).
 
+## [LR-038] Graceful Failover Silently Lost Acknowledged Writes — the Outgoing Master Was Never Fenced (failover mode)
+- **Problem (measured on t3e, 2026-08-17; failover mode, `mode: failover`):** a graceful master delete lost **202 of 1171 acknowledged writes** — silently. Every assertion the suite had passed while it happened: `DataCorruptions: 0` (the keys were *gone*, not wrong) and write availability 97.66% (the writes were ACKed; only the data vanished). ADR-011 §7 moved the handover from the pod to the operator, and the operator promotes a replica but **never speaks to the outgoing master**. So on a graceful delete that master keeps running and keeps ACKing writes for its whole ~10s preStop window (`resources_failover.go`), and those writes die with the pod. The loss is **not** a race against how fast the operator promotes, which is how it was first misread: an established TCP connection through the master Service is not re-routed by the operator's label flip, so the client keeps writing into the doomed pod for the entire grace window however fast the operator is. Arithmetic matches exactly — ~10s × 10 writes/s × 2 failovers ≈ 200. Sentinel mode does not have this hole: its preStop runs `SENTINEL failover mymaster` and waits for the master address to change, so **sentinel converts handover into visible write failures where failover-graceful converted it into acknowledged-then-lost writes** — a data-safety difference that the headline availability numbers actively hid (failover *beat* sentinel on write availability in both variants).
+- **Why the measurement had to come first:** the two candidate explanations were indistinguishable in the metrics, because `doRead` folded them into one counter — `Get(...)` returning `redis.Nil` for a *missing* key is an `err != nil`, so a vanished write incremented `ReadFailures` exactly like a timeout. The first live run therefore read as "77% read availability", an availability problem. Splitting the classification (pure `classifyRead`: `readOK | readFailed | readLost | readCorrupt`) and adding an exact post-traffic sweep over every acknowledged write (`VerifyAll`) turned the argument into a count: of the 263 "read failures" in the original run, only 19 were real unavailability. A sampled counter could not have carried the assertion either — reads pick a random confirmed key, so one lost key read five times looks like five.
+- **Fix — fence the outgoing master (pure `planFailoverFence`, applied in `executeFailoverPlan`):** as part of the promotion, demote the outgoing master (`REPLICAOF <new-master>`) so it answers `-READONLY`. The loss becomes **visible write failures instead of silent data loss** — pillar 3.2's "errors rather than silent data loss", applied to failover instead of to memory pressure. This is **not a new mechanism**: it is the existing straggler repoint (`planFailoverRepoints`) applied to the one pod its caller's conservative secondary-healing gate (`settled && !anyTerminating`) excludes, at the one moment it matters — and it is what Rule R would eventually do anyway, which is why it is best-effort and idempotent rather than fatal. Deliberately narrow: only the master being replaced is fenced; the healthy stragglers keep their gate. Nothing is fenced when the outgoing master is unreachable (the crash path — and no dial is wasted on a dead or blackholing IP, LR-017), already demoted, absent from the gather, or *is* the pod being promoted (a resumed half-applied promotion — fencing it would demote the new master).
+- **Why the planned next experiment was dropped:** the proposal on the table was `failover.minReplicasToWrite: 1`, expecting the dying master to refuse writes once its replicas left. It cannot work at the default `replicas: 2`, and the code says so: the straggler repoint is blocked by `!anyTerminating` for the whole grace window, so the second replica stays attached to the dying master and the directive stays **satisfied** throughout. `minReplicasToWrite: 2` would fire, but makes any single replica restart stop writes cluster-wide. Only fencing closes this.
+- **Tests / validation:** red-first at both tiers. Unit — `TestPlanFailoverFence` (6 rows) written against a stub and observed red on the load-bearing row (`= "", want "10.0.0.1"`); an "always fence" mutant fails 4 of the 5 guard rows, so the guards have teeth. e2e — the durability bound was added to the `rapid double failover` graceful tier *before* the fix and observed red on t3e at **202 of 1171** against a bound of 5. The bound is derived, not tuned: a correct handover can only lose writes ACKed within the replication lag of the promotion instant (~1 per failover at 10 writes/s, so ~2 here). Two guards keep it from passing vacuously — the sweep must have checked a meaningful number of keys, and unreadable must stay under 10% of them. The crash path is deliberately left unbounded: a kill -9 loses the unreplicated tail by construction, and asserting an unmeasured number would be tuning, not a check.
+- **Verified (t3e, 2026-08-17, `rapid double failover` 2/2 green):** the graceful path went from **202 of 1171 acknowledged writes lost to 0 of 990**, and the conversion is visible almost one-for-one — write availability 97.66% → 82.50% (210 *visible* failures replacing ~202 silent losses), read availability 78.05% → **99.17%** (those "read failures" *were* the lost keys). The fence fired exactly twice, once per graceful failover, and never on the crash path (nothing reachable to fence). **The crash path loses 19-20 of ~1194 (two runs), and that is NOT yet explained.** It was first written up here as "the inherent async-replication tail" — that explanation is **refuted**: the full four-cell matrix (below) shows **sentinel-mode crash losing 0**, twice, under an identical cascade, cadence, client and topology. A tail that one mode does not have is not inherent. The crash path stays unbounded for now because the cause is open, not because the loss is accepted.
+- **Correction worth recording (the fence was inert on its first landing):** keyed on `state.RedisNodes`, `planFailoverFence` never fired — `reconcileFailoverAssignments` skips terminating pods when building `redisMap` (the `continue` lands *before* the IP is recorded), so the outgoing master is absent from the gather in exactly the situation that needs fencing, and the `rn == nil` guard swallowed every graceful handover. The re-run still lost 196 of 1163 with no fence line in the log. Widening the gather would have been far worse than inert: a reachable, still-mastering terminating pod would then read as a **live master** to `determineFailoverLiveMaster` (so the operator would not fail over at all) and as a candidate to `BestDataHolder` (so a dying pod could be *elected*). The fence is keyed on the **pod views** instead — fencing is an actuation, not a decision input, and it must not enter the ground truth. Reachability and role are consequently unknown and unneeded: `SLAVEOF` is idempotent, the dial is bounded by `ProbeTimeout` (LR-017), and the pod-presence check keeps the crash path free of a wasted dial while honouring ADR-001 strict IP identity. **Lesson: a guard written against the ground truth is only as good as what the ground truth is allowed to contain** — and this one was excluded by design, one function away.
+- **Regresses:** Graceful-path write availability *drops* (82.50% measured, from 97.66%) (visible `-READONLY` failures replace silent loss) — visible `-READONLY` failures replace silent loss. That is the intended trade and the point of the change; the tier's existing `WriteAvailability > 0.40` bar is unaffected. No change on the crash path (nothing reachable to fence) or to any other mode. `ReadAvailability` keeps counting a lost key as a non-success, so no pre-existing assertion was weakened by the metric split; `LostKeys`/`KeyLossRate` sit beside it, and all six chaos tiers gained the exact durability verdict with no per-spec change.
+- **Impacts:** ADR-011 §7 (graceful handover — the fence is now part of it) + the graduation gate; `CLAUDE.md` pillar 3.14; `test/chaos/client.go` (`classifyRead`, `LostKeys`, `VerifyAll`) and `cmd/littlered-chaos-client`.
+
+### Addendum — the four-cell durability matrix, and a test-parity defect (t3e, 2026-08-17)
+
+Both modes' `rapid double failover` tiers, one harness, exact final-sweep numbers:
+
+| mode / variant | writes | reads | **ACKed writes lost** |
+|---|---|---|---|
+| failover graceful | 81.98% | 98.66% | **0** of 983 |
+| failover crash | 99.50% | 97.16% | **20** of 1193 |
+| sentinel graceful | 94.75% | 98.25% | **0** of 1136 |
+| sentinel crash | 97.50% | 99.42% | **0** of 1169 |
+
+Three readings, in descending confidence:
+
+1. **The fence works, and durability parity on the graceful path is reached.** 0 lost, replicated across two runs (0 of 990, 0 of 983).
+2. **The fence's availability cost is roughly double sentinel's** (81.98% vs 94.75%, i.e. ~216 failed writes vs ~63). The arithmetic points at the cause: ~216 failures at 10 writes/s ≈ 21.6s over two failovers ≈ **the full remaining preStop window each time**. Fencing stops the writes from being *lost*, but the client's established connection stays pinned to the old pod until it dies, so every write in that window fails rather than being served by the new master. Sentinel's pod-led preStop instead *waits for the master address to change* and then exits, cutting the window short. The obvious next step is to stop making the client wait for the pod to die — after the demote, `CLIENT KILL TYPE normal` on the outgoing master forces a reconnect, which the Service then routes to the new master. Untested; it would convert most of that 21.6s into a sub-second reconnect.
+3. **failover-crash's 19-20 lost keys are unexplained**, and the leading suspect is a **test-parity defect rather than the mode**: `failoverCR` pins `resources.limits.cpu: "100m"` (`failover_utils_test.go`) while the sentinel chaos CR sets no resources and therefore gets the product defaults — which per pillar 3.3 include **no CPU limit at all**. A replica throttled to 0.1 core lags, and ~20 keys is ~2s of replication lag at the client's 10 writes/s. So the "mirror" tier, whose entire stated purpose is comparability, is not actually comparing like with like. Until that is equalised, no mode-level conclusion should be drawn from the crash cells. The second candidate, if throttling is ruled out, is the replica-selection interaction on the *second* cascade: after failover 1 the killed pod returns and full-resyncs (EmptyDir), so crash 2 chooses between a continuously-attached replica and a resyncing one, and `BestDataHolder`'s offset comparison across a fresh full-resync deserves a direct look.
+
+### Addendum 2 — the pod fences itself, and the matrix closes (t3e, 2026-08-18)
+
+The operator-side fence (above) fixed the graceful path's *durability* and made its
+*availability* worse: writes stopped vanishing but started failing for the whole
+remaining preStop window, 81.23% against sentinel's ~95%. Both halves are now fixed, by
+moving the primary fence into the pod.
+
+**Re-reading LR-016 is what unlocked it.** LR-016 forbids a pod inferring the state of
+OTHER nodes — its origin was a probe restarting a replica because its master looked
+unreachable. `sleep 10` treated that as "a pod may do nothing", which is a category
+error: **"I am being terminated" is local knowledge that cannot be wrong**, and the pod is
+the only party holding it instantly. So the preStop now (1) self-fences with
+`CONFIG SET min-replicas-to-write 99` — **target-free on purpose**, since needing to know
+the new master would reintroduce the very race this removes — and (2) waits for
+mastership to move, then exits *at once* instead of sleeping out the window. A replica
+exits immediately, having nothing to hand over (which also stops rolling updates paying
+the budget per pod). The operator-side fence remains as the backstop; safety no longer
+depends on it winning a race.
+
+**Final four-cell matrix, one harness, exact final-sweep numbers:**
+
+| cell | writes | reads | ACKed writes lost |
+|---|---|---|---|
+| failover graceful | **96.07%** | 98.33% | **0** of 1149 |
+| failover crash | **98.50%** | **100.00%** | **0** of 1181 |
+| sentinel graceful | 95.41% | 98.25% | **0** of 1143 |
+| sentinel crash | 97.58% | 99.50% | **0** of 1169 |
+
+Zero loss in every cell, and failover mode is now at or better than sentinel on **all
+four** numbers. For the ADR-011 graduation gate that settles the availability-vs-Sentinel
+question in failover mode's favour — but only because the durability number was measured
+first: the mode previously looked *better* than sentinel on write availability precisely
+while it was the only one of the two losing acknowledged data.
+
+**Honest open question.** The crash cell also went 20 lost → 0 (18/17/18 visible write
+failures across three runs, a near-1:1 conversion), and a `--grace-period=0 --force`
+delete should not run a preStop hook at all. Leading hypothesis: `--force` removes the API
+object while the **kubelet still runs its normal termination path**, hook included, because
+it never observed a zero-grace deletion object — which would mean "crash" in this tier was
+never SIGKILL-without-a-hook, and the ~2s window came from endpoint removal breaking the
+client's pinned connection. Not confirmed: `kubectl logs` cannot read a force-deleted pod,
+so the obvious instrument is blind, and the reproducible-but-unexplained result is recorded
+as such rather than claimed. The clean control is the **kill-9 tier**, where the container
+process dies and no hook can possibly run — if that path loses writes while force-delete
+does not, the hypothesis is confirmed and the unconditional operator-side fence gets a real
+red to be built against.
+
+### Addendum 3 — the epoch gate protected only the bootstrap master (t3e, 2026-08-19)
+
+Adding the genuinely-named `kill-9` variant to the tier (above) turned it red on the first
+run, on a latent bug in the shipped mode: **a kill-9 of a PROMOTED master destroyed 352 of
+1145 acknowledged writes** — 31% — with `DataCorruptions: 0` and write availability 95.50%.
+The arithmetic (second kill lands ~30–35s into a 120s window at 10 writes/s) says
+*everything written before the kill* was wiped, not a tail.
+
+**The epoch gate was answering the wrong kind of question.** It is an **ordering** device —
+"is this instruction newer than the last one I used?" — being used to answer an **identity**
+question: "was this instruction issued for *this process incarnation*?" The two coincide
+everywhere except one place: an **in-place promotion advances the assignment epoch without
+restarting the process**, so the start marker is never rewritten and stays behind.
+
+| | annotation | marker |
+|---|---|---|
+| bootstrap: redis-1 starts as **replica** @1 | `replica@1` | **1** |
+| failover 1: stamp `master@2` + `REPLICAOF NO ONE` to the **live** process | `master@2` | **still 1** |
+| kill-9 | `2 > 1` → honored → **empty master** | |
+
+The operator then sees a reachable `role:master` at the intended IP, believes it healthy,
+and repoints the replicas holding the only surviving copy onto it.
+
+**What was already right, and why this hid for so long.** On promotion the operator
+re-stamps *every* pod, so the superseded ex-master does get `assigned-role=replica` — that
+case has two layers of protection because it is the one the design imagined (the ADR comment
+reads "a kill-9'd ex-master must never reclaim mastership from its **stale** assigned-role
+annotation"). The unimagined case is the pod whose master annotation is **current** but was
+issued while it was alive. And the e2e coverage matched the blind spot exactly: the only
+kill-9 test killed the **bootstrap** master — the single master whose marker happens to equal
+its master epoch — which is why this survived 16/16.
+
+**Fix — narrow, because the two roles carry different risk.** A restarted process (marker
+present ⇒ no data) may honor a **replica** assignment on the existing ordering rule, since
+starting as a replica of the live master loses nothing. A **master** assignment additionally
+requires `AnnotationMasterStartAuthorizedEpoch`, which the operator stamps only after it has
+observed the restart and established that no data is at risk — permission that **cannot
+predate the death it refers to**, closing the race ordering alone cannot. Pure seam
+`masterStartAuthorizedFor`: **seed only**. Promotion must never grant it (its target is by
+construction a reachable, running data holder — `DataHolders` requires `Reachable && Keys > 0`
+— so authorizing a *start* there re-arms the wipe for the next kill-9); bootstrap grants it
+because nothing holds data and redis-0 may already carry a marker.
+
+Rejected: "every start waits to be introduced by the operator" (the cluster-mode analogy).
+More uniform, but it puts an annotation round-trip through the kubelet's projected-volume
+refresh on the critical path of **every** pod start, forever, to protect states that provably
+cannot lose data. The narrow gate also makes the promoted-master case behave exactly like the
+bootstrap-master case, whose recovery cost is already measured (single kill-9: 0 lost of 1155,
+96.33% writes).
+
+**Renamed, because the old name hid the bug:** `/data/littlered-run-epoch` →
+`/data/littlered-started-under-epoch`, `MARKER_EPOCH` → `STARTED_UNDER_EPOCH`,
+`runMarkerPath` → `startMarkerPath`. It is not "the epoch we are at", it is "what my current
+incarnation booted with".
+
+**Verified (3/3 green):** kill-9 **352 lost → 0**; graceful 0 lost / 96.50% writes;
+force-delete 0 → **2** lost / 98.58%. Two observations worth keeping: the gate's cost is
+real and correctly placed (kill-9 write availability 96.33% → 91.24%, ~5s per kill, the
+parked pod now *waiting* for the operator instead of wrongly resuming), and force-delete's
+2 lost is the first non-zero on that path — landing exactly on the "~1 per failover" figure
+the ≤5 bound was derived from, so the bound was reasoned rather than luckily zero.
+
+### Addendum 4 — second-environment confirmation, and item (4) (s1 + t3e, 2026-08-19)
+
+**Item (4): the straggler repoint is ungated.** It required `settled && !anyTerminating`;
+neither half was reasoned for this mode (both came from sentinel mode, where the point is not
+to churn while a *competing actor* is mid-failover — there is none here, pillar 3.5 scope).
+The gate cost three things, each of which surfaced as its own symptom above: it hid the
+outgoing master from the fence, it kept a freshly promoted master replica-less for extra
+passes, and it suppressed `min-replicas-to-write` as a self-fence (stripping a dying master
+of its last replica *is* a fencing action). `settled` was additionally redundant — reaching
+that step already requires the intended master to be reachable and reporting `role:master`.
+Repointing **earlier** is also the safer direction for data: a straggler still following the
+old master can only drift *further* ahead while we wait, so waiting enlarges the divergence a
+resync discards rather than protecting it, and the live master is by construction not behind
+(chosen by bootstrap or `BestDataHolder`). A bonus falls out — the outgoing master is itself
+a straggler by `planFailoverRepoints`' definition, so ungating demotes it here too, which is
+the operator-side fence arriving for free wherever its pod object still exists.
+
+**It makes `minReplicasToWrite: 1` affordable** — which is the measurement that matters for
+the default, and the first version of this entry over-read it. On force-delete the knob cost
+**78 refused writes before (4)**; after (4) a single run measured **12**, which was reported
+here as "indistinguishable from off". Ten passes later that is the *good mode of a bimodal
+distribution*: `13, 14, 16, 17, 18, 19, 19, 20, 63, 64` against `16/17/19` at knob=0. So the
+honest statement is **free at the median, with a ~20% tail costing ~45 more refused writes
+(~4.5s)** — bimodal rather than noisy, so an ordering condition rather than a smear. Item (4)
+is still what made it affordable (78 *every time* before it). All cells 0 lost at both knob
+settings. Recorded as a caution: a single favourable run is not a distribution, and this
+entry made that mistake about its own result.
+
+**Cross-environment confirmation (the numbers now rest on two clusters, one multi-node):**
+
+| cell | s1 (multi-node) | t3e (single node) | lost |
+|---|---|---|---|
+| sentinel graceful | 94.25% | 95.41% | 0 / 0 |
+| sentinel crash | 96.67% | 97.58% | 0 / 0 |
+| failover graceful | 96.58% | 96.75% | 0 / 0 |
+| failover force-delete | 98.58% | 98.41% | 0 / 0 |
+| failover kill-9 | 91.92% | 93.14% | 0 / 0 |
+
+Ten cells, zero acknowledged writes lost in every one, and `failover >= sentinel` on both
+comparable variants in both environments. The kill-9 **start-gate fix is confirmed off t3e** —
+on the pre-fix build s1 reproduced the bug identically (master stuck, 60s timeout), which also
+retires "t3e artifact" as an explanation.
+
+Two cautions recorded so later readers do not over-read single runs: **kill-9 availability is
+noisy** (91.24 / 91.92 / 93.14 / 96.50 across single runs on both clusters — do not read a
+3pp move from one run), and the near-identical numbers between a loopback single-node cluster
+and a multi-node one with real network hops say this tier's availability cost is dominated by
+**operator reaction time** (reconcile cadence, label flip, client reconnect), not replication
+latency. Which is consistent with where the wins came from: removing waits, not speeding up
+replication.
+
+### Addendum 5 — the six-cell matrix over 10 passes (t3e, 2026-08-20)
+
+Ten consecutive passes of both modes' `rapid double failover` tiers (60 chaos runs) on
+operator `803eb26` with `minReplicasToWrite` defaulting to 1. **All 10 passes green; 0
+MISSING and 0 corruptions in all 60 blocks.**
+
+| cell | n | write avail min/med/max | failed writes |
+|---|---|---|---|
+| failover graceful | 10 | 95.83 / 96.42 / 96.91 | 37-50 |
+| failover force-delete | 10 | 94.66 / 98.46 / 98.92 | 13-64 |
+| failover kill-9 | 10 | 85.13 / 92.19 / 95.73 | 51-178 |
+| sentinel graceful | 10 | 94.75 / 95.29 / 96.50 | 42-63 |
+| sentinel force-delete | 10 | 96.83 / 97.58 / 98.33 | 20-38 |
+| sentinel kill-9 | 10 | **43.32 / 54.92 / 73.89** | 313-679 |
+
+**The headline is the kill-9 column, and the distributions do not overlap:**
+
+    failover  85.13  90.24  90.65  92.15  92.15  92.24  93.66  93.99  94.31  95.73
+    sentinel  43.32  46.62  49.96  50.67  50.79  59.05  67.58  73.73  73.79  73.89
+
+Sentinel's *best* run (73.89%) is 11pp below failover's *worst* (85.13%), with zero data loss
+on both sides. The mechanism is not a defect in either mode: sentinel's kill-9 guard
+deliberately **suppresses Redis** on the restarted master and waits for Sentinel to reach
+SDOWN, elect, and be observed, whereas failover mode declares death from kubelet readiness
+and promotes in ~2s. So on a true crash the operator-led mode recovers availability roughly
+twice as fast, which is the strongest single result for the ADR-011 graduation gate — and it
+comes from the disruption shape that had **no coverage at all** before this session.
+
+**A mechanism contrast worth keeping** (both guards protect data; they cost differently):
+sentinel mode yields on **Sentinel's stored run-id** — an identity signal maintained by a
+continuous external observer, which is why it also covers a *promoted* master with no extra
+machinery. Failover mode moved that record into the pod (written once at `exec`) and thereby
+lost the observer, which is exactly the hole LR-038's start gate had to close with an
+operator-stamped authorization.
+
+**Cautions for whoever reads these numbers next.** Two cells are **bimodal**, not noisy —
+failover force-delete (13-20 vs 63-64) and sentinel kill-9 (~314 vs ~600+) — so a discrete
+ordering condition is at work in both and a single sample of either is meaningless. Diagnosing
+it needs operator logs correlated per pass and is left open. And `sentinel kill-9` sits nearest
+its assertion floor: 10 passes never dipped below the inherited `WriteAvailability > 0.40`, but
+the worst mode clusters at 43-51%, so a margin of ~3pp. If that cell ever fails, read it as
+"the yield's cost grew", not as a flaky test — and note the same `> 0.40` bar is uselessly
+loose for the failover cells, which measured 85-96%.
 ## [LR-039] Cross-Instance Sentinel Capture — the Master Name Was a Shared Constant
-> **Numbering note:** LR-026 … LR-037 are allocated on the multi-site line and LR-038 on the
-> failover line (`release/0.3.1`); none are present on this branch, hence the jump from LR-025.
-> IDs are allocated globally across branches so they stay unique through a merge; chronological
-> order within one branch's file is deliberately sacrificed to that.
+> **Numbering note:** LR-026 … LR-037 are allocated on the multi-site line and are not present
+> here, hence the jump from LR-025 to LR-038. IDs are allocated globally across branches so they
+> stay unique through a merge — which is what let LR-038 (failover) and LR-039 (this entry) land
+> side by side on this integration branch with no renumbering.
 >
 > This entry was briefly numbered LR-038 by mistake — the highest ID was checked on the
 > multi-site line only (LR-037) and the failover line had already taken 038. **Check every

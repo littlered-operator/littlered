@@ -56,6 +56,8 @@ const (
 	finalizerName      = "redis.chuck-chuck-chuck.net/finalizer"
 	fieldManager       = "littlered-operator"
 	reasonPodsNotReady = "PodsNotReady"
+	reasonAllPodsReady = "AllPodsReady"
+	reasonInitialized  = "Initialized"
 )
 
 // Logging categories
@@ -93,10 +95,18 @@ type LittleRedReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
 
-	// Sentinel monitoring
-	sentinelEvents chan event.GenericEvent
-	monitors       map[types.NamespacedName]func()
-	monitorsMu     sync.Mutex
+	// Background fast-detection monitors. monitorEvents is the mode-agnostic
+	// GenericEvent channel wired into SetupWithManager (both the sentinel
+	// +switch-master subscriber and the failover-mode master watcher push onto
+	// it). monitors holds the sentinel
+	// subscribers, failoverMonitors the failover-mode watchers — separate maps
+	// because the mode-mismatch stop branches in Reconcile are per-kind (a
+	// shared map could not tell WHICH monitor runs under a key across a mode
+	// switch). Both share monitorsMu (bookkeeping only, no contention).
+	monitorEvents    chan event.GenericEvent
+	monitors         map[types.NamespacedName]func()
+	failoverMonitors map[types.NamespacedName]func()
+	monitorsMu       sync.Mutex
 }
 
 // event emits a Kubernetes Event for lr, tolerating a nil Recorder (e.g. in unit
@@ -177,14 +187,22 @@ func (r *LittleRedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		LastTransitionTime: metav1.Now(),
 	})
 
-	// Reconcile based on mode
+	// Reconcile based on mode: stop the fast-detection monitor of any mode
+	// this instance is NOT in (mode switch cleanup; per-kind maps, so a
+	// sentinel subscriber and a failover watcher can never survive each other).
 	if littleRed.Spec.Mode != ModeSentinel {
 		r.stopSentinelMonitor(req.NamespacedName)
 	}
+	if littleRed.Spec.Mode != ModeFailover {
+		r.stopFailoverMonitor(req.NamespacedName)
+	}
 
-	// Initialize BootstrapRequired for Sentinel mode
-	if littleRed.Spec.Mode == ModeSentinel && littleRed.Status.Phase == "" && !littleRed.Status.BootstrapRequired {
-		log.Info("Initializing new Sentinel cluster: setting bootstrapRequired flag")
+	// Initialize BootstrapRequired for the operator-led-bootstrap modes: sentinel
+	// (pillar 3.6) and failover (ADR-011 §3 — same contract, the assignment
+	// annotations replace the Sentinel registration).
+	if (littleRed.Spec.Mode == ModeSentinel || littleRed.Spec.Mode == ModeFailover) &&
+		littleRed.Status.Phase == "" && !littleRed.Status.BootstrapRequired {
+		log.Info("Initializing new instance: setting bootstrapRequired flag", "mode", littleRed.Spec.Mode)
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			latest := &littleredv1alpha1.LittleRed{}
 			if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
@@ -212,6 +230,8 @@ func (r *LittleRedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.reconcileSentinel(ctx, littleRed)
 	case ModeCluster:
 		return r.reconcileCluster(ctx, littleRed)
+	case ModeFailover:
+		return r.reconcileFailover(ctx, littleRed)
 	default:
 		return r.setFailedStatus(ctx, littleRed, "InvalidMode", fmt.Sprintf("Unknown mode: %s", littleRed.Spec.Mode))
 	}
@@ -249,11 +269,13 @@ func (r *LittleRedReconciler) reconcileDelete(ctx context.Context, littleRed *li
 		return ctrl.Result{}, err
 	}
 
-	// Stop sentinel monitor if running
-	r.stopSentinelMonitor(types.NamespacedName{
+	// Stop background monitors if running
+	nn := types.NamespacedName{
 		Name:      littleRed.Name,
 		Namespace: littleRed.Namespace,
-	})
+	}
+	r.stopSentinelMonitor(nn)
+	r.stopFailoverMonitor(nn)
 
 	return ctrl.Result{}, nil
 }
@@ -496,14 +518,14 @@ func (r *LittleRedReconciler) updateStatus(ctx context.Context, littleRed *littl
 			meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
 				Type:               littleredv1alpha1.ConditionReady,
 				Status:             metav1.ConditionTrue,
-				Reason:             "AllPodsReady",
+				Reason:             reasonAllPodsReady,
 				Message:            "All pods are ready",
 				LastTransitionTime: metav1.Now(),
 			})
 			meta.SetStatusCondition(&littleRed.Status.Conditions, metav1.Condition{
 				Type:               littleredv1alpha1.ConditionInitialized,
 				Status:             metav1.ConditionTrue,
-				Reason:             "Initialized",
+				Reason:             reasonInitialized,
 				Message:            "Redis is initialized",
 				LastTransitionTime: metav1.Now(),
 			})
@@ -745,7 +767,7 @@ func (r *LittleRedReconciler) reconcileSentinelCluster(ctx context.Context, litt
 
 	// 2. Gather Cluster State (Ground Truth)
 	g := &operatorGatherer{password: password, tlsEnabled: littleRed.Spec.TLS.Enabled}
-	state := redisclient.GatherClusterState(ctx, g, redisMap, sentinelMap)
+	state := redisclient.GatherReplicationState(ctx, g, redisMap, sentinelMap)
 
 	// 3. Healing
 
@@ -1125,13 +1147,18 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 		}
 	}
 
-	// surgical role updates:
-	// 1. If we have a masterPodName, ensure ONLY that pod is labeled Master.
-	// 2. If we DON'T have a masterPodName, ensure NO pod is labeled Master.
-	// 3. We only change Replica/Orphan labels if we are sure of the state.
-	//    During failover (masterPodName == ""), we just strip the Master label
-	//    from whoever had it and leave others alone.
+	return r.applyRoleLabels(ctx, littleRed, podList, masterPodName)
+}
 
+// applyRoleLabels performs the surgical role-label updates shared by sentinel
+// and failover mode (the flip mechanics; only the master SOURCE differs —
+// Sentinel consensus vs operator intent):
+//  1. If we have a masterPodName, ensure ONLY that pod is labeled Master.
+//  2. If we DON'T have a masterPodName, ensure NO pod is labeled Master.
+//  3. We only change Replica/Orphan labels if we are sure of the state.
+//     During failover (masterPodName == ""), we just strip the Master label
+//     from whoever had it and leave others alone.
+func (r *LittleRedReconciler) applyRoleLabels(ctx context.Context, littleRed *littleredv1alpha1.LittleRed, podList *corev1.PodList, masterPodName string) error {
 	auditLog := r.getLogger(ctx, littleRed, LogCategoryAudit)
 	for i := range podList.Items {
 		pod := &podList.Items[i]
@@ -1146,7 +1173,7 @@ func (r *LittleRedReconciler) updateMasterLabel(ctx context.Context, littleRed *
 				expectedRole = RoleReplica
 			}
 		} else {
-			// No master identified by Sentinel (failover in progress).
+			// No master identified (failover in progress).
 			// Be surgical: only strip the Master label if someone has it.
 			if currentRole == RoleMaster {
 				expectedRole = RoleReplica // downgrade to replica while waiting
@@ -1303,7 +1330,7 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *litt
 			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 				Type:               littleredv1alpha1.ConditionReady,
 				Status:             metav1.ConditionTrue,
-				Reason:             "AllPodsReady",
+				Reason:             reasonAllPodsReady,
 				Message:            "All Redis and Sentinel pods are ready",
 				LastTransitionTime: metav1.Now(),
 			})
@@ -1317,7 +1344,7 @@ func (r *LittleRedReconciler) updateSentinelStatus(ctx context.Context, lr *litt
 			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 				Type:               littleredv1alpha1.ConditionInitialized,
 				Status:             metav1.ConditionTrue,
-				Reason:             "Initialized",
+				Reason:             reasonInitialized,
 				Message:            "Redis sentinel cluster is initialized",
 				LastTransitionTime: metav1.Now(),
 			})
@@ -1439,8 +1466,9 @@ func (r *LittleRedReconciler) setFailedStatus(ctx context.Context, lr *littlered
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *LittleRedReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.sentinelEvents = make(chan event.GenericEvent)
+	r.monitorEvents = make(chan event.GenericEvent)
 	r.monitors = make(map[types.NamespacedName]func())
+	r.failoverMonitors = make(map[types.NamespacedName]func())
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&littleredv1alpha1.LittleRed{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
@@ -1448,7 +1476,7 @@ func (r *LittleRedReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&policyv1.PodDisruptionBudget{}).
-		WatchesRawSource(source.Channel(r.sentinelEvents, &handler.EnqueueRequestForObject{})).
+		WatchesRawSource(source.Channel(r.monitorEvents, &handler.EnqueueRequestForObject{})).
 		Named("littlered").
 		Complete(r)
 }
@@ -1680,7 +1708,7 @@ const leaderlessRecoveryCooldown = 30 * time.Second
 func (r *LittleRedReconciler) recoverLeaderlessDeadlock(
 	ctx context.Context,
 	lr *littleredv1alpha1.LittleRed,
-	state *redisclient.SentinelClusterState,
+	state *redisclient.ReplicationState,
 	redisMap map[string]string,
 	password string,
 ) error {
@@ -1774,7 +1802,7 @@ func (r *LittleRedReconciler) recoverLeaderlessDeadlock(
 // alone would not promote it, and Rule R skips the elected master, so nothing else
 // would. An unreachable / wait-looping elect (the no-data reseed) starts fresh as
 // master via its own startup script, so no promotion is issued.
-func (r *LittleRedReconciler) electMaster(ctx context.Context, lr *littleredv1alpha1.LittleRed, state *redisclient.SentinelClusterState, masterIP, password string, quorum int) error {
+func (r *LittleRedReconciler) electMaster(ctx context.Context, lr *littleredv1alpha1.LittleRed, state *redisclient.ReplicationState, masterIP, password string, quorum int) error {
 	if needsPromotion(state, masterIP) {
 		auditLog := r.getLogger(ctx, lr, LogCategoryAudit)
 		auditLog.Info("Promoting elected pod to master (REPLICAOF NO ONE)", "master", masterIP, "wasRole", state.RedisNodes[masterIP].Role)

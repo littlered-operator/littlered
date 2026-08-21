@@ -29,9 +29,10 @@ import (
 // LittleRedSpec defines the desired state of LittleRed
 // +kubebuilder:validation:XValidation:rule="self.mode == 'cluster' || !has(self.cluster)",message="spec.cluster may only be set when spec.mode is 'cluster'"
 // +kubebuilder:validation:XValidation:rule="self.mode == 'sentinel' || !has(self.sentinel)",message="spec.sentinel may only be set when spec.mode is 'sentinel'"
+// +kubebuilder:validation:XValidation:rule="self.mode == 'failover' || !has(self.failover)",message="spec.failover may only be set when spec.mode is 'failover'"
 type LittleRedSpec struct {
-	// Mode is the deployment mode: standalone, sentinel, or cluster
-	// +kubebuilder:validation:Enum=standalone;sentinel;cluster
+	// Mode is the deployment mode: standalone, sentinel, cluster, or failover (experimental)
+	// +kubebuilder:validation:Enum=standalone;sentinel;cluster;failover
 	// +kubebuilder:default=standalone
 	// +optional
 	Mode string `json:"mode,omitempty"`
@@ -84,6 +85,13 @@ type LittleRedSpec struct {
 	// Cluster defines cluster-specific settings (cluster mode only)
 	// +optional
 	Cluster *ClusterSpec `json:"cluster,omitempty"`
+
+	// Failover defines failover-specific settings (failover mode only).
+	// Mode failover is experimental: operator-managed HA without Sentinel,
+	// under active validation — see docs for current status and trade-offs
+	// vs sentinel mode.
+	// +optional
+	Failover *FailoverSpec `json:"failover,omitempty"`
 
 	// PodDisruptionBudget defines PodDisruptionBudget settings
 	// +optional
@@ -466,6 +474,75 @@ type SentinelSpec struct {
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// FailoverSpec defines failover-specific settings. Mode failover is
+// experimental: operator-managed HA without Sentinel, under active
+// validation — see docs for current status and trade-offs vs sentinel mode.
+type FailoverSpec struct {
+	// Replicas is the number of Redis replicas; total data pods = 1 + replicas.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=2
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// DownAfterMilliseconds is the sustained-failure window before the operator
+	// declares the master down on probe evidence and initiates a failover.
+	// +kubebuilder:default=5000
+	// +optional
+	DownAfterMilliseconds int `json:"downAfterMilliseconds,omitempty"`
+
+	// MinReplicasToWrite is rendered into redis.conf as min-replicas-to-write:
+	// the master stops accepting writes when fewer than this many replicas are
+	// connected (within min-replicas-max-lag, Redis default 10s). 0 disables the
+	// check.
+	//
+	// Defaults to 1 (LR-038). With the default replicas: 2 this is the "master
+	// plus one replica" durable pair — writes stop only when BOTH replicas are
+	// gone, and it is what makes a master isolated from its replicas fence
+	// ITSELF, locally, during a partition, with no operator involvement. That is
+	// the one case operator-side fencing cannot reach.
+	//
+	// Cost at replicas >= 2, from 10 passes of the rapid-double-failover tier:
+	// free at the median (18.5 refused writes against 16-19 with the check off),
+	// with a ~20% tail where it costs ~45 more (~4.5s). Bimodal rather than noisy,
+	// so it is an ordering condition, not a smear. No data loss either way in 60
+	// measured runs.
+	//
+	// SET IT TO 0 IF YOU RUN replicas: 1. There the promoted master has ZERO
+	// replicas until the old pod returns and resyncs, so the check blocks writes
+	// for the whole recovery rather than just the handover, and any single replica
+	// blip stops writes in steady state. That is a deliberate choice between
+	// availability (0) and a bound on loss (1), and it is yours to make — which is
+	// why it is not defaulted per-topology: a derived default would put the
+	// effective value out of the reader's sight and out of the CRD (LR-033).
+	// A POINTER on purpose. The default is non-zero, and the operator Updates the
+	// whole object to add its finalizer — so with a bare int + omitempty an
+	// explicit 0 would be dropped on serialization and the API server would
+	// re-apply the default, silently turning a user's deliberate "off" back on.
+	// That is LR-033's hazard (a reconciler Update persisting a value back into the
+	// user's spec), and it would hit exactly the replicas: 1 users told above to
+	// set 0. nil means unset; a pointer to 0 survives the round-trip.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=1
+	// +optional
+	MinReplicasToWrite *int `json:"minReplicasToWrite,omitempty"`
+
+	// AllowUnsafeRebootstrapOnDeadlock permits the operator to break a
+	// no-master deadlock when the surviving data-holding Redis pods have
+	// DIVERGED replication lineages. (A deadlock with no data, or with all
+	// survivors on a single lineage — including a normal post-failover
+	// promotion chain — is always broken automatically and safely: the
+	// most-complete holder is promoted, discarding nothing, regardless of
+	// this flag.) With diverged lineages, electing one master necessarily
+	// DISCARDS the data on the other lineages, which full-resync from the
+	// elected pod. With this flag set the operator force-elects the
+	// best-effort most-complete pod (highest replication offset); with it
+	// unset it refuses and waits for manual intervention. Only enable for
+	// instances where data loss is acceptable (e.g. caches).
+	// +kubebuilder:default=false
+	// +optional
+	AllowUnsafeRebootstrapOnDeadlock bool `json:"allowUnsafeRebootstrapOnDeadlock,omitempty"`
+}
+
 // ClusterSpec defines Redis Cluster settings
 type ClusterSpec struct {
 	// Shards is the number of master shards (minimum 3)
@@ -601,6 +678,18 @@ const (
 	// The CRD requires the field, so this can only be an instance created before the field
 	// existed; validation cannot reach it, which is why this condition exists.
 	ConditionSentinelMasterNameUnscoped = "SentinelMasterNameUnscoped"
+
+	// ConditionFailoverRecovery reflects a failover-mode no-master state and the
+	// operator's response to it (failover mode only). True means the instance
+	// needs attention — most importantly the refuse-and-wait state, where the
+	// surviving data holders span divergent replication lineages and electing
+	// any one would discard independent writes (set
+	// failover.allowUnsafeRebootstrapOnDeadlock to authorize); False records a
+	// completed recovery. A dedicated type (rather than reusing
+	// LeaderlessRecovery, whose documented semantics are the sentinel-mode
+	// bare-Sentinel deadlock) keeps the sentinel-vs-failover graduation-gate
+	// comparison honest.
+	ConditionFailoverRecovery = "FailoverRecovery"
 )
 
 // LittleRedStatus defines the observed state of LittleRed
@@ -664,6 +753,38 @@ type LittleRedStatus struct {
 	// Cluster contains cluster state (cluster mode only)
 	// +optional
 	Cluster *ClusterStatusInfo `json:"cluster,omitempty"`
+
+	// Failover contains failover-mode state (failover mode only)
+	// +optional
+	Failover *FailoverStatus `json:"failover,omitempty"`
+}
+
+// FailoverStatus contains failover-mode state. Both fields are monitoring
+// surfaces only: every value is re-derived from live state on each reconcile,
+// and nothing load-bearing is persisted here.
+type FailoverStatus struct {
+	// MasterDownSince records when the operator first observed the current
+	// master as unreachable (the detection window / recovery cooldown marker).
+	// Cleared as soon as the master is reachable again or a failover completes.
+	// Monitoring surface only — re-derivable from live state.
+	// +optional
+	MasterDownSince *metav1.Time `json:"masterDownSince,omitempty"`
+
+	// AssignmentEpoch mirrors the monotonic assignment epoch stamped on the
+	// data pods' annotations. Monitoring surface only — the authoritative
+	// epoch lives on the pods and is re-derived from live state, never read
+	// back from status.
+	// +optional
+	AssignmentEpoch int64 `json:"assignmentEpoch,omitempty"`
+
+	// TransitionSince records when the operator last stamped a new master
+	// intent (an assignment-epoch bump: bootstrap seed, failover promotion, or
+	// unsafe elect). It anchors the short post-transition cooldown that
+	// serializes cascading failovers (ADR-011 §6). Monitoring surface only —
+	// if lost, at worst one cooldown window is skipped; nothing load-bearing
+	// is persisted.
+	// +optional
+	TransitionSince *metav1.Time `json:"transitionSince,omitempty"`
 }
 
 // RedisStatus contains Redis pod status
@@ -811,6 +932,21 @@ func (r *LittleRed) Validate() error {
 		if r.Spec.Cluster != nil {
 			if r.Spec.Cluster.Shards < 3 {
 				return fmt.Errorf("cluster mode requires at least 3 shards (found %d)", r.Spec.Cluster.Shards)
+			}
+		}
+	}
+
+	// Failover mode: defense-in-depth mirror of the CRD minimums (like the
+	// cluster shards check above). Placement (spec.placement.shardAntiAffinity)
+	// stays cluster-only; the controller rejects it for every other mode,
+	// failover included.
+	if r.Spec.Mode == ModeFailover {
+		if r.Spec.Failover != nil {
+			if r.Spec.Failover.Replicas != nil && *r.Spec.Failover.Replicas < 1 {
+				return fmt.Errorf("failover mode requires at least 1 replica (found %d)", *r.Spec.Failover.Replicas)
+			}
+			if r.Spec.Failover.MinReplicasToWrite != nil && *r.Spec.Failover.MinReplicasToWrite < 0 {
+				return fmt.Errorf("failover minReplicasToWrite must be >= 0 (found %d)", *r.Spec.Failover.MinReplicasToWrite)
 			}
 		}
 	}
