@@ -1374,3 +1374,232 @@ uncovered: a *partial* capture (1 of 3 Sentinels) producing no verdict.
   **Honest limit:** the *dial*-blackhole variant that produced the field stall is **not reproducible locally** — it needs an address that swallows SYNs — so the listener blackholes the read instead. That asserts the same property (the bound is actually applied) at the same discriminating budget; the one-time real red for the dial variant is the captured ~100s starvation above.
 - **Regresses:** None. `ProbeTimeout` (3s) is far above a live in-cluster node's sub-second response to a single `CLUSTER *` command, so healthy gathers and repairs are unaffected; the reshard/migration paths keep their long per-attempt budget. No decision logic, gate, guard or requeue cadence changed — only how long a dead address may hold the loop. The gather's own LR-012 deadlines still apply and simply nest (the shorter wins).
 - **Impacts:** completes the bounded-client family for cluster mode — LR-012 (cluster reads, ctx only), LR-017 (sentinel reads), LR-040 (sentinel writes + the inert-ctx correction), LR-046 (cluster everything). Corrects LR-040's "Deliberately NOT bounded" note, which now carries a `⚠ Corrected by LR-046` marker and should be read together with this entry. Does **not** close the rolling-update data loss (see above).
+
+## [LR-047] The Cluster Rolling Update Was Time-Gated, Not State-Gated — a Shard's Data Died in a Successful Update
+- **Date:** 2026-08-25
+- **Commit:** (pending)
+- **Problem (measured on t3e, 2026-08-23):** a full-suite run lost a shard's entire dataset in a rolling update that **reported complete success** — all three shard StatefulSets at `observedGeneration == generation` and `currentRevision == updateRevision`, all six pods replaced, `cluster_state:ok`, 16384 slots assigned. CRC16 attribution pins it exactly: shard 0 loaded 2 keys, shard 2 loaded 1, **shard 1 loaded 0**. The fresh `roll-cluster-shard-1-1` had no cluster contact from 21:06:14 to 21:08:16 while the StatefulSet deleted shard 1's master at 21:06:50 — **96 seconds with zero copies of `5462-10922`**. Pre-existing since 0.3.0.
+
+  **Nothing gated the handover on the replacement actually being a copy.** `buildClusterShardStatefulSet` set `UpdateStrategy: {Type: RollingUpdate}` with no `rollingUpdate` block at all, so the intra-shard sequence belonged entirely to the StatefulSet controller: delete the highest ordinal, wait until it is Ready and has been available for `minReadySeconds`, then delete the next — for a shard, the replica and then its **master**. Both of the controller's gates are blind to redundancy. Readiness (`buildClusterReadinessProbe`) is `[ ! -f /data/bootstrap-in-progress ]` plus a local `redis-cli ping`: it asserts that a process answers on a socket and says nothing about cluster membership, slot ownership or a replication link. `minReadySeconds: 30` is wall-clock, and its own comment listed *"buffer for operator reconciliation"* as a justification. So the invariant actually enforced before a shard's master was killed was *"the replacement answers PING and has done so for 30 seconds"*, where the invariant data safety requires is LR-025's: *the replacement is a link-`up` replica of this shard's slot owner*. A replaced pod returns on a wiped EmptyDir (pillar 3.1) hence with a **new node ID**, hence needing the old ID `FORGET`-ed, itself `MEET`-ed, `CLUSTER REPLICATE`-d and full-synced — all of which only the operator does, and only in the `allPodsReady` branch. **The operator's entire window to restore redundancy was exactly `minReadySeconds` after the fresh pod passed PING.** Shards 0 and 2 used 15s and 19s of that 36s budget: this had been passing on margin, not on an invariant.
+
+  The failure was then **erased**. Step 3's `SafeMissingShardTarget` assigns the orphaned range to a reachable empty master — correctly, by its own contract — so the operator healed an already-dead shard into a healthy-looking empty one, and every signal the CR and the suite expose read green over a shard with no data. **This is LR-038's class exactly** (silent loss under a successful operation with every assertion green) in the mode LR-038 did not cover. LR-046 closed the *latency* half of the same incident and says explicitly that it does not close this: a reconcile that is no longer starved observes and acts sooner; it does not make a time-gated rollout wait for the right state.
+- **The framing that should have caught it.** LR-025 already named the unsafe state and removed it from the migration path — *"the unsafe 'owns slots, no synced replica' state never exists"* — enforced by the pure predicate `isLinkUpReplicaOf`. The rolling update was the one remaining path that still transited that state, and it transited it on the most routine operation the product has.
+- **Fix (ADR-017): state-gate the intra-shard handover with `spec.updateStrategy.rollingUpdate.partition`, in the operator.** The partition is set to the shard's highest ordinal when a template change is first applied, and lowered by one only once **every** pod at or above it is simultaneously (a) at `UpdateRevision`, (b) Ready per the kubelet (LR-023's blackhole-proof signal, never the operator's dial — LR-017) and (c) a link-`up` replica of that shard's slot owner (`redisclient.IsLinkUpReplicaOf`, exported so the rollout gate and the migration planner **cannot disagree** about what "synced" means). The decision is the pure `planShardRolloutPartition` (`internal/controller/cluster_rollout.go`), beside `clusterShardRolloutSettled`.
+- **Two constraints determined the wiring, and neither is a preference:**
+    - **The partition must be authoritative at BUILD time.** Every StatefulSet is written through `LittleRedReconciler.apply`, a server-side apply with `client.FieldOwner` **and `client.ForceOwnership`**, so whatever the build function computes wins on every pass and any out-of-band write is force-overwritten by the next reconcile. That is the flap LR-044's wiring half measured, and here it would be *worse than useless*: a partition that oscillates back to 0 each pass releases the master while the replica is still unsynced — today's defect, on a 2s cycle. So `buildClusterShardStatefulSet` takes the partition as a **parameter**, exactly as it takes `shardIdx`, and `nil` means "emit no `rollingUpdate` block at all" (byte-identical to the pre-fix shape; the `replicasPerShard: 0` case).
+    - **The cursor is the StatefulSet's own field, so nothing new is persisted.** The gate needs Redis-level state, which exists only after the gather, while the apply runs at step 1 — the same pre/post-gather split LR-044 faced. But where LR-044 needed `status.quarantinedSince`, here the live StatefulSet's `partition` value **is** the cursor. Pre-gather (`reconcileClusterStatefulSet`) the seam is called with no pods and no ground truth, so it takes its structural branches only and can therefore only **hold or raise**; post-gather (`advanceClusterRollout`) is the only place it comes **down**. No status field, no annotation, nothing to reconcile against ADR-006, and the value is monotone non-increasing except on a new template change.
+- **The cursor is read UNCACHED, and only while a rollout is in flight.** `r.Get` is cache-backed and LR-012 documented that cache returning stale object state during churn; a stale-**low** partition would release the master early — the exact defect, arrived at through a cached read. Both halves therefore re-read the shard StatefulSet (and the post-gather half also its pods) through `r.apiReader()`, the same uncached path LR-043 introduced for pod addresses. The steady loop keeps its cached read: LR-043 explicitly declined to make the steady path uncached on per-pass cost, and that reasoning is unchanged. The in-flight test is itself taken from the possibly-stale cached object and this is sound rather than circular: `clusterShardRolloutSettled` requires `ObservedGeneration == Generation`, and every write that starts or steps a rollout bumps `Generation`, so a cached object that is behind either still carries the old template hash (first clause) or carries the new spec with a status that has not observed it (second). *"Settled AND at the desired hash"* is not a state a mid-rollout object can present.
+- **Why it cannot deadlock.** (1) The gate never blocks anything the StatefulSet controller was not already about to do — holding leaves the **old** pods running and serving, so the failure direction is a stalled upgrade, never an outage or a loss. (2) It can only hold while `UpdateRevision != CurrentRevision`, and the clause it waits on is discharged by the operator's own repair loop (`FORGET`/`MEET`/`CLUSTER REPLICATE`, Step 4's shard-aware reattach), which runs on the **fast 2s cadence for the whole rollout** — a not-yet-reattached replacement is an empty master ⇒ `HasEmptyMasters()` ⇒ `IsHealthy` false, LR-014's clause doing exactly the job it was added for. (3) The advance step runs **before** the repair branch in `reconcileCluster`, because that branch returns and would otherwise skip the gate for the entire rollout. (4) `shardSlotOwner` resolves the owner by slot **containment** rather than exact-range equality, so a fragmented or mid-reshard range (LR-018) does not resolve to "no owner" — which would make clause (c) unsatisfiable forever. (5) At partition 0 a hold is inert: 0 is already the fully-released value, so the StatefulSet finishes on its own and the next pass reads `Complete`.
+- **Stall forever, loudly — and a timer fallback would be worse than the defect.** LR-043's correction is the governing precedent and its lesson generalizes: a guard that can deny a legitimate own state is more dangerous than one that admits a bad state in a narrow window. Here the asymmetry runs the *other* way and settles the question in the same breath — a stalled rollout is availability-safe, while a time-released one is exactly the lossy path this entry removes. A fallback that lowers the partition after N minutes is not a compromise; it is the current defect with a longer timer. What the stall must be is **loud**: a dedicated `ClusterRolloutBlocked` condition (never `Ready=False` — a stalled rollout is a rollout that has not finished, not an unhealthy instance, and conflating them trains an operator to ignore the one signal that matters) plus **one Warning event per transition**, naming the shard and the failing clause. Manual release is raising the partition by hand, which the condition message spells out.
+- **Blocked is advisory: it changes what the operator SAYS, never what it does.** The emitted partition is identical whether a hold is blocked or not. Blocked ⟺ at `UpdateRevision`, kubelet-Ready for ≥ `clusterRolloutReattachBudget` (**120s**, matching `status.cluster.wipeDeadlockSince`, LR-023), **and not attached to the shard's owner at all**. That last clause is what keeps the alarm honest: a pod that IS attached but whose replication link is still down is mid-**full sync**, which is dataset-dependent and genuinely unbounded, so it is never reported blocked however long it takes. A flat "Ready for longer than T while failing clause (c)" would have cried wolf on exactly the topology large deployments have, and no choice of T fixes that. A pod with no readiness timestamp is likewise never blocked: unknown is not evidence.
+- **`replicasPerShard: 0` warns and proceeds.** With one copy per shard any rollout takes that copy down; no operator-side gate can change it, refusing would make a documented topology un-upgradable, and proceeding silently leaves a data-losing operation entirely unannounced. So the operator emits a `ClusterRolloutUngated` Warning at the pass that triggers the roll and carries on — the first time the product says this anywhere.
+- **LR-021 composes for free and is not touched.** With `partition > 0` the StatefulSet controller does not advance `CurrentRevision`, so `clusterShardRolloutSettled` stays false and `reconcileClusterStatefulSet` keeps deferring every later shard. The two gates nest cleanly: at most one shard rolls, within it at most one pod, and only when the shard is redundant. `advanceClusterRollout` evaluates exactly one shard per pass — the first, in shard order, that is not settled at the desired template — which mirrors that serialization rather than duplicating it.
+- **`bootstrapCluster`'s revision gate had to be fixed in the same change.** Not in the problem report; found while grounding the ADR. The per-pod loop required `podRevision == CurrentRevision` and requeued at 1s otherwise, and **with `partition > 0` `CurrentRevision` does not advance**, so every pod already at `UpdateRevision` failed that gate and bootstrap would requeue forever. Unreachable on the normal path (bootstrap runs only on `TotalSlots == 0`, and a populated cluster mid-rollout has slots) but reachable in **exactly this defect's aftermath** — a rollout that has already dropped all of a cluster's slots. Introducing a permanent stall on the recovery path for the failure being fixed is not acceptable. Fixed by accepting **either** of this StatefulSet's own revisions: the gate's stated purpose is that *"terminating pods from the old deployment may still exist with stale IPs and the same names"*, and neither revision is that stale foreign deployment — address freshness is done by the uncached read and the `deletionTimestamp` refusal directly above, which is what LR-043 says actually does that work.
+- **Tests:**
+    - **Tier 1, the deterministic reproduction, observed RED first (t3e, 2026-08-23, operator `9a3cbf8`):** `test/e2e/cluster_rollout_gate_test.go`, `Label("rollout-gate")` — scale the operator to 0 the moment a shard's replica pod starts being replaced, hold it down, and assert byte-exact survival of every shard's CRC16-attributed key. It isolates this defect from LR-046's latency half **by construction** (with the operator down, no amount of probe-bounding helps) and carries four positive controls so a data assertion cannot pass vacuously. Pre-fix it recorded the master replaced at **T+37.2s** with the shard holding zero operator-attached copies.
+    - **Tier 3, GREEN after the fix (t3e, 2026-08-25, operator `04c1118`), and green for the right reason:** the tier recorded `shard 0: replica roll at T+0, operator down at T+0.3s, master NOT replaced within 1m30s — the intra-shard roll held while the operator was absent`, i.e. the keys survived because the **master was never taken down**, not because the timing shifted. The operator's own gate log then shows the full sequence on all three shards once it returned: `Started part=1` → `Holding part=1 PodNotSyncedReplica` (four to eight passes) → `Advanced part=0` + `shard is redundant, releasing the next pod`, shard 0 then shard 1 then shard 2, one shard at a time. `Cluster Mode Rolling Update` re-run green on the same build, so the gate does not stall a rollout that should proceed.
+    - **Tier 2, the pure seam:** `planShardRolloutPartition` as a table (`cluster_rollout_partition_test.go`, red-first at M2) plus the wiring seams `shardSlotOwner` / `buildShardRolloutInput` and the pre-gather hold-or-raise property (`cluster_rollout_wiring_test.go`). The wiring tests were authored **after** the implementation (disclosed) and their teeth shown by five mutations, each observed failing for its own reason: exact-range owner matching (shard 2 unresolvable ⇒ permanent stall), owner taken as the *intended* master pod rather than the serving node (shard 1 resolves to the wrong node after a failover), `Ready` read from the pod-level condition instead of the redis container, `SyncedWithOwner` dropping LR-025's link-`up` clause, and an absent pod satisfying every clause (the pre-gather call then **Advances** instead of Holding — i.e. lowers the partition with no evidence at all). The partition's exclusion from `AnnotationPodSpecHash` is pinned by its own test, green from birth, with a mutation that folds the rendered `rollingUpdate` block into the hashed template.
+- **Regresses:** Rollouts get **slower**, and the shape of the bound changes from `shards × pods × (ready + minReadySeconds)` to `shards × pods × (schedule + FORGET/MEET/REPLICATE + full sync)`. For a large dataset the full sync dominates and can be minutes per pod; that is the correct trade and it must be documented, because a user watching a 3-shard cluster take twenty minutes to roll will otherwise file it as a hang. `minReadySeconds: 30` is retained as pure defence in depth and must never again be presented as the safety mechanism. Nothing else changes: the create-missing path is untouched (a fresh StatefulSet is built with no partition), the repair loop, gather, requeue cadences and every other mode are untouched, and no new RBAC is needed — the reconciler already owns the StatefulSets it applies and the cursor is one of their own fields.
+- **Unverified / accepted residuals, stated plainly:**
+    - **`partition` governs operator-triggered rollouts only** — LR-021's documented limitation, inherited verbatim. Node drains, evictions and a manual `kubectl rollout restart` bypass the operator and are covered by nothing here. ADR-017 Decision 4 (a pod-local preStop self-fence, `CONFIG SET min-replicas-to-write 99` on the last-copy branch) is the mitigation for those; it landed immediately after this, in the same image — see the addendum below.
+    - **`ClusterRolloutBlocked` has never fired in anger.** It was not reachable in the live runs — every hold was discharged within seconds — so the condition, its message and its once-per-transition event are exercised only by the code path, not by observation. The failure mode of this whole change is **over-suppression**, and as with LR-043 unit tests cannot prove its absence; this condition firing outside a genuine sync failure is the operational tell, and it is untested in the field.
+    - **The `replicasPerShard: 0` Warning is likewise unobserved live** — the validation cluster runs `replicasPerShard: 1`.
+    - **The named residual of the gate's formulation is still open** (ADR-017 Consequences): clause (c) asks each pod at or above the partition to be a *replica* of the shard's owner, which is unsatisfiable for a pod that IS the owner. It did not bite in the live runs, and structurally it cannot bite above partition 0 in the normal flow — such a pod is the one the StatefulSet is about to replace — but if a repair path promotes a freshly-replaced pod back into ownership *while the partition is still above it*, the gate holds forever. That degrades to the chosen behaviour, a loud stall, rather than to loss. Not pre-emptively special-cased, because every extra clause on this predicate is what LR-043 warns about.
+    - **The wipe tiers were not re-run.** ADR-017's verification plan asks for `Cluster Mode Chaos Testing` and `Cluster Total-Wipe Re-Bootstrap` as well, precisely because they exercise the bootstrap and fresh-pod paths this change touches and LR-043's regression was found by exactly that tier. Only the repro tier and `Cluster Mode Rolling Update` were run.
+- **Impacts:** `CLAUDE.md` pillar 3.12 (this gate extends LR-021's cross-shard serialization, so it is documented with it rather than as a pillar of its own) and ADR-017. Completes the pair with LR-046 (the latency half of the same 2026-08-23 incident). Extends ADR-007 / LR-021 without modifying it. Uses LR-025's `IsLinkUpReplicaOf` as the single shared definition of "synced", LR-023's kubelet readiness as the redundancy-independent data signal, LR-044's build-time/SSA reasoning for the pre/post-gather split, and LR-043's uncached-read discipline for the cursor. New surfaces: the `ClusterRolloutBlocked` condition, its Warning event, and the `ClusterRolloutUngated` Warning. No new status fields.
+
+### Addendum — the preStop fence half, and what it does and does not close (t3e, 2026-08-25)
+
+The gate above closes the rollouts the operator drives. It closes nothing else, and "everything
+else" is not a corner: a node drain, an eviction and a manual `kubectl rollout restart` all reach
+a shard's master without passing through `reconcileClusterStatefulSet` at all. ADR-017 Decision 4
+is the mitigation for those, and it is now implemented.
+
+- **What changed.** The cluster preStop's last-copy branch — the one reached when the replica
+  lookup finds nobody, which said `preStop: No healthy replica found to take over. Proceeding
+  with restart.` and exited — now issues `CONFIG SET min-replicas-to-write 99` first and *then*
+  exits as before. `minReadySeconds`' comment was reworded in the same change: it presented a
+  wall-clock timer as the safety mechanism, which is the reading that let this defect exist. The
+  value is unchanged and is now documented as pure defence in depth.
+- **What it converts, which is the whole point.** Nothing about the data changes: that shard's
+  range still dies with the pod, because with no second copy there is nothing anywhere else. What
+  changes is that the writes in the departure window stop being **acknowledged** first. Pillar
+  3.2's "errors rather than silent data loss", applied to a rollout instead of to memory pressure
+  — the same move LR-038 made for failover mode's graceful handover, where the measured conversion
+  was 202 acknowledged-and-lost writes into 202 visible failures.
+- **Target-free, and that is not an implementation detail.** `min-replicas-to-write 99` cannot be
+  satisfied, so the write path closes on the spot without the pod ever having to learn who its
+  successor is. Needing a successor would reintroduce exactly the race the fence exists to remove,
+  and in this branch there IS no successor. It is also the entire reason the pod may act at all:
+  LR-016 forbids a pod inferring the state of OTHER nodes, and *"I am being terminated"* is local
+  knowledge that cannot be wrong (LR-038 Addendum 2). The one lookup the branch does make — is
+  there a healthy replica — was already there and already load-bearing for the `CLUSTER FAILOVER`
+  path; the fence adds no new inference. Nothing is persisted (no `CONFIG REWRITE`), so the
+  replacement container starts unfenced.
+- **It keeps the `exit 0`, deliberately.** A preStop that refuses to leave does not prevent the
+  loss, it postpones it by `terminationGracePeriodSeconds` (unset on cluster pods, so the
+  Kubernetes default 30s) and then pays the SIGKILL anyway — while making *every* rollout pay the
+  full grace window per pod. This is a mitigation and it is documented as one.
+- **The ordering hazard, which is why this shipped second and never first.** The preStop lives in
+  the pod template, so changing it changes `AnnotationPodSpecHash` and **triggers one rolling
+  update of every cluster instance on upgrade** — the exact operation that was unsafe. It is safe
+  here only because the gate landed first, in the same image, so the rollout this change triggers
+  is already governed by it. Shipping the fence ahead of the gate would have turned the fix into
+  the incident.
+- **Live evidence (t3e, throwaway `replicasPerShard: 0` cluster, operator `0fbfb45`).** With no
+  replicas every master is by construction the last copy of its range, so the branch is taken
+  deterministically. A writer looping `SET` against the shard-0 master across a graceful
+  `kubectl delete pod` recorded the conversion at the millisecond:
+
+  ```
+  20:23:34.055532911 6096 OK
+  20:23:34.059308931 6097 NOREPLICAS Not enough good replicas to write.
+  ...
+  20:23:34.147584425 6124 NOREPLICAS Not enough good replicas to write.
+  20:23:34.150928454 6125 Could not connect to Redis at 10.233.192.28:6379: Connection refused
+  ```
+
+  **28 writes that this build refused are 28 writes the previous build would have acknowledged and
+  then destroyed** — the fence took hold ~140ms after the delete was issued, and the socket closed
+  ~90ms later. The pod's own log for the same departure:
+
+  ```
+  preStop hook starting at Tue Aug 25 20:24:44 UTC 2026, PID 51
+  preStop: my node ID is a01b6f54230a01613ec0c8b54efd6a3168570906, master=yes
+  preStop: WARNING no healthy replica for this shard — I am the last copy of my slots.
+  preStop: writes fenced (-NOREPLICAS); this shard's range dies with this pod, but no further write is acknowledged and then lost
+  preStop: Proceeding with restart.
+  ```
+
+  A subsequent template change rolled all three shards and produced that same five-line sequence on
+  each, so the branch is reached on the operator-driven path too, not only on a direct delete.
+- **Decision 3's `replicasPerShard: 0` Warning was observed live for the first time in the same
+  run** (it is listed above as unobserved). The message is emitted per shard and the operator's
+  audit log carries all three (`Ungated cluster rollout (replicasPerShard: 0)` at `shard` 0, 1 and
+  2). **The API surface does not: three emissions produced two Event objects**, the second carrying
+  `count: 2` and shard 1's message, with shard 2 folded into that series — Kubernetes treats
+  same-reason, same-object Warnings as one series and the note is not part of the key. So `kubectl
+  get events` names shard 0 and shard 1 and never shard 2. Not a defect in the verdict and not
+  changed here; recorded because an operator reading events will undercount the shards, and the log
+  is the reliable surface. The same folding will apply to `ClusterRolloutBlocked`.
+- **The erasure reproduced exactly as described above**, incidentally and usefully: after the
+  ungated roll the CR reported `phase: Running`, `Ready=True/ClusterHealthy`, with `DBSIZE 0` on
+  the shard whose key had been written before the roll. The gate exists because that is what
+  success looks like from every surface the product exposes.
+- **Tests:** `TestBuildClusterPreStopFencesLastCopy` and `TestBuildClusterPreStopFenceTLSFlags`
+  (`internal/controller/resources_test.go`). **Both are green from birth and this is disclosed
+  rather than dressed up** — a shell script embedded in a Go string has no honest red available;
+  asserting the built script contains the fence can only ever guard against a future edit deleting
+  it, and the behaviour itself is observable only live, which is what the capture above is for.
+  Their teeth were shown by three mutations, each observed failing for its own reason: restoring
+  the old two-line branch body (fence assertion), hoisting the fence above the `IS_MASTER` early
+  exit (placement assertion — the fence must not fire for a master that *does* have a replica, or
+  it refuses writes for the whole hand-over window `CLUSTER FAILOVER` exists to make seamless), and
+  stripping the TLS flags from the fence command (TLS assertion — a fence that cannot connect is a
+  fence that silently is not there).
+- **Regresses:** one rolling update of every existing cluster instance on upgrade, by design and
+  under the gate (above). On the last-copy path, writes in the departure window now fail instead of
+  succeeding — which is the intended conversion, but it *is* an availability change on a path that
+  previously looked available, and `replicasPerShard: 0` users will see it. No other path is
+  touched: a master with a healthy replica hands over exactly as before, and a replica still exits
+  immediately.
+- **Still not closed.** The fence does not save the data and never could; with one copy there is
+  nothing to save. Drains, evictions and manual restarts remain outside the gate — the fence makes
+  their loss loud, not absent. The properly closing alternative is ADR-017's deferred
+  readiness-probe redesign, which would govern those paths too and is declined there for the
+  `allPodsReady` bootstrap trap, not on merit.
+
+### Addendum 2 — `ClusterRolloutBlocked` fired falsely, and named the wrong pod (t3e, 2026-08-25)
+
+The entry above records the condition as *"never fired in anger"* and its own honest caveat as
+*"this condition firing outside a genuine sync failure is the operational tell."* The M5
+verification sweep made it fire — first deliberately, then by accident — and both halves of the
+report were wrong. **Advisory layer only: the emitted partition is byte-identical either way, so
+neither defect ever endangered data or held a pod it should not have.**
+
+**How it was made to fire at all.** No suite tier reaches it, because every hold in the live runs
+discharged within seconds. The reachable lever is the one ADR-017 already names as a consequence —
+*"an operator outage stalls a rollout instead of losing a shard"*: trigger a template change, wait
+for the gate to apply `partition: 1`, scale the operator to 0 before it can reattach the fresh
+replica, and hold it down past `clusterRolloutReattachBudget`. The replacement comes back Ready on
+its own kubelet probe with nothing to attach it to; on the first pass after the operator returns
+the hold is already past the budget. (A NetworkPolicy-based isolation was tried first and is a dead
+end here: this cluster does not enforce them.)
+
+**The true positive is correct, and is recorded here because it had never been seen:**
+
+    Rolling update of shard 0 is held: pod ordinal 1 is updated and Ready but is not attached to
+    the shard's slot owner at all (clause PodNotSyncedReplica), and has been in that state for
+    longer than 2m0s. The shard's remaining pods — including its master — are NOT being taken
+    down, so the instance keeps serving and its data is intact; the update simply cannot finish
+    safely. Release by hand with `kubectl patch statefulset blk-shard-0 -n lr047-blk --type=json
+    -p '[{"op":"replace","path":"/spec/updateStrategy/rollingUpdate/partition","value":0}]'`
+    — which forfeits the guarantee (ADR-017, LR-047).
+
+Condition `ClusterRolloutBlocked=True/ShardNotRedundant`, one Warning event, the master **not**
+taken down for the whole outage, and the key intact throughout — i.e. the stall is availability-safe
+exactly as designed, and it self-clears (`False/RolloutProgressing`) seconds after the operator
+returns and reattaches.
+
+**Defect 1 — a FALSE block on the ordinary path, which ADR-017 predicted could not happen there.**
+The Consequences name the residual — *"clause (c) asks each pod at or above the partition to be a
+replica of the shard's owner, which is unsatisfiable for a pod that IS the owner"* — and judge that
+it *"structurally cannot bite above partition 0 in the normal flow."* True, and the wrong bound: it
+bites **at** partition 0. When the gate lowers the partition to 0 the StatefulSet deletes the
+shard's master, its preStop hands mastership to the replica, and that **promoted replica is now the
+owner while still inside the survey** (`ord` runs from `currentPartition()`, i.e. 0, to the highest
+ordinal). Its `ReadySince` is when *it* was replaced — deliberately long ago, because waiting for it
+to sync is the entire job of the gate — so `podStalled` fires. Observed:
+
+    Cluster rollout gate  shard=0 verdict=Holding partition=0 hold=PodAbsent holdPod=0 blocked=true
+
+with the rollout completing normally **8s later**. The precondition is only that the replica was
+Ready more than 120s before the master finished being replaced, which is the **large-dataset case
+the condition is supposed to distinguish itself from** — so left alone it would have cried wolf
+first on exactly the deployments the alarm exists for.
+
+**Defect 2 — the message described a pod that was not blocked.** `plan.Hold`/`HoldPod` record the
+FIRST failing clause (lowest ordinal wins, deliberately) while `plan.Blocked`/`BlockedPods` record
+which pods are stalled, and the two are independent. `reportClusterRolloutGate` rendered `HoldPod`
+and `Hold` into a sentence that asserts *"is updated and Ready but is not attached"*, which is only
+ever true of a blocked pod. The result, verbatim from the live Event:
+
+    pod ordinal 0 is updated and Ready but is not attached to the shard's slot owner at all
+    (clause PodAbsent)
+
+Ordinal 0 was **absent** — neither updated nor Ready — and *"clause PodAbsent"* contradicts the
+sentence it sits in. An operator following that message would look at the wrong pod.
+
+**Fix, confined to reporting.** (1) `shardRolloutPod.IsOwner`, set in `buildShardRolloutInput` from
+the resolved owner's node ID, and `podStalled` returns false for it: a shard's own owner is a replica
+of nobody by construction, so its failing clause (c) is structural and can never be evidence of a
+stall. **The gate is untouched** — the hold is still emitted, still correct, and still self-clears at
+`Complete`; only the advisory verdict changes. Special-casing the *gate* was considered and not done,
+because that is a safety-relevant semantics change and ADR-017 declines it on the LR-043 "every extra
+clause on this predicate" ground; the residual therefore stands as documented, minus its false alarm.
+(2) The message is built by the pure `clusterRolloutBlockedMessage` from `BlockedPods[0]` and states
+the redundancy clause, which is definitionally the blocked one.
+
+**Red-first.** `TestShardOwnerIsNeverReportedBlocked` was authored from the live gate line and
+observed **RED** as `Blocked = true [1], want not blocked`;
+`TestClusterRolloutBlockedMessageNamesABlockedPod` was observed **RED** reproducing the live message
+verbatim (`pod ordinal 0 ... (clause PodAbsent)`). The `IsOwner` wiring assertion in
+`TestBuildShardRolloutInputRedundancy` is green from birth and is disclosed as such; its teeth were
+shown by deleting the assignment, which fails it with `isOwner=false, want isOwner=true`.
+
+**Verified live on the fixed build (t3e, operator `737f3f9`), same lever, same instance shape:** the
+genuine block still fires with the correct pod and clause, and the pass that previously read
+`hold=PodAbsent holdPod=0 blocked=true` now reads `blocked=false`. One Warning event for the whole
+rollout instead of two, the key intact, `Ready=True/ClusterHealthy` at the end.
+
+**Two observations kept rather than acted on.** (a) The pre-fix run produced **two** Warning events
+with the same reason and the same object but different notes, and Kubernetes stored them as **two
+distinct Event objects** — so the reason+object series folding that Addendum 1 measured for
+`ClusterRolloutUngated` did **not** reproduce here. It is largely moot for this condition anyway,
+because `setClusterRolloutBlocked` emits only on a genuine False/absent→True transition, so two
+shards blocked in succession produce one event and the second shard's name reaches the *condition*
+but never `kubectl get events`. The log line remains the reliable per-shard surface, as Addendum 1
+says. (b) On one shard of the post-fix run the reattach took **96s of the 120s budget** — margin
+rather than invariant, for the *reporting* layer only. If a slow reattach ever crosses it the result
+is a false alarm, not a lost pod; the carve-out that keeps a genuine full sync out of the alarm does
+not cover a slow FORGET/MEET/REPLICATE. Recorded, not tuned.
