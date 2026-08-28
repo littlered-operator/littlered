@@ -21,7 +21,6 @@ package e2e
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -1319,7 +1318,9 @@ spec:
 		// all came out with it. Accepting a reason the product can no longer emit is a
 		// guard that would silently pass a regression reintroducing exactly the surface
 		// that was removed, which is the one thing an assertion in this position must not
-		// do. `TestStaleMasterNameHasNoSuspicionReason` fails if it ever comes back.
+		// do. The invariant this assertion rests on — G0 wins, and wins even while our
+		// own StatefulSet is rolling — is pinned where it belongs, next to the code:
+		// `TestPlanStaleMasterNames`'s two G0 rows in `internal/controller`.
 		//
 		// What this must never say is False/Converged — "the operator thinks this
 		// instance is fine" — but asserting only that would be weaker than the code
@@ -1610,43 +1611,5 @@ func TestRenameFixtureDoesNotOverrideMinReadySeconds(t *testing.T) {
 	if crSettleWindow <= crSettleMinReady {
 		t.Errorf("crSettleWindow = %s, which does not exceed minReadySeconds = %s — "+
 			"a mid-roll Running interlude can satisfy the settle", crSettleWindow, crSettleMinReady)
-	}
-}
-
-// TestStaleMasterNameHasNoSuspicionReason is the local half of the tier-2 assertion above.
-//
-// That assertion reads `Equal("Foreign")` and its teeth are CLUSTER-ONLY: it can only
-// fail against a running operator emitting a different reason, so there is no honest red
-// for it here. What IS checkable without a cluster is the half that made the old
-// `BeElementOf("Foreign", "ForeignSuspected")` dangerous — that the second reason still
-// does not exist. LR-050 deleted it (the rollout gate closed §9.2's window at its source,
-// taking the settle, its cooldown and `status.staleMasterNameForeignSince` with it), and
-// an e2e that accepts a reason the product cannot emit would pass a regression
-// reintroducing precisely the surface that was removed.
-//
-// It keys on a constant DECLARATION rather than the bare string, because
-// `stale_master_name_plan.go` and `littlered_controller.go` both mention the name in
-// historical comments explaining the removal — those must not trip the guard, and
-// deleting them to satisfy it would erase the record of why the reason is gone.
-func TestStaleMasterNameHasNoSuspicionReason(t *testing.T) {
-	const dir = "../../internal/controller"
-	files, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("cannot read %s: %v", dir, err)
-	}
-	for _, f := range files {
-		if f.IsDir() || !strings.HasSuffix(f.Name(), ".go") || strings.HasSuffix(f.Name(), "_test.go") {
-			continue
-		}
-		src, err := os.ReadFile(dir + "/" + f.Name())
-		if err != nil {
-			t.Fatalf("cannot read %s: %v", f.Name(), err)
-		}
-		if strings.Contains(string(src), `= "ForeignSuspected"`) {
-			t.Errorf("%s declares a ForeignSuspected reason again. LR-050 deleted it along with "+
-				"staleMasterNameForeignCooldown and status.staleMasterNameForeignSince. If it is "+
-				"genuinely coming back, revisit the tier-2 assertion on StaleMasterName's reason "+
-				"(it now requires exactly \"Foreign\") before landing this.", f.Name())
-		}
 	}
 }
