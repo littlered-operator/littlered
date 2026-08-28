@@ -55,9 +55,9 @@ type forsakenPlan struct {
 // is far worse than a false negative — that merely leaves today's behaviour in place.
 // So EVERY clause must hold:
 //
-//  1. At least one reachable, monitoring Sentinel — otherwise we know nothing. (Bare
-//     Sentinels are Rule L's business, not this one's.)
-//  2. Every reachable monitoring Sentinel agrees on ONE master address. Disagreement
+//  1. At least one reachable Sentinel that monitors SOMETHING — otherwise we know
+//     nothing. (Bare Sentinels are Rule L's business, not this one's.)
+//  2. Every master every reachable Sentinel monitors is at ONE address. Disagreement
 //     is a transition, and transitions are not verdicts.
 //  3. That address is not one of our pods, and is NOT flagged down. The down flag is
 //     the discriminator that keeps ordinary post-failover debris — a dead ex-master —
@@ -65,46 +65,149 @@ type forsakenPlan struct {
 //     is alive there. Same discriminator the lrctl diagnostic uses.
 //  4. No reachable Redis pod of ours is a master. While one of ours still is, the
 //     instance has something to be healed back toward and the existing rules own it.
+//
+// The clauses are NAME-AGNOSTIC: they range over every master a Sentinel monitors,
+// not only the one we currently want. Keying them on the desired name — which is
+// what sn.MasterIP/sn.MasterFlags are, the single-name probe's answer — made the
+// verdict evaporate the moment an owner renamed a captured instance, which is
+// precisely what the LR-039/LR-042 runbook tempts them into ("we were captured, so
+// let's give it a unique name"). The Sentinels keep serving the captor under the OLD
+// name, the new name reads bare, clause 1 fails, and with the verdict goes ADR-016's
+// quarantine — the thing that heals both sides. A capture under a stale name is a
+// capture. See the rename design §7.3.
+//
+// The `rolling` parameter is the ONE thing the four clauses cannot see, and without it
+// they are structurally unable to tell "an address that is not one of our pods" from "an
+// address that is not one of our pods ANY MORE" (LR-050). A pod of ours that has just
+// been replaced leaves `ValidIPs` the instant its object goes and is not flagged down for
+// a whole `down-after-milliseconds`, so for that window it is byte-identical to a
+// captor's live master. That is not hypothetical: it quarantined a healthy instance
+// during an ordinary supported rename, at T+30 of a 42.5s window, 12.5s before the
+// instance healed itself.
+//
+// It gates ARMING — and only arming. The two halves of that are both load-bearing:
+//
+//   - While rolling, a signature observed for the first time is NOT a verdict. There is
+//     no evidence here that distinguishes it from our own churn, so the honest answer is
+//     to hold, not to accuse.
+//   - While rolling, an ALREADY-ARMED verdict is evaluated exactly as before: the gate
+//     does not touch it. The caller's switch treats "not captured" as "clear it"
+//     (`clearForsaken`), so a naive "return no verdict while rolling" would make a
+//     panicked rename of a genuinely captured instance dissolve the verdict — which is
+//     exactly the §7.3 trap the name-agnostic clauses exist to close, and with it
+//     ADR-016's quarantine, the only thing that heals the CAPTOR. That mutant is what
+//     the invariant row in the table guards against.
+//
+// So: a rollout cannot START a capture verdict, and it never CLEARS one either — only
+// the ordinary clauses do, on the ordinary evidence, exactly as before. The stronger
+// reading (hold an armed verdict up against an ABSENT signature while rolling) was
+// implemented first and wedged the quarantine release live; see the note at the
+// `!captured` return below.
+//
+// It is deliberately not a timer. The alternatives considered were all margins against
+// `spec.sentinel.downAfterMilliseconds`, which is user-settable and unbounded, so no
+// value of `forsakenCooldown` can be correct for every instance. The StatefulSet's own
+// settledness is config-independent and needs no new state — and it covers strictly more
+// than a rename, since a departed address of ours exists only in states where the
+// StatefulSet is short of its Ready count.
+//
+// Accepted hole, stated rather than hidden: a permanently STUCK rollout means the gate
+// never lifts, so a genuine capture arriving in that window goes undetected. The owner
+// accepted it — "we don't fix on operator level if something's broken below". An instance
+// whose roll is stuck is already `Ready=False` and visibly broken, and the quarantine
+// exists to heal the CAPTOR, which it cannot do for an instance that cannot roll.
+//
+// This is a widening of what the clauses observe, and NOTHING else: their intent,
+// order and conservatism are untouched, and every input that produced a verdict on
+// the desired name alone still produces the same one. Two consequences of the wider
+// observation set are worth stating, because both run toward the safe direction:
+//
+//   - A Sentinel monitoring only a stale name now counts for clause 1. That is the
+//     §7.3 case itself.
+//   - Two names naming two different addresses is now a clause-2 disagreement. An
+//     ordinary rename transiently does exactly that (WP0 measured 88.5s of it, 56.6s
+//     of which named two different LIVE pods), so the widening removes a suspicion
+//     the desired-name view raised on its own rather than adding one.
 func planForsaken(
-	state *redisclient.ReplicationState, since *metav1.Time, now time.Time,
+	state *redisclient.ReplicationState, since *metav1.Time, now time.Time, rolling bool,
 ) forsakenPlan {
+	captured, foreign := forsakenSignature(state)
+
+	armed := since != nil && !since.IsZero()
+	if rolling && !armed {
+		// Cannot ARM: mid-roll the operator does not attribute addresses, so a
+		// signature seen here is not a verdict.
+		return forsakenPlan{}
+	}
+	if !captured {
+		// The gate is a ONE-WAY suppression of arming, and never asserts a verdict the
+		// evidence does not support. It deliberately does NOT hold an armed verdict up
+		// against an absent signature while rolling, and the first implementation that
+		// did was wedged by a live run within minutes: the quarantine RELEASE scales
+		// this instance's StatefulSets 0 -> 3, which reads as unsettled, while the pods
+		// come back with bare Sentinels and no signature at all. Carrying the verdict
+		// through that returned Captured for a state with zero evidence, the call site
+		// returned before clearForsaken, and the instance never left quarantine (LR-044
+		// is explicit that the whole lifecycle rests on the verdict self-clearing once
+		// the pods are gone). Absence of evidence must not become evidence.
+		//
+		// What that costs is nothing the §7.3 trap needs: a captured instance being
+		// renamed goes on presenting the signature under the STALE name, because the
+		// clauses are name-agnostic (WP4b) — verified live, the verdict survives the
+		// panicked rename and the quarantine still fires. So "a roll cannot clear a
+		// verdict" holds in the only sense that is true: the gate never clears one; the
+		// ordinary clauses do, exactly as they did before this change.
+		return forsakenPlan{}
+	}
+
+	p := forsakenPlan{Captured: true, ForeignMaster: foreign}
+	if armed && now.Sub(since.Time) >= forsakenCooldown {
+		p.Forsaken = true
+	}
+	return p
+}
+
+// forsakenSignature is the four clauses, unchanged: is the capture signature present in
+// THIS gather, and at which address.
+func forsakenSignature(state *redisclient.ReplicationState) (bool, string) {
 	var foreign string
 	monitoring := 0
 
 	for _, sn := range state.SentinelNodes {
-		if sn == nil || !sn.Reachable || !sn.Monitoring {
+		if sn == nil || !sn.Reachable {
+			continue
+		}
+		observed := monitoredAddresses(sn)
+		if len(observed) == 0 {
 			continue
 		}
 		monitoring++
-		if sn.MasterIP == "" {
-			return forsakenPlan{}
-		}
-		if foreign == "" {
-			foreign = sn.MasterIP
-		} else if foreign != sn.MasterIP {
-			return forsakenPlan{} // clause 2: no consensus, no verdict
-		}
-		// clause 3: alive, and not ours
-		if !state.IsGhost(sn.MasterIP) || flaggedDown(sn.MasterFlags) {
-			return forsakenPlan{}
+		for _, m := range observed {
+			if m.IP == "" {
+				return false, ""
+			}
+			if foreign == "" {
+				foreign = m.IP
+			} else if foreign != m.IP {
+				return false, "" // clause 2: no consensus, no verdict
+			}
+			// clause 3: alive, and not ours
+			if !state.IsGhost(m.IP) || flaggedDown(m.Flags) {
+				return false, ""
+			}
 		}
 	}
 	if monitoring == 0 { // clause 1
-		return forsakenPlan{}
+		return false, ""
 	}
 
 	// clause 4
 	for _, rn := range state.RedisNodes {
 		if rn != nil && rn.Reachable && rn.Role == RoleMaster {
-			return forsakenPlan{}
+			return false, ""
 		}
 	}
-
-	p := forsakenPlan{Captured: true, ForeignMaster: foreign}
-	if since != nil && !since.IsZero() && now.Sub(since.Time) >= forsakenCooldown {
-		p.Forsaken = true
-	}
-	return p
+	return true, foreign
 }
 
 // flaggedDown reports whether a Sentinel flags string marks the instance down. Mirrors
@@ -112,4 +215,32 @@ func planForsaken(
 // local because it is one line and the redis-side one is not exported.
 func flaggedDown(flags string) bool {
 	return strings.Contains(flags, "s_down") || strings.Contains(flags, "o_down")
+}
+
+// monitoredAddresses is every (address, flags) this Sentinel currently monitors,
+// under any master name.
+//
+// Two sources, deliberately BOTH:
+//
+//   - The desired name's dedicated probe (sn.MasterIP / sn.MasterFlags, gated on
+//     sn.Monitoring). This is what planForsaken read before it went name-agnostic,
+//     and it stays the authority on the name we want, so behaviour on that name is
+//     unchanged in every case.
+//   - sn.MonitoredMasters — the full `SENTINEL MASTERS` list. The desired name
+//     appears in it too and is not filtered out: the same address twice agrees with
+//     itself, and if the two reads DISAGREE (they are separate round trips) that is
+//     a transition clause 2 should refuse anyway.
+//
+// An EMPTY MonitoredMasters list means "we could not read it", never "this Sentinel
+// monitors nothing" — the extra round trip degrades to empty rather than to
+// Reachable:false. So it contributes no observations and the verdict falls back to
+// the desired-name view alone, which is the correct reading of no evidence and is
+// LR-041's class of mistake avoided.
+func monitoredAddresses(sn *redisclient.SentinelNodeState) []redisclient.MonitoredMaster {
+	observed := make([]redisclient.MonitoredMaster, 0, len(sn.MonitoredMasters)+1)
+	if sn.Monitoring {
+		observed = append(observed, redisclient.MonitoredMaster{IP: sn.MasterIP, Flags: sn.MasterFlags})
+	}
+	observed = append(observed, sn.MonitoredMasters...)
+	return observed
 }

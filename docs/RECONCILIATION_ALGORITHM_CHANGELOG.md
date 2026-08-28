@@ -525,7 +525,7 @@ loose for the failover cells, which measured 85-96%.
 - **Second finding — a context deadline alone does not bound these calls.** The first fix mirrored LR-017 exactly (wrap each address iteration in `context.WithTimeout(ctx, ProbeTimeout)`) and was **inert**: against a blackholing peer go-redis returns `context deadline exceeded` *at* the 3s deadline but still spends roughly another `DefaultTimeout` unwinding, so a 3s ctx over a 5s `ReadTimeout` still cost ~5s of wall clock (measured: 5.02s → 5.00s). The red-first unit test is what caught this; the ctx-only change would otherwise have shipped looking correct. **Both halves are required** — the ctx bounds the pool's dial-retry loop (the ~117s blackhole case), the client's own timeouts bound each individual attempt. This qualifies LR-017's read-path claim too, whose "fails in ≤3s regardless of go-redis retries" is optimistic for the read-blackhole variant.
 - **Fix:** two constructors, `(*SentinelClient).newBoundedClient(addr)` and package-level `newBoundedRedisClient(addr, password, tlsEnabled)`, that build a single-address client with `DialTimeout`/`ReadTimeout`/`WriteTimeout` = `ProbeTimeout`. Applied to every single-shot per-address operation in `internal/redis/client.go`: the four writes (`Monitor`, `Set`, `Reset`, `Remove`), and — same latent inert-ctx defect — the read/probe helpers `getMasterFromSentinel`, `getReplicasFromSentinel`, `IsMonitoring`, `Ping`, `SlaveOf`, `GetReplicationInfo`. Retains the per-iteration ctx deadline on the writes.
 - **Deliberately NOT bounded:** (1) `SentinelClient.Subscribe` — a long-lived pub/sub subscription, not a single-shot command; a 3s read budget would tear it down continuously. (2) cluster mode's `(*ClusterClient).getClient` — slot migration issues `MIGRATE` with its own multi-second budget (`spec.cluster.reshardMigrateTimeoutMillis`), so a blanket `ProbeTimeout` there would abort legitimate long commands. Cluster's stall was already addressed by LR-012 and is not on this path. **⚠ Corrected by LR-046: clause (2) is true for `MIGRATE` and false for the other 18 methods sharing that constructor, every one of them a single round-trip — a blackholing dead pod IP burned ~25s per `CLUSTER FORGET` and starved a cluster reconcile ~100s. "Cluster's stall was already addressed by LR-012" is also wrong: LR-012 bounded three *gather* probes with a ctx only, which this entry's own second finding shows is inert, and never touched the repair-loop commands. The exemption should have named the methods, not the client.**
-- **Cross-mode (CLAUDE.md §7 rule 11):** `SlaveOf` is shared, so failover mode was carrying the same inert bound — its `slaveOfBounded` (added *with* the LR-017 lesson in mind, `failover_reconcile.go`) wrapped `SlaveOf` in a 3s ctx while `SlaveOf` itself used `DefaultTimeout`. Bounding `SlaveOf` fixes sentinel Rule R and failover in one change. The irony is worth recording: LR-017 is itself the worked example for the cross-mode-parity rule, and the newer mode inherited its blind spot rather than its fix.
+- **Cross-mode (CLAUDE.md §7 rule 11):** `SlaveOf` is shared, so failover mode was carrying the same inert bound — its `slaveOfBounded` (added *with* the LR-017 lesson in mind, `failover_reconcile.go`) wrapped `SlaveOf` in a 3s ctx while `SlaveOf` itself used `DefaultTimeout`. Bounding `SlaveOf` fixes sentinel Rule R and failover in one change. **⚠ Corrected by LR-049: only the CLIENT half travelled. Failover mode stayed bounded because it kept its own `slaveOfBounded` ctx wrapper; sentinel mode's Rule R has no wrapper and passed the raw reconcile context, so `SlaveOf`'s dial-retry loop stayed unbounded there — the same two-halves point this very entry establishes, missed inside the function it was fixing.** The irony is worth recording: LR-017 is itself the worked example for the cross-mode-parity rule, and the newer mode inherited its blind spot rather than its fix.
 - **Why it cannot re-open the RESET-spam trap (LR-001/LR-007):** those regressions came from a *faster loop* letting Rule D's `SENTINEL RESET` reset Sentinel's `s_down` timer before failover could trigger. This change does not shorten the requeue cadence (still 2s) — it removes a pathological ~117s stall, i.e. it *restores* the intended cadence rather than exceeding it. And every RESET gate is now state-based, not time-based: living+reachable consensus master (LR-008), ≥1 healthy known replica (LR-011), and K8s-grounded wholeness (LR-013). A faster-returning write cannot trip a state gate early.
 - **Tests:** `TestSentinelWritePathsAreProbeTimeoutBounded` (`internal/redis/client_write_timeout_test.go`) — a local listener that accepts and then never replies, asserting each of the four writes returns within `ProbeTimeout + 1s`. Observed **RED** on all four at ~5.02s against the unbounded code, **RED again at ~5.00s** against the inert ctx-only fix (the finding above), **GREEN at ~3.0s** once the client timeouts were bounded. The budget deliberately discriminates 3s from `DefaultTimeout`'s 5s. The dial-blackhole variant that produced the field stall is not reproducible locally (it needs an IP that swallows SYNs); the read-blackhole asserts the same property — that the bound is actually applied — and the one-time real red is the captured 117s reconcile.
 - **Regresses:** None. `ProbeTimeout` (3s) is far above a live in-cluster sentinel's sub-second response, so healthy paths are unaffected; a control command is one round-trip. No decision logic, gate or cadence changed — only how long a dead address may hold the loop.
@@ -555,6 +555,7 @@ loose for the failover cells, which measured 85-96%.
 - **Commit:** (pending)
 - **Problem (measured on t3e):** an instance captured by another Sentinel deployment sharing its master name is unrecoverable **by design** — ADR-015 §9.2 declines recovery, because the dataset is flushed ~1s after the `SLAVEOF` (nothing to salvage) and the operator structurally cannot win the reclaim (`SENTINEL MONITOR` creates the entry at `config_epoch = 0` and loses to the captor's epoch on the next hello). But nothing told the operator that. It kept treating the instance as converging: `Phase != Running` selects the **fast** (2s) interval, so it ran **30 reconciles and ~120 log lines per minute, indefinitely**, re-deriving the same dead end. During the *partial*-capture window it is worse than idle — the LR-008 ghost-master correction reissues `REMOVE`+`MONITOR` every pass, exactly the never-converging thrash §9.2 predicted from `sentinel.c`, each one wiping that Sentinel's replica list (LR-013's ingredient).
 - **Fix — name the state, then gate on it.** New terminal condition **`Forsaken`** (named `SentinelForsaken` in the first draft of this change and renamed before release — the `Sentinel` prefix is redundant with the instance's own `spec.mode`, which is the only mode that can reach this verdict) plus `status.forsakenSince`, decided by the pure `planForsaken`. When the verdict lands the operator (a) stops healing the instance — returning before Rule 0, so no rule fights a battle §9.2 proved is unwinnable, (b) logs once per transition rather than per reconcile, and (c) re-examines it at the **steady** interval instead of the fast one. The instance stays `Ready=False` and loudly broken, which is the intended end state; only the futile churn stops. The verdict is retracted automatically once the signature clears, so a human running the runbook is picked up on the next steady tick and normal management resumes.
+  **⚠ Corrected by LR-050: the four clauses are blind to the operator's OWN churn.** A pod of ours that has just been replaced is absent from `ValidIPs` and not yet flagged down, i.e. byte-identical to a captor's live master — so an ordinary, supported rename presented the whole signature for a measured **42.5s** and the 30s `forsakenCooldown` settled a **false** verdict that quarantined a healthy instance (pods deleted, EmptyDir). `planForsaken` now takes a `rolling` input and withholds attribution while our own Redis StatefulSet is unsettled. Precisely: **the gate suppresses ARMING and nothing else** — a signature seen for the first time mid-roll is not a verdict, while an ALREADY-ARMED verdict is evaluated by the ordinary clauses on the ordinary evidence, and so may still clear there. Do **not** read this as "an armed verdict survives a roll unconditionally": that stronger reading was implemented first and **wedged the quarantine release live** (release scales 0→3, which reads unsettled, and the pods return with bare Sentinels and no signature at all, so the verdict was carried over a state with zero evidence and the victim never left quarantine). LR-044's lifecycle rests on the verdict self-clearing. The four clauses themselves, and the whole existing table, are unchanged. See LR-050.
   **⚠ Corrected by LR-045: effect (c) was inert for sentinel mode — the only mode that can ever be forsaken.** The interval switch was wired into `updateStatus`, but sentinel-mode reconciles return through the separate `updateSentinelStatus`, whose not-`Running` branch requeued at the fast interval unconditionally, with no `Forsaken` check at all. Measured live on t3e (LR-044 milestone M4a): **31 reconciles in 114s (~3.7s apart)** while quarantined and `Forsaken=True` — effects (a) and (b) held (no rule fired, one log line per transition), so the churn was cheap rather than noisy, but it was still there. See LR-045.
 - **Rejected first attempt, and why it was wrong:** a *global* stall backoff — fall back to the steady interval for ANY instance not-Ready for five minutes, keyed on the Ready condition's `LastTransitionTime`. It was simpler and needed no new state, and it was wrong on principle: it weakens a load-bearing global invariant (a non-Running instance is polled fast because the healing rules are driven by those iterations — LR-012/LR-014/LR-017) to fix one narrow, nameable case, and it silently reinterprets every *other* slow-converging instance as stalled. A five-minute threshold is also a guess with no relationship to anything real. Reverted in favour of a verdict that says what is actually true about the instance. The general lesson: **do not trade a global invariant for a specific defect that can be named.**
 - **The predicate is conservative in one direction on purpose.** A false positive parks a live instance; a false negative merely leaves today's behaviour. So all four clauses must hold: (1) at least one reachable **monitoring** Sentinel — bare Sentinels are Rule L's business (LR-015); (2) every reachable monitoring Sentinel agrees on ONE master address — disagreement is a transition, and transitions are not verdicts; (3) that address is not one of our pods **and is not flagged down** — the down flag is what keeps ordinary post-failover debris (a dead ex-master, LR-024's subject) out of this, since an address that is not ours and is still answering means something else is alive there; (4) no reachable Redis pod of ours is a master — while one still is, the instance has something to be healed back toward and the existing rules own it. Plus a 30s `forsakenCooldown`, which exists only to absorb a bad read: a legitimate failover moves mastership to one of OUR pods and so can never produce this signature.
@@ -1603,3 +1604,526 @@ says. (b) On one shard of the post-fix run the reattach took **96s of the 120s b
 rather than invariant, for the *reporting* layer only. If a slow reattach ever crosses it the result
 is a false alarm, not a lost pod; the carve-out that keeps a genuine full sync out of the alarm does
 not cover a slow FORGET/MEET/REPLICATE. Recorded, not tuned.
+
+## [LR-048] Editing `spec.sentinel.masterName` Left the Old Name Monitored Forever — One Master, Two Failover State Machines
+- **Date:** 2026-08-26
+- **Commit:** (pending) — `9f0d4be` (client) … `4b6efbf` (name-agnostic verdict), branch
+  `feat/sentinel-master-name-rename`
+- **ID note:** LR-047 is taken on `fix/cluster-rollout-state-gate`; LR-049 and LR-050 are this
+  branch's bounded-primitives fix and rollout attribution gate. Allocated with the LR-039
+  cross-branch loop over every branch, not by reading the tip of one line.
+- **⚠ Read with LR-050. This entry and that one are one story, and the second half is a
+  PREREQUISITE, not a follow-up.** The fix below removes a broken mechanism that was accidentally
+  providing something — see "What the fix took away".
+
+- **Problem — a supported field edit on a healthy instance produced LR-039's named hazard, and left
+  it there permanently.** `spec.sentinel.masterName` has been editable since ADR-015 made it
+  required, and every runbook in the LR-039 → LR-042 → LR-044 chain tells an owner to *"give it a
+  unique `masterName`"*. The operator had no notion of a rename: it registered the new name and
+  **never removed the old one**. Measured live on t3e (2026-08-26, 1s sampler, a `Running`/
+  `Ready=True` 3-pod instance holding 4000 distinguishable keys, `t0` = the patch): both names
+  present on all three Sentinels at **t0+0.8s** and **still present 12m39s later**. Sentinel's own
+  persisted state is the sharpest artefact:
+
+      sentinel monitor wp0-rename-mn.rn 10.233.192.95 6379 2
+      sentinel config-epoch wp0-rename-mn.rn 2
+      sentinel known-replica wp0-rename-mn.rn 10.233.192.148 6379
+      sentinel known-replica wp0-rename-mn.rn 10.233.192.250 6379
+      sentinel monitor mymaster 10.233.192.95 6379 2
+      sentinel config-epoch mymaster 3
+      sentinel known-replica mymaster 10.233.192.236 6379   <- dead IP from the roll
+      sentinel known-replica mymaster 10.233.192.224 6379   <- dead IP from the roll
+      sentinel known-replica mymaster 10.233.192.110 6379   <- dead IP from the roll
+      sentinel known-replica mymaster 10.233.192.250 6379
+      sentinel known-replica mymaster 10.233.192.148 6379
+
+  Two `monitor` lines. The **stale** one carries five known-replicas where two were deployed — three
+  of them dead IPs that never age out (LR-024) — and a **higher config epoch** (3 against 2).
+
+  **And it was not dormant debris.** The master pod's preStop hook is baked into its container spec
+  with the **old** name, and because the stale entry still existed, `SENTINEL failover <old>`
+  **succeeded** — a real failover under the stale name, concurrent with the new name's state machine
+  having its own opinion of who the master is. From `rn-sentinel-1` at t0+89s:
+
+      * Executing user requested FAILOVER of 'mymaster'
+      # +new-epoch 1
+      # +try-failover master mymaster 10.233.192.110 6379
+      # +elected-leader master mymaster 10.233.192.110 6379
+      # +promoted-slave slave 10.233.192.250:6379 ... @ mymaster 10.233.192.110 6379
+      * +slave-reconf-sent slave 10.233.192.236:6379 ...    <- a DEAD IP
+
+  `Executing user requested FAILOVER` is Sentinel's line for an operator-issued `SENTINEL failover`,
+  i.e. the baked preStop hook. The measured consequence:
+
+  | window | duration |
+  |---|---|
+  | the two names name **different addresses** | **88.5s** |
+  | the two names name **two different, live, running pods** as master | **56.6s** |
+
+  Two quorums, two config epochs, two failover state machines over the same three pods. Data
+  survived (4000/4000 keys) only because writes were quiesced per the runbook. And the project's own
+  ground-truth tool could not see it: `lrctl verify` asks each Sentinel about **one** name, which a
+  Sentinel carrying a leftover entry answers perfectly well, so it reported that instance as
+  entirely healthy.
+- **Root cause — pass by pass, and every step is individually correct.** (1) The Redis StatefulSet
+  is applied with the new pod template *before* the gather, so a pod is terminating from the moment
+  of the edit. (2) The gather asks every Sentinel about the **new** name; Sentinel answers an unknown
+  name with `ERR No such master with that name`, which the gatherer maps to `Monitoring:false,
+  Reachable:true`, so the **whole quorum reads bare** — LR-041's plausible-looking lie, arriving here
+  legitimately. (3) `DetermineRealMaster` falls through to its step-4 Redis-only fallback (LR-004)
+  and correctly identifies the live master. (4) **Rule 0** re-registers the bare quorum with
+  `SENTINEL MONITOR <new>`; a `MONITOR` under a *different* name is accepted, so each Sentinel now
+  monitors **both**. (5) **Nothing ever removes the old entry**: every `Remove` call site passes the
+  *current* name, the client had no list-all call, and the operator remembers no previous value. The
+  operator had no way to observe a name it had not asked about.
+- **Fix — reconcile the SCOPE of what our Sentinels monitor, not a migration.** New **Rule N**
+  (pure `planStaleMasterNames`, `internal/controller/stale_master_name_plan.go`; wired in
+  `reconcileSentinelCluster`). Desired state: *every Sentinel monitors exactly the desired name, and
+  nothing else.* A stale name is discovered from Sentinel's own answers (`SENTINEL masters`, the new
+  bounded `GetMonitoredMasters`, carried on `SentinelNodeState.MonitoredMasters`), pruned with
+  `SENTINEL REMOVE`, and only ever after the desired name is confirmed present on that same
+  Sentinel. **Nothing is remembered** — no "from" name, no phase, no cursor — which is also why this
+  repairs an instance a *previous* botched rename already broke, and any out-of-band `MONITOR`
+  someone added by hand. LR-041's lesson applied to state rather than to signatures: do not store
+  what you can read.
+- **Gates — REMOVE is a destructive primitive aimed by a predicate, so nearly all the value is in
+  the refusals:**
+
+  | # | Gate | Which incident |
+  |---|---|---|
+  | G0 | A capture is **in evidence** (`planForsaken`'s `Captured`, computed once per pass and passed in) stands the whole rule down: `Foreign`, prune nothing | the rename-to-escape-a-capture trap. Fed `Captured`, not `Forsaken`: a *settled* `Forsaken` returns from the switch ~90 lines earlier, so `Forsaken` would have been a structurally **dead gate** — caught before it shipped rather than years later |
+  | G1 | `desired != ""` | LR-041. With an empty desired name **every** name reads as stale, so the failure mode is "prune everything", not "do nothing" |
+  | G2 | a living, reachable master of **ours**: `RealMasterIP` set, in `ValidIPs`, and its own Redis view reporting a reachable master | LR-008's gate reused. Pruning without it manufactures LR-015's leaderless deadlock. All three clauses — checking only `RealMasterIP != ""` is the easy mis-implementation and is not the gate |
+  | G3 | no monitored master, **under any name**, reports an in-flight failover | a failover under the stale name is still a real state machine reconfiguring our pods |
+  | G4 | reachable Sentinels ≥ quorum | do not operate on a minority |
+  | G5 | every stale entry's address is one of our pods **or** is flagged down; else `Foreign` — **unless our own StatefulSet is mid-rollout, in which case `Deferred`** | the capture trap, second line. Byte-identical to `planForsaken` clause 3, and to `lrctl`'s copy (pinned by a parity test). The rollout clause is **LR-050** |
+  | G6 | per Sentinel, the desired name is present on **that** Sentinel; else skip, and **name it in the condition message** | LR-024's `electMaster` shape. R3 is "no leftover entry, *ever*", so an invisible skip is a defect: "lagging by a pass" must be distinguishable from "permanently stuck". Nothing here bounds how long that may last, deliberately — a Sentinel that never accepts the desired name is a **Rule 0** failure, and Rule 0 has no convergence bound either. The observability is the deliverable, not an invented timeout |
+
+  The caller re-confirms G6 per Sentinel with a **bounded `IsMonitoring`** immediately before each
+  `REMOVE`: the plan's view is a gather already milliseconds old and `REMOVE` is destructive. A
+  Sentinel that does not confirm is skipped, never pruned. Deliberately **not** gates:
+  `!anyTerminating` (below) and `Phase == Running` (the phase is written at the tail of the pass and
+  lags by one — LR-044's M4b finding; gate on the state, not on the phase).
+- **Placement: after Rule 0, BEFORE Rule A** — and the second half is the load-bearing one. After
+  Rule 0, so the desired name is already registered on a bare Sentinel in the same pass, which makes
+  the two-name window **intra-pass** rather than multi-pass and makes G6 pass on the first attempt.
+  Before Rule A, i.e. **while `anyTerminating` is true**: the churn Rule A sits out is *exactly* when
+  a rename is in flight, since the field edit rewrites the Redis pod template, and gating on
+  `!anyTerminating` would hold the two-name window open for the whole multi-minute roll — the one
+  window in which `redis-0`'s baked stale-name preStop fires the real `SENTINEL failover <old>`
+  measured above. **LR-040's actual lesson is discharged rather than inherited:** every call Rule N
+  makes (`Masters`, `IsMonitoring`, `Remove`) is bounded on the client's own
+  `Dial`/`Read`/`WriteTimeout` **and** a per-call context deadline, because a context alone is inert
+  against go-redis (LR-040's measured 5.02s → 5.00s). This is the opposite of the LR-040 defect,
+  reached by applying its lesson instead of its exemption.
+- **No persisted phase, because the rollout interlock was VERIFIED first.** The alternative was a
+  staged rename holding the pod-template update until the Sentinel side converged, which needs the
+  desired name at *build* time and therefore a phase in status (LR-044's pre-gather pattern /
+  ADR-013's `status.migration`). It was rejected on the claim that sentinel-mode readiness
+  (`role:master` **or** `master_link_status:up`) plus `minReadySeconds: 35` and reverse-ordinal
+  order already serialize the roll behind the rename. That claim had the exact shape of ADR-016's
+  *"the captor heals via Rule D"* — an inference from three documented mechanisms, correct as it
+  turned out, but only *known* once observed, and ADR-016's companion inference was falsified in the
+  same run that confirmed the main one. So it was verified **first**, with an explicit exit
+  criterion that would have reopened the staged design: `redis-2` Ready under the new name →
+  `redis-1` deleted = **34.76s**; `redis-1` Ready → `redis-0` deleted = **33.63s**, both landing on
+  `minReadySeconds: 35`, with `redis-0` genuinely last. **Read it precisely:** it does **not** order
+  `redis-2`, which is deleted in the same pass as the prune (**t0+0.6s**, before the gather). That is
+  intended — it is a replica — but the interlock must never be quoted as covering all three.
+- **⚠ This entry also amends LR-042's verdict: `planForsaken` is now NAME-AGNOSTIC.** A capture
+  under a *stale* name is still a capture, and the naive reading was actively dangerous. On a
+  captured victim the Sentinels monitor the **old, shared** name pointing at the **captor's** master;
+  asked about the new name they read bare, clause 1 fails, **the capture verdict disappears**, and
+  with it ADR-016's quarantine — the only thing that heals both sides (measured 3m41s-3m58s). No pod
+  of ours is a master, so `RealMasterIP == ""`, Rule 0 and Rule N both stand down, and the victim's
+  pods hold the *captor's* keyspace, so Rule L sees ≥2 data holders and **refuses**. Net: **a rename
+  converts a diagnosed, self-healing capture into an undiagnosed leaderless refusal** — which is
+  exactly what the LR-039/LR-042 runbook tempts a panicking owner into doing. So the verdict now
+  ranges over every `(address, flags)` a reachable Sentinel monitors under **any** name, sourced
+  from both the desired name's dedicated probe (unchanged authority on that name) and the gathered
+  `MonitoredMasters`. **The four clauses, their order and their one-way conservatism are
+  unchanged**; an empty list still means "we could not read it", so the verdict falls back to the
+  desired-name view alone (LR-041). Two consequences of the wider set, both toward the safe
+  direction: a Sentinel carrying only a stale name now counts for clause 1 (that *is* the trap
+  case), and two names naming two different addresses is now a clause-2 disagreement — which an
+  ordinary rename transiently produces (88.5s of it, measured), so the widening **removes** a
+  suspicion the desired-name view raised on its own rather than adding one. LR-038's caution
+  (widening what the ground truth contains changes every rule that reads it at once) was discharged
+  deliberately: the new field feeds exactly two pure planners, both table-tested, and the change is
+  additive — pinned by the requirement that the **entire existing table pass with no row edited**.
+- **⚠ WHAT THE FIX TOOK AWAY — the generalizable lesson, and why LR-050 is a prerequisite.** Pre-fix,
+  the master's baked-old-name preStop `SENTINEL failover <old>` **succeeded**, because the stale
+  entry existed: the forced `+switch-master` landed one second after the pod was deleted, an instant
+  handover. Once Rule N removes that entry the same call errors and the desired name's quorum must
+  wait out `down-after-milliseconds`. That was first recorded as a *latency* cost (~30s at the
+  `redis-0` edge) and nothing connected it to the verdict. It is also a **verdict** cost: the
+  instance now has no master of its own for `preStop stall ~21s + downAfterMilliseconds 30s +
+  election ~1.5s ≈ 42.5s`, and for that entire window a just-replaced pod of ours is, to
+  `planForsaken`, byte-identical to a captor's live master. The verdict settled at T+30 and
+  **quarantined a healthy instance 12.5s before it would have healed itself**, deleting all six pods
+  on EmptyDir. **The lesson: a fix that removes a broken mechanism also removes whatever that
+  mechanism was accidentally providing** — here, a fast handover that had been holding a latent
+  verdict bug shut. It is LR-038's *"a guard written against the ground truth is only as good as
+  what the ground truth is allowed to contain"* one level up: a guard is only as good as the timing
+  the rest of the system happens to give it, and changing that timing is a behaviour change to the
+  guard. **LR-050 closes it** with a rollout attribution gate, and notably by **deleting three
+  surfaces rather than adding any**. This feature is not shippable without it.
+- **Cross-mode parity (CLAUDE.md §7 rule 11): cluster and failover modes have no equivalent, and it
+  is not an oversight.** Their cross-instance analogue is **LR-043** (`CLUSTER MEET` at unattributed
+  pod IPs), which is a different problem with a different fix: cluster membership is by explicit
+  MEET over a dedicated bus with no shared-name channel, so there is no name to rename and nothing
+  to prune — the answer there is uncached pod-IP confirmation, not scope reconciliation. Failover
+  mode has no peer-to-peer topology protocol at all: role intent is stamped into pod annotations and
+  read through a downward-API volume, so there is no analogue of a persisted `sentinel monitor`
+  line. Standalone has one pod. **Sentinel mode is the only mode with a name that is both an
+  identity and an editable field.**
+- **Tests, red-first at every tier:**
+  - *Client* (`GetMonitoredMasters`): parse table **red on 6 of 8** against a nil-returning stub, the
+    two vacuously-green rows mutation-checked with an "always append one entry" mutant that fails
+    all 8; `FailoverInProgress` table **red on 8 of 10**; the bound test **red at 5.028208194s**
+    against a 4s budget with an unbounded client (the LR-040 signature), **green at 3.008s** once
+    bounded — the budget discriminates 3s from `DefaultTimeout`'s 5s on purpose.
+  - *Gather*: red first as an undefined symbol (disclosed as such, LR-044's precedent), then
+    behaviourally red on all three sub-cases against a scripted two-name fake Sentinel —
+    `MonitoredMasters = [], want [ns.inst mymaster]`. The `lrctl` parse table red on 4 of 6.
+  - *Planner*: 16 rows plus a determinism test, authored against a zero-value stub and **red on all
+    17**. Mutation-checked in **both** directions, as the LR-043/LR-044 precedent requires: a
+    prune-everything mutant fails all 11 `Deferred`/`Foreign` rows, a prune-nothing mutant fails all
+    5 prune rows plus determinism, and a never-`Converged` mutant fails the converged row — which
+    neither of the first two can reach, having nothing stale to act on.
+  - *Name-agnostic verdict*: 10 new rows, **red on 3** (capture under a stale name while the desired
+    name reads bare: `Captured = false, want true`; the two names disagree: `Captured = true, want
+    false`; a stale entry with no address aborts the verdict). **The pre-existing table passes with
+    no row edited and the test file diff contains zero deletions.** Mutation-checked three ways,
+    including the mutant that ignores stale names and must fail exactly the three new rows.
+  - *Wiring* (envtest, three scripted Sentinels and a scripted master on distinct loopback
+    addresses, driven through the real `reconcileSentinelCluster`): **red reproducing the defect
+    exactly** — `removals() = nil, want ["mymaster"]`, with the two-name state persisting,
+    `monitored() = ["team-a.cache" "mymaster"]`.
+  - *e2e* (`Sentinel Master Name Rename`, t3e). Tier 1 observed **RED against the pre-fix operator
+    image `9c2dd35`**, for exactly the right reason:
+
+        Timed out after 180.006s.
+        rn-full-1787768094-sentinel-0 monitors [mymaster lr048-red.rn-full-1787768094],
+        want exactly [lr048-red.rn-full-1787768094]
+
+    Three tiers green: `SUCCESS! -- 3 Passed | 0 Failed` (871s, operator `6f20511`). Tier 2 is the
+    one worth the budget — it renames a *captured* victim and asserts the verdict **survives**, that
+    no `REMOVE` is issued and the pods stay, then that ADR-016 still runs end to end. Tier 3 renames
+    twice in quick succession. Both rename hold windows carry `expectNeverForsaken`, the K9 guard,
+    which is what caught LR-050.
+  - *Parity*: `TestFlaggedDownParity` pins the controller's `flaggedDown` against
+    `internal/redis`'s copy through the exported surface, so the operator and `lrctl` cannot drift
+    about what counts as debris. Green from birth by construction, disclosed, teeth shown by
+    dropping the `o_down` clause.
+- **Measured convergence (t3e, 2026-08-26, replacing the design's ~4-6 minute estimate):** the prune
+  lands **1.4s after the patch**; the instance reaches sustained `Running`/`Ready=True` at
+  **+176.8s (2m57s)**, plus **~30s** at the `redis-0` edge post-fix (the handover the fix removed).
+  Each replica roll costs ~12s of `Ready=False`, the master's ~53s, and the CR legitimately flaps
+  `Running → Initializing → Running` on the way. **Full suite `123 Passed | 0 Failed` on t3e
+  (2026-08-28)**, which is what shows LR-050's amendment to `planForsaken` and LR-049's bounding of
+  `SlaveOf` cost nothing in the cluster, failover, quarantine or leaderless tiers.
+- **Regresses:** None to any path that is already converged: on a healthy instance every Sentinel
+  monitors exactly the desired name, so Rule N emits `Converged` and issues no command at all. The
+  desired name **can never appear in `Prune`** (asserted on every table row and pinned by the
+  prune-everything mutant), and the caller's pre-`REMOVE` re-confirm is the last line of defence.
+  Rule D, Rule R, Rule 0, LR-005/LR-008 correction, Rule L and LR-024 recovery are untouched; Rule N
+  never issues `SENTINEL RESET` (LR-007/LR-008: RESET does not remove a master entry, and wiping the
+  replica list is LR-013/LR-024's hazard) and never `REMOVE`s the **desired** name (re-pointing it is
+  LR-005/LR-008's job and stays there). The requeue cadence is unchanged (LR-045 untouched). The one
+  behaviour change outside sentinel healing is `lrctl verify`'s **exit code**: a sentinel instance
+  monitoring any name other than the CR's now exits non-zero, so a script that previously read a
+  two-name instance as healthy now reports failure — which is the point. `planForsaken`'s widening is
+  additive and pinned by the untouched table; cluster, failover and standalone paths are not
+  reached.
+- **Not covered, stated plainly:** renaming a **degraded** instance (Rule L is the safety net — 0
+  holders reseed, 1 promotes, **≥2 refuse** without `allowUnsafeRebootstrapOnDeadlock`, which is a
+  genuine wedge needing a human; the silver lining is that `electMaster` issues `REMOVE`+`MONITOR`
+  with the name the operator currently wants, so **the rename completes even out of the wreckage**);
+  anything under **concurrent disruption** (sub-quorum pod/node loss, a drain, a second failover
+  mid-roll — out of scope by requirement, a maintenance window is a precondition); `HoldDataUnknown`
+  and a **partial capture**, both inherited from ADR-016; and the **K2d residual** — a captor whose
+  master is transiently `s_down` at the instant of the rename is seen by neither G5 (it reads as
+  flagged-down debris) nor G0 (clause 3 refuses on principle to call a down address a capture, and
+  correctly: from Sentinel's vantage a not-ours address that is not answering is indistinguishable
+  from our own dead ex-master, LR-024's entire subject, so the alternative parks live instances after
+  every ordinary failover). **Narrowed, not closed**; if it is ever closed the lever is Rule N's
+  side, not the verdict's. Also observed and left alone: **Rule D's ghost-replica `SENTINEL RESET`
+  fires against the *desired* name during the roll** (twice in the 2026-08-26 run, triggered by
+  departed pod IPs reaching `s_down`) — LR-024's self-inflicted-deadlock ingredient, live on this
+  path; it did not deadlock, Rule N does not make it worse, and prevention remains ADR-010's
+  deferred subject.
+- **Impacts:** **ADR-018** (not 017 — that number was taken by the cluster rolling-update work while
+  this was in flight). **LR-050** (the prerequisite this entry's fix created the need for) and
+  **LR-049** (found in this work's review). Amends **LR-042**'s verdict (name-agnostic) and thereby
+  keeps **LR-044**'s quarantine reachable for a renamed victim. Completes **LR-039** on the operator
+  side: LR-039 required the name, LR-041 threaded it into the gather, and this makes changing it an
+  operation rather than a trap. `docs/API_SPEC.md` (the `StaleMasterName` condition, four reasons,
+  no new status field), `docs/USAGE.md` (the runbook replaces the "no rolling cutover" framing),
+  `docs/LRCTL.md` (the `Sentinel Identity` block and the exit-code change), `CLAUDE.md` pillar 3.7
+  and §4, `docs/RECONCILIATION_LOOP_SENTINEL.md` (Rule N in the inventory).
+
+## [LR-049] `SlaveOf` and `IsMonitoring` Were Half-Bounded — LR-040's Fix Did Not Travel to Its Own Sibling
+- **Date:** 2026-08-26
+- **Commit:** (pending)
+- **ID note:** LR-047 is taken on `fix/cluster-rollout-state-gate` and LR-048 is reserved for this branch's in-place master-name rename, so this entry takes **LR-049**. Allocated with the LR-039 cross-branch loop, not by reading the tip of one line — which is the mistake LR-039 records having made.
+- **Problem:** two `internal/redis` primitives built a `ProbeTimeout`-bounded client and then carried **no per-call context deadline**: package-level `SlaveOf` and `(*SentinelClient).IsMonitoring`. LR-040 established that the two halves bound different things and that **neither is sufficient alone** — the client's `Dial`/`Read`/`WriteTimeout` bound each individual socket operation, while the context is the only thing that bounds go-redis's **dial-retry loop** around them, which retries five times before giving up. So against an address that swallows SYNs (a recycled or blackholing stale pod IP, LR-012/LR-017) each of these calls could still cost roughly `5 × ProbeTimeout` rather than one. This is the reconcile-stall class that has already cost this project measured stalls of **146s** (LR-017) and **117s** (LR-040).
+- **Root cause — CLAUDE.md §7 rule 11 applied to LR-040's own fix, one level down.** LR-040 bounded `SlaveOf`'s client and recorded, verbatim: *"`SlaveOf` is shared, so failover mode was carrying the same inert bound … Bounding `SlaveOf` fixes sentinel Rule R and failover in one change."* **Only the client half travelled.** Failover mode kept its pre-existing `slaveOfBounded` wrapper (`failover_reconcile.go`), so its calls remained bounded by a caller-side context; **sentinel mode never had such a wrapper**, and Rule R (`littlered_controller.go:1225`, plus the demote at `:2069`) passes the raw reconcile context. Rule R loops over **every** straggler pod, so the exposure is per pod, per pass. The irony is worth recording exactly as LR-040 recorded its own: that entry is itself a cross-mode-parity correction of LR-017's false exemption, and it then left a parity gap inside the very function it was fixing — because the audit asked "is this client bounded?" rather than "is this *call* bounded, on every path a caller can take?".
+- **`IsMonitoring` is the same defect with no unprotected caller — latent, and included here deliberately.** Its only caller (Rule N, the stale-master-name prune) wraps it in its own `ProbeTimeout` context, so nothing stalled. It is in this entry because it is one root cause with two instances, and because the hazard is a *trap for the next caller*: both the method name and its `newBoundedClient` line read as "bounded", so the missing half is invisible at the call site. Found during the review of the Rule N wiring.
+- **Fix:** `context.WithTimeout(ctx, ProbeTimeout)` inside both primitives, matching `GetMonitoredMasters` and the four sentinel writes. **The guarantee belongs with the primitive, not with each caller remembering** — LR-041's lesson applied to a duration instead of to a string: *a required value (here, a bound) that every call site must supply has no enforcement*. The two existing caller-side wrappers (`slaveOfBounded`; Rule N's) are **kept as belt and braces**, not removed: a redundant bound costs nothing, and deleting one to "clean up" is how the shared-primitive guarantee gets lost again.
+- **Parity audit — every `internal/redis` primitive that builds a bounded client, by whether the bound is now complete *inside* it:**
+
+  | primitive | ctx inside | note |
+  |---|---|---|
+  | `SlaveOf` | **added here** | had a live unprotected caller (sentinel Rule R) |
+  | `IsMonitoring` | **added here** | latent; Rule N wrapped it |
+  | `GetMonitoredMasters` | yes | self-bounded when written (LR-048 work) |
+  | `Monitor` / `Set` / `Reset` / `Remove` | yes | LR-040 |
+  | `GetMaster` / `GetMasterState` / `IsFailoverInProgress` / `GetMasterAcrossAll` / `GetReplicas` | yes | LR-017, per-address in the loop |
+  | `getMasterFromSentinel` / `getReplicasFromSentinel` | no — **by construction** | private helpers whose only callers are the per-address loops above, which supply the deadline; not reachable from outside the file |
+  | `Ping` / `GetReplicationInfo` | no — **caller-supplied, verified** | every call site wraps: `gatherer.go:40`, `failover_monitor.go:257`. Left alone rather than folded in unreasoned; they are the remaining instances of the shape this entry is about, and are called out so the next reader does not have to rediscover them |
+  | `Subscribe` | deliberately unbounded | long-lived pub/sub; unchanged from LR-040/LR-046 |
+- **Tests:** `internal/redis/client_masters_test.go` — `TestSlaveOfIsProbeTimeoutBounded` (2 rows: `REPLICAOF <master>`, `REPLICAOF NO ONE`) and `TestIsMonitoringIsProbeTimeoutBounded`, both asserting a return within `ProbeTimeout + 1s` against LR-040's `blackholeListener`.
+  **Both are GREEN FROM BIRTH and that is disclosed rather than dressed up, because an honest red is not obtainable for this half.** The listener blackholes the **read**, and on the read path the client-timeout half *alone* already delivers the bound; the missing context only governs the **dial**-retry loop, which needs an address that swallows SYNs — a packet filter this suite does not have. LR-040 and LR-046 both recorded the same limitation for the same reason. That the harness is nonetheless sound was established by measuring all three shapes of one command against it, which reproduces LR-040's own inertness finding to three decimals:
+
+      unbounded client, no ctx     5.019612494s   (LR-040's original red)
+      unbounded client, ctx only   5.001629678s   (LR-040's "a ctx alone is inert", 5.02 -> 5.00)
+      bounded client, no ctx       3.018353233s   (both primitives as they stood -> green)
+
+  So what these tests guard is that **a** bound exists, not which half supplies it. Teeth were therefore shown by mutation rather than by a red: replacing the bounded client with a `DefaultTimeout` one fails `IsMonitoring` at **5.026619249s** and both `SlaveOf` rows at **5.025815278s / 5.0310136s**, against a 4s budget that discriminates 3s from `DefaultTimeout`'s 5s on purpose. The one-time real reds for the dial variant remain the captured field stalls of LR-017 and LR-040.
+- **Regresses:** None. `ProbeTimeout` (3s) is far above a live in-cluster pod's sub-second response to one `REPLICAOF` or one `GET-MASTER-ADDR-BY-NAME`; both are single round trips. No decision logic, gate, guard or requeue cadence changed — only how long a dead address may hold the loop, which strictly *restores* the intended 2s cadence rather than exceeding it (the LR-040 argument for why this cannot reopen the LR-001/LR-007 RESET-spam trap applies unchanged: every RESET gate is state-based, not time-based). The retained caller-side wrappers make the change a no-op on the paths that were already protected.
+- **Impacts:** completes the bounded-primitive family — LR-012 (cluster reads, ctx only), LR-017 (sentinel reads), LR-040 (sentinel writes + the inert-ctx correction), LR-046 (cluster everything), LR-049 (the two primitives whose ctx half was never applied). Corrects LR-040's claim that bounding `SlaveOf` fixed sentinel Rule R — it fixed the client half only, and that entry should be read together with this one. No CLAUDE.md pillar changes.
+
+## [LR-050] An Ordinary Rename Settled a False Capture Verdict — No Attribution While Our Own StatefulSet Rolls
+- **Date:** 2026-08-27
+- **Commit:** (pending)
+- **ID note:** LR-047 is taken on `fix/cluster-rollout-state-gate`, LR-048 is reserved for this branch's
+  in-place master-name rename, and LR-049 is this branch's bounded-primitives fix — so this entry takes
+  **LR-050**. Allocated with the LR-039 cross-branch loop over every branch, not by reading the tip of
+  one line.
+- **⚠ This entry amends LR-042's verdict.** `planForsaken` gains an input and a hold; the four clauses
+  are untouched and the whole existing table passes with **no row edited**. See the `⚠ Corrected by
+  LR-050` marker on LR-042.
+- **⚠ Read with LR-048 — these two entries are one story, and this one is a PREREQUISITE of that
+  feature rather than a follow-up to it.** LR-048 fixed a rename that left the old master name
+  monitored forever; the stale entry it removed was exactly what let the outgoing master's
+  baked-old-name preStop hand over instantly, and that instant handover had been holding the defect
+  below shut. The generalizable half is recorded there: **a fix that removes a broken mechanism also
+  removes whatever that mechanism was accidentally providing.**
+
+- **Problem (measured on t3e, design §16 + M7):** a **supported** rename of a **healthy** sentinel
+  instance, with **no other Sentinel deployment anywhere on the cluster**, drove a settled
+  `Forsaken=True` and **quarantined it** — both StatefulSets to `.spec.replicas: 0`, and storage is
+  EmptyDir (pillar 3.1). The operator called one address the instance's **own ghost master** and, two
+  seconds later, a **foreign captor**:
+
+      18:31:55  Sentinel reported a ghost master. Ensuring no pod is labeled as master.
+      18:31:57  Instance is forsaken and quarantined: captured by another Sentinel
+                deployment sharing its master name. Halting management.
+                foreign_master=10.233.192.21  quarantine=Quarantined  attempt=1
+
+  **Severity: data destruction on a supported operation, gated by luck.** On the data-free instance the
+  quarantine fired and the pods were deleted. On the instance holding 500 keys the verdict *still*
+  settled and only LR-044's `atRisk` clause vetoed the deletion — that veto is a coincidence, not a
+  guard against this. `Forsaken=True` also halts healing, so a renamed instance is briefly unmanaged.
+- **Root cause — `planForsaken(state, since, now)` had no churn awareness at all.** It cannot
+  distinguish *"an address that is not one of our pods"* from *"an address that is not one of our pods
+  **any more**"*. Mid-roll a just-replaced pod's IP has left `ValidIPs` (the pod object is gone) and has
+  not yet reached `s_down` (`down-after-milliseconds`), which is **byte-identical** to a captor's live
+  master — so all four clauses hold and only `forsakenCooldown` stands in the way. §7.1b already said
+  *"what saved it was the 30s cooldown, not the clauses"*; M7 measured that margin as **negative**:
+
+  | quantity | measured |
+  |---|---|
+  | capture-signature window during an ordinary rename | **42.5s** |
+  | its composition | preStop stall ~21s + `downAfterMilliseconds` 30s + election ~1.5s |
+  | verdict arms at | **T+30** (`forsakenCooldown`) |
+  | instance heals itself at | T+42.5 — i.e. the verdict fires **12.5s early** |
+  | dose-response control (`downAfterMilliseconds: 5000`, run C) | **no verdict** |
+
+  The dose-response control is what makes this a *timer* defect rather than a *clause* defect: shrink
+  the user-settable timer and the signature never outlives the cooldown. **`spec.sentinel.
+  downAfterMilliseconds` is unbounded**, so no value of `forsakenCooldown` is correct for every
+  instance.
+- **The feature consumed exactly the margin that was protecting it.** Pre-Rule-N, the master's
+  baked-old-name preStop `SENTINEL failover <old>` **succeeded** (the stale entry existed) and WP0
+  measured the forced `+switch-master` one second after the delete — an instant handover, ghost window
+  under 30s. Once Rule N removes that entry the call errors and the quorum must wait out
+  `down-after-milliseconds`. §7.1a recorded that +30s as a *latency* cost and never connected it to the
+  verdict. **Exonerated: WP4b.** By the time the verdict fires the quorum monitors only the **desired**
+  name, so a name-scoped `planForsaken` would fire identically.
+- **Fix — while our own Redis StatefulSet is not settled, the operator does not ATTRIBUTE addresses.**
+  Not to a captor (`planForsaken`), and not as foreign (Rule N's G5). A rollout of our own making is
+  precisely the window in which *"is this address one of ours?"* cannot be answered from the gather, so
+  the honest answer is **hold**, not accuse.
+    - The predicate is **LR-021's**, reused rather than re-written: `clusterShardRolloutSettled` is
+      renamed `statefulSetRolloutSettled` (it was never mode-specific) and passed into both pure
+      planners **in-signature** — LR-041's lesson, not construction state and not re-derived per
+      planner. A second copy is literally how LR-045 happened.
+    - It is **deliberately broader than "a template rollout is in flight"**: a deleted, crash-looping or
+      merely not-yet-Ready pod also fails the replica clauses, and those are exactly the states in which
+      a departed address of ours is still in the air. That is why deleting the M3 settle (below) is safe
+      rather than a straight trade.
+    - The cursor is read **UNCACHED** (`r.apiReader()`, no new RBAC), on LR-047's precedent: the
+      dangerous direction is a stale read saying *"settled"* while a roll is in flight, and the informer
+      necessarily lags **behind** — at t0 of a rename it still holds the previous, settled generation.
+      One GET per sentinel pass. A `NotFound` is a definitive answer (no StatefulSet ⇒ no rollout of
+      ours) and reads as settled; any other read error holds attribution, the conservative direction for
+      a gate whose only effect is to withhold an accusation.
+- **THE SUBTLETY, and it is the whole design: the gate suppresses ARMING, in both directions.** It must
+  **not** make `planForsaken` return "not captured", because the call site's `default` branch calls
+  `clearForsaken`. A naive *"no verdict while rolling"* therefore **retracts** a capture that was
+  correctly diagnosed **before** the rename — reopening the §7.3 trap WP4b (`4b6efbf`) exists to close,
+  and with it ADR-016's quarantine, the only thing that heals the **captor**. So:
+
+      a rollout cannot START a capture verdict, and cannot CLEAR one either.
+
+  Expressed as: while rolling, an **unarmed** instance returns no verdict; an **armed** one
+  (`status.forsakenSince` set) is carried through unchanged, *even if the signature has momentarily
+  gone*. `ForeignMaster` is then empty, which degrades to the safe direction downstream —
+  `quarantineDataRisk` can no longer explain any pod's keys as the captor's copy and therefore refuses.
+- **Rule N's G5, same window, different verdict.** G5's discriminator (`!ValidIPs[ip] &&
+  !flaggedDown(flags)`) is byte-identical to `planForsaken` clause 3, so during the same window a stale
+  entry pointing at the just-replaced pod read as somebody else's master and the operator emitted a
+  `Warning` saying *"this instance may be captured — do not rename to escape a capture"* at the exact
+  moment the owner was performing the rename the runbook asked for. While rolling such an address is
+  **unattributable, not foreign** ⇒ `Deferred`, naming the gate. No accusation, no `Warning`, and — 
+  unchanged — **no prune**: an entry we cannot attribute is never pruned in either reading, so only the
+  sentence differs. **The asymmetry is deliberate:** Rule N still *runs* during churn (§7.5, which is
+  the whole point of it sitting before Rule A, so the two-name window stays intra-pass); it just stops
+  *attributing*. An entry whose address **is** one of our pods is attributable whatever the StatefulSet
+  is doing and is pruned as usual.
+- **A net REMOVAL of surface, and that is part of the fix rather than a bonus.** Three things existed
+  only to soften the false `Foreign` this gate suppresses at its source, and are **deleted**:
+  `status.staleMasterNameForeignSince`, the `staleMasterNameForeignCooldown` settle and the
+  `ForeignSuspected` condition reason (all added by M3 for §9.2). The owner's objection is the design
+  rationale and is recorded as such: **status-field inflation for a once-in-an-instance-lifetime
+  operation**. They were also margins against the same user-settable timer, so they carried the same
+  defect one severity down; and the gate covers strictly more, because a departed address of ours
+  exists only in states where the StatefulSet is short of its Ready count. `planStaleMasterNameReport`
+  loses its clock and becomes a rendering.
+- **Why not the four alternatives that were on the table.** Lengthening `forsakenCooldown`, gating on
+  `anyTerminating` alone, and an attribution set built from the pod list are all **margins against a
+  user-settable, unbounded timer** — the dose-response control above says a margin cannot be right.
+  Remembering departed pod IPs needs cross-pass state. The rollout gate is config-independent and needs
+  no new state at all.
+- **The accepted hole, stated as a decision rather than left as a lurking risk.** A **stuck** rollout
+  means the gate never lifts, so a genuine capture arriving in that window goes undetected. The owner
+  accepted it, with the reasoning *"we don't fix on operator level if something's broken below"*, and
+  two facts support it: an instance with a stuck roll is already `Ready=False` and visibly broken, and
+  the quarantine exists to heal the **captor**, which it cannot do for an instance that cannot roll.
+  LR-023 is the precedent — a stuck state gets its own rule rather than implicit handling — and if this
+  is ever closed it should be closed that way, not by putting a timer back.
+- **Cross-mode parity audit (CLAUDE.md §7 rule 11) — does any other mode make an attribution-style
+  judgement that could fire during its own rollout?**
+
+  | mode / site | verdict | why |
+  |---|---|---|
+  | sentinel `planForsaken` | **FIXED** | the reported defect |
+  | sentinel Rule N G5 (`planStaleMasterNames`) | **FIXED** | the same discriminator, one severity down |
+  | sentinel Rule D / LR-008 ghost handling | **already covered, by a different mechanism** | these read a departed address as *ours-and-dead* (the safe reading) and act by repointing at our **own** consensus master — they never accuse a third party. LR-013's wholeness gate (`reachableRedis == expected`) is the same idea already applied there, and it is what makes Rule D's RESET wait out a roll |
+  | cluster `AttributeMeetTarget` / `confirmPodIP` (LR-043) | **audited, no change** | genuinely an attribution judgement, and it *can* fire mid-rollout. But it is already grounded in an **uncached K8s fact** rather than a timer (LR-043's correction demoted bus-state attribution to advisory wherever `confirmPodIP` confirms), and its failure direction is a **stall**, never a destructive verdict. Cluster mode additionally holds its own roll (LR-047) |
+  | failover mode | N/A | no capture verdict and no address-attribution judgement: `planMasterDeath` keys on kubelet readiness and the pod list, and the epoch/marker machinery answers an *identity* question about one pod, never *"whose address is this"* |
+  | standalone | N/A | one pod, no topology |
+
+- **Tests, red-first.** `internal/controller/rollout_attribution_gate_test.go` (new) and the rewritten
+  `stale_master_name_report_test.go` / Rule N wiring tiers. Observed **RED** against the planners with
+  the parameter threaded but ignored (the stub):
+
+      TestPlanForsakenRolloutGate/K9:_the_rename_window_must_not_arm_a_capture_verdict_while_we_are_rolling
+          Captured = true, want false
+      TestPlanForsakenRolloutGate/INVARIANT:_an_already-armed_verdict_survives_a_roll_(signature_absent)
+          Captured = false, want true
+          Forsaken = false, want true
+      TestPlanStaleMasterNamesRolloutGate/while_rolling,_a_departed_address_of_ours_is_unattributable,_not_foreign
+          Reason = "Foreign", want "Deferred"
+      TestPlanStaleMasterNameReport/rename_window,_mid-roll:_deferred,_and_it_accuses_nobody
+          Reason = "Foreign", want "Deferred"
+
+  **The invariant row with the signature PRESENT is green from birth and is disclosed as such** — the
+  pre-fix code arms that state too. Its teeth come from the mutant a reasonable implementer writes
+  first, *"return no verdict while rolling"*, which fails **exactly the two invariant rows and nothing
+  else**:
+
+      --- FAIL: TestPlanForsakenRolloutGate/INVARIANT:_an_already-armed_verdict_survives_a_roll_(signature_present)
+          Captured = false, want true / Forsaken = false, want true
+      --- FAIL: TestPlanForsakenRolloutGate/INVARIANT:_an_already-armed_verdict_survives_a_roll_(signature_absent)
+          Captured = false, want true / Forsaken = false, want true
+
+  Every table carries a **positive control**: the same gather on a *settled* instance must still arm the
+  verdict (`planForsaken`) and must still report `Foreign` with its `Warning` (Rule N), so the gate
+  cannot pass as a blanket suppression. A third row pins that the gate does **not** stand Rule N down —
+  an attributable stale entry still prunes while rolling. The **entire pre-existing `planForsaken`
+  table passes unedited**; only the two call lines gained a `false` argument, so no row's inputs or
+  expectations changed (K2b's stop condition is respected).
+- **Live verification (t3e, 2026-08-27, operator `4150704`) — the unit rows prove the logic, only the
+  cluster proves the fix.** Both of M7's recipes were re-run against the gated build: e2e tier-1
+  fixture shape (auth-on, three Redis + three Sentinels), rename off the legacy `mymaster` onto a
+  scoped name, **product-default `downAfterMilliseconds: 30000`**, once **with** 500 replicated keys and
+  once **without** — the no-data case being the one that destroyed the pods.
+
+  **The defect's precondition reproduced at full strength in both runs**, which is what makes the
+  negative result evidence rather than an absence:
+
+      run A (500 keys)   planForsaken SIGNATURE WINDOWS: from  92.4s to 134.4s  duration = 42.0s
+      run B (no data)    planForsaken SIGNATURE WINDOWS: from  86.8s to 127.8s  duration = 41.0s
+
+  i.e. the whole name-agnostic capture signature — quorum unanimous, address not in the pod list, not
+  flagged down, no master of ours — present for **41-42s against a 30s cooldown**, matching M7's 42.5s.
+  The operator even logged the same precursor line as §16's excerpt, on the same address:
+
+      18:43:22Z  Sentinel reported a ghost master. Ensuring no pod is labeled as master.  ghost_ip=10.233.192.161
+
+  **and this time nothing follows it.** Across both runs, at 0.5s sampling: **no `Forsaken` condition at
+  any sample, no `forsakenSince`, no `quarantinedSince`, `quarantineAttempts: 0`, and no pod deleted**
+  (`.spec.replicas` 3/3 on both StatefulSets throughout). `StaleMasterName` never reached `Foreign`.
+  Convergence: exactly one monitored name on all three Sentinels (`m8diag.m8a` / `m8diag.m8b`),
+  `Running`/`Ready=True`, and the exact sweep on the new master returned **`present=500 missing=0`**.
+- **e2e (`Sentinel Master Name Rename`, t3e, operator `6f20511`), the three tiers M5b added — and the
+  K9 guard they carry is the deliverable.** `expectNeverForsaken` sits in tiers 1 and 3, was
+  legitimately **red against the pre-fix HEAD**, and was not weakened: both tiers now pass with it
+  asserting. Tier 2 (`Under Capture`) is the invariant's own guard — it requires the verdict to
+  **survive** a panicked rename and the quarantine to fire anyway — and it is what caught the
+  over-strong first reading above. Across the runs: **tier 2 green** (334.5s, after the correction),
+  **tier 3 green** twice, **tier 1 green** on its first run. Tier 1 failed once on its post-rollout
+  `Consistently(30s, phase == Running)` — 5.2s in, reading `Initializing`. That is the CR flap §7.1b
+  documents and the tier's own comment anticipates (*"the CR legitimately flaps Running →
+  Initializing → Running several times on the way"*), racing the boundary between the tier's
+  `Eventually` and its `Consistently`; it is **not** the K9 assertion and is unrelated to this change
+  (tier 1 never arms a verdict, so the gate's only branch it reaches is byte-identical to the old
+  behaviour), and a clean re-run of all three on the same build was **`SUCCESS! -- 3 Passed | 0
+  Failed`** in 871s. Reported as a test-tightness flake rather than fixed here — `test/e2e` was out of
+  this change's ownership.
+
+  **Closed since, in `4b6b709` + `3fc55fa`, and the fix is more interesting than the flake.** The
+  tier opened its 30s `Consistently` off a bare `Eventually`, i.e. on the **first** `Running` sample
+  it saw — including one taken during a mid-roll interlude — so it could start mid-flap. It now waits
+  for `Running`/`Ready=True` to have been held **continuously** for 60s, and nothing asserted was
+  weakened (the `Consistently` is unchanged, not shortened to dodge the flap). **The 60s is derived,
+  not guessed:** those interludes *are* `minReadySeconds` (`resources.go:1063`, default 35s) — the
+  StatefulSet waits exactly that long after a replaced pod goes Ready before deleting the next, which
+  is §7.1a's measured trace to the second (`redis-2` Ready t0+12.9s, `redis-1` deleted t0+47.6s) — so
+  `minReadySeconds` is the structural upper bound on a false settle and the window must exceed it.
+  The reproduction is a **deterministic unit table replaying that trace at the tier's own cadence**,
+  not a live re-run: the old logic settles at 15s, the first sample of interlude 1, where the new one
+  cannot settle before 4m30s. And `minReadySeconds` is **user-settable**, so a constant keyed to the
+  default is the same shape this branch has now been bitten by twice — LR-049's, and LR-050's own
+  rejected fix, which was rejected precisely for being a margin against a user-settable
+  `downAfterMilliseconds`. Hence a guard rather than a comment:
+  `TestRenameFixtureDoesNotOverrideMinReadySeconds` fails the moment the fixture grows the field.
+- **The invariant was exercised live, and not by design — the capture e2e tier depends on it.** In
+  `Sentinel Master Name Rename Under Capture` the victim's `pinned` pod is pre-armed with a bogus
+  `masterauth`, so once the capture lands that pod can never resync, its readiness (`link:up`) fails and
+  the victim's Redis StatefulSet drops to `1/3` ready — i.e. **unsettled**. The verdict nevertheless
+  stands, because it was armed on the pass *before* the pods lost readiness (`forsakenSince
+  18:57:05Z`, `Forsaken=True/QuarantineRefusedDataPresent` at `18:57:35Z`) and the gate then **carried
+  it through** unchanged. A naive "no verdict while rolling" would have retracted it there.
+- **Residual, and it is broader than the stuck-rollout hole above — stated rather than discovered
+  later.** The settledness predicate includes `ReadyReplicas == Replicas`, so **a capture that renders a
+  victim pod not-Ready *before* the operator's first post-capture gather cannot arm the verdict at all**
+  (once armed, it survives). This is not the common shape: a real capture makes the victim's pods
+  link-`up` replicas of the **captor's** master, hence Ready, hence settled — which is why M4a, the
+  quarantine tiers and the run above all arm normally. Keeping the readiness clause is deliberate: it is
+  what extends the gate from "a template rollout" to "any pod of ours that has just left", which is the
+  state the false signature actually lives in, and the failure direction is a withheld accusation rather
+  than a wrongly-deleted instance.

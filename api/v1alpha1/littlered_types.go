@@ -697,6 +697,28 @@ const (
 	// existed; validation cannot reach it, which is why this condition exists.
 	ConditionSentinelMasterNameUnscoped = "SentinelMasterNameUnscoped"
 
+	// ConditionStaleMasterName reports whether this instance's Sentinels monitor any
+	// master name OTHER than the one spec.sentinel.masterName asks for (sentinel mode).
+	//
+	// A Sentinel persists every `sentinel monitor <name> …` it is given, and nothing in
+	// the operator used to take one away: editing spec.sentinel.masterName registered the
+	// new name and left the old one in place FOREVER, so one master was monitored under
+	// two names by two independent failover state machines — the hazard LR-039 named,
+	// reachable from a supported field edit on a healthy instance.
+	//
+	// Polarity: True is bad, matching Forsaken and LegacyClusterTopology. A converged
+	// instance carries False/Converged, so the condition is quiet until something is
+	// actually wrong. The reason says what the operator is doing about it: `Pruning`
+	// (stale names observed and being removed, message names them and any Sentinel
+	// skipped because it does not carry the desired name yet), `Deferred` (observed, but
+	// a gate refuses — the message names WHICH gate, including the LR-050 rollout gate
+	// that withholds attribution while our own Redis StatefulSet is not settled), and
+	// `Foreign` (a stale entry points at an address that is neither one of our pods nor
+	// flagged down, on a SETTLED instance — so something else is alive there and this
+	// instance may be captured; do NOT rename to escape a capture, let the quarantine
+	// complete first).
+	ConditionStaleMasterName = "StaleMasterName"
+
 	// ConditionFailoverRecovery reflects a failover-mode no-master state and the
 	// operator's response to it (failover mode only). True means the instance
 	// needs attention — most importantly the refuse-and-wait state, where the
